@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use std::net::SocketAddr;
 
 use anyhow::{anyhow, bail, Context, Result};
@@ -8,6 +10,17 @@ use tokio::time::{timeout, Duration};
 const DEFAULT_READY_TIMEOUT: Duration = Duration::from_secs(30);
 const DEFAULT_CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
 const DEFAULT_READ_TIMEOUT: Duration = Duration::from_secs(30);
+const DEFAULT_PROBE_IO_TIMEOUT: Duration = Duration::from_secs(5);
+const DEFAULT_PROBE_ATTEMPT_TIMEOUT: Duration = Duration::from_secs(6);
+const DEFAULT_HTTP_READY_STATUSES: &[u16] = &[200];
+const DEFAULT_READY_RETRY_DELAY: Duration = Duration::from_millis(100);
+const DEFAULT_HTTP_PROBE_RETRY_DELAY: Duration = Duration::from_millis(250);
+
+#[derive(Debug, Clone)]
+pub struct HttpProbeResult {
+    pub response: Vec<u8>,
+    pub status_code: u16,
+}
 
 /// Wait until the client *local TCP listener* accepts connections.
 ///
@@ -30,7 +43,7 @@ pub async fn wait_tcp_listener(addr: SocketAddr) -> Result<()> {
             }
             _ => {
                 // Listener may be up later; keep retrying within the global deadline.
-                tokio::task::yield_now().await;
+                tokio::time::sleep(DEFAULT_READY_RETRY_DELAY).await;
             }
         }
     }
@@ -38,50 +51,96 @@ pub async fn wait_tcp_listener(addr: SocketAddr) -> Result<()> {
 
 /// Wait until the client can complete an HTTP request end-to-end.
 ///
-/// This helper sends a deterministic `GET /` probe and requires the response
-/// to contain a parseable `HTTP/<ver> <status>` status line.
+/// This helper sends a deterministic `GET /` probe and requires a usable
+/// response status. By default, "usable" means `200 OK`.
 pub async fn wait_http_ready(addr: SocketAddr) -> Result<()> {
-    let start = tokio::time::Instant::now();
+    wait_http_status(addr, DEFAULT_HTTP_READY_STATUSES).await?;
+    Ok(())
+}
+
+/// Wait until the client can complete an HTTP request end-to-end and returns
+/// one of the explicitly accepted statuses.
+pub async fn wait_http_status(addr: SocketAddr, accepted_statuses: &[u16]) -> Result<HttpProbeResult> {
     let probe = b"GET / HTTP/1.1\r\nHost: example\r\nConnection: close\r\n\r\n";
+    wait_http_status_with_request(addr, probe, accepted_statuses).await
+}
+
+/// Wait until the client can complete a specific HTTP probe request end-to-end
+/// and returns one of the explicitly accepted statuses.
+pub async fn wait_http_status_with_request(
+    addr: SocketAddr,
+    request: &[u8],
+    accepted_statuses: &[u16],
+) -> Result<HttpProbeResult> {
+    let start = tokio::time::Instant::now();
+    let mut last_status = None;
 
     loop {
         if start.elapsed() >= DEFAULT_READY_TIMEOUT {
-            bail!("timeout waiting for HTTP-ready path at {addr}");
+            let accepted = accepted_statuses
+                .iter()
+                .map(u16::to_string)
+                .collect::<Vec<_>>()
+                .join(", ");
+            match last_status {
+                Some(status) => {
+                    bail!("timeout waiting for HTTP-ready path at {addr}; accepted statuses=[{accepted}], last seen status={status}");
+                }
+                None => {
+                    bail!("timeout waiting for HTTP-ready path at {addr}; accepted statuses=[{accepted}], no parseable HTTP status observed");
+                }
+            }
         }
 
-        let attempt = async {
-            let stream = timeout(DEFAULT_CONNECT_TIMEOUT, TcpStream::connect(addr))
-                .await
-                .map_err(|e| anyhow!("connect timeout/err: {e}"))??;
-
-            let mut stream = stream;
-            let resp = timeout(
-                Duration::from_secs(5),
-                async {
-                    stream.write_all(probe).await?;
-                    stream.flush().await?;
-                    let mut buf = Vec::new();
-                    stream.read_to_end(&mut buf).await?;
-                    Ok::<Vec<u8>, anyhow::Error>(buf)
-                },
-            )
-            .await
-            .map_err(|e| anyhow!("probe read/write timeout/err: {e}"))??;
-
-            Ok::<Vec<u8>, anyhow::Error>(resp)
-        };
-
-        match timeout(Duration::from_secs(6), attempt).await {
-            Ok(Ok(resp)) => {
-                if extract_http_status_code(&resp).is_some() {
-                    return Ok(());
+        match probe_http(addr, request).await {
+            Ok(result) => {
+                last_status = Some(result.status_code);
+                if accepted_statuses.contains(&result.status_code) {
+                    return Ok(result);
                 }
+                tokio::time::sleep(DEFAULT_HTTP_PROBE_RETRY_DELAY).await;
             }
             _ => {
                 // ignore and retry until the global deadline
+                tokio::time::sleep(DEFAULT_HTTP_PROBE_RETRY_DELAY).await;
             }
         }
     }
+}
+
+/// Perform a single HTTP probe and return the raw response plus parsed status.
+pub async fn probe_http(addr: SocketAddr, request: &[u8]) -> Result<HttpProbeResult> {
+    let attempt = async {
+        let stream = timeout(DEFAULT_CONNECT_TIMEOUT, TcpStream::connect(addr))
+            .await
+            .map_err(|e| anyhow!("connect timeout/err: {e}"))??;
+
+        let mut stream = stream;
+        let resp = timeout(
+            DEFAULT_PROBE_IO_TIMEOUT,
+            async {
+                stream.write_all(request).await?;
+                stream.flush().await?;
+                let mut buf = Vec::new();
+                stream.read_to_end(&mut buf).await?;
+                Ok::<Vec<u8>, anyhow::Error>(buf)
+            },
+        )
+        .await
+        .map_err(|e| anyhow!("probe read/write timeout/err: {e}"))??;
+
+        Ok::<Vec<u8>, anyhow::Error>(resp)
+    };
+
+    let resp = timeout(DEFAULT_PROBE_ATTEMPT_TIMEOUT, attempt)
+        .await
+        .map_err(|e| anyhow!("probe attempt timeout/err: {e}"))??;
+    let status_code = extract_http_status_code(&resp)
+        .ok_or_else(|| anyhow!("probe response did not contain a parseable HTTP status line"))?;
+    Ok(HttpProbeResult {
+        response: resp,
+        status_code,
+    })
 }
 
 /// Connect to a client TCP listener with a bounded timeout.

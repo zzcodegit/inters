@@ -5,6 +5,13 @@
 - **Build**: `cargo build`
 - **Run tests**: `cargo test`
 
+### Baseline modes
+
+- **Local baseline**: `bash scripts/run_baseline.sh`
+- **Remote WAN smoke**: `bash scripts/run_baseline_remote.sh`
+- Details: `docs/remote_baseline.md`
+- Current WAN `504` investigation: `docs/wan_504_rca.md`
+
 ### Ops: golden startup examples (TOML config)
 
 From the project root (`vpnnode/`):
