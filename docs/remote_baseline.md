@@ -41,6 +41,7 @@ Environment contract:
 - `VPNNODE_BASELINE_REMOTE_RELAY1_ADDR`: required for route length `>= 2`
 - `VPNNODE_BASELINE_REMOTE_RELAY2_ADDR`: required for route length `>= 3`
 - `VPNNODE_BASELINE_REMOTE_EXIT_ADDR`: required
+- `VPNNODE_BASELINE_REMOTE_TARGET_SCHEME`: currently must be `http`
 - `VPNNODE_BASELINE_REMOTE_EXPECT_READY_STATUS`: status the remote path must produce to count as usable; defaults to `200`
 - `VPNNODE_BASELINE_REMOTE_HTTP_HOST`: `Host:` header for the smoke probe
 - `VPNNODE_BASELINE_REMOTE_ROUTE_CACHE_PATH`: local cache file for the remote client run
@@ -50,6 +51,19 @@ Remote safety checks:
 - Remote topology values are loaded from environment, not test hardcode.
 - `relay1`, `relay2`, and `exit` are rejected if they point to `127.0.0.1`, `localhost`, or `::1`.
 - The remote runner prints the effective topology before it starts the test.
+- The remote smoke harness rejects `VPNNODE_BASELINE_REMOTE_TARGET_SCHEME` values other than `http`, because the current client TCP-mode is an HTTP-shaped tunnel entrypoint, not a generic TLS forward proxy.
+
+## Remote target requirement
+
+The remote smoke now uses option `A`: a plain-HTTP target that is expected to return `200 OK`.
+
+For the current public topology, the required target is:
+
+- on the exit host `31.192.232.26`
+- local HTTP service `127.0.0.1:8080`
+- managed by `vpnnode-target-http.service`
+
+This requirement is deliberate. The earlier WAN `504` came from probing `github.com:443` with raw HTTP bytes. That was a target compatibility mismatch, not a valid smoke contract.
 
 ## Readiness semantics
 
@@ -85,5 +99,7 @@ The intended route chain is:
 
 `client -> relay-1 -> relay-2 -> exit -> target`
 
-See `docs/wan_504_rca.md` for the current failure mode on that topology.
+See `docs/wan_504_rca.md` for the original `504` failure mode on that topology.
 The captured remote smoke failure log is stored at `docs/artifacts/remote_wan_smoke_2026-03-20.log`.
+The captured remote smoke pass log is stored at `docs/artifacts/remote_wan_smoke_2026-03-20_pass.log`.
+The pass-run evidence bundle is stored at `docs/artifacts/wan_2026-03-20_pass_evidence.md`.

@@ -155,3 +155,4 @@ Supporting artifacts committed with this branch:
 
 - `docs/artifacts/wan_2026-03-20_evidence.md`
 - `docs/artifacts/remote_wan_smoke_2026-03-20.log`
+- `docs/wan_200_followup.md`

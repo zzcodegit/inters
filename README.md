@@ -11,6 +11,7 @@
 - **Remote WAN smoke**: `bash scripts/run_baseline_remote.sh`
 - Details: `docs/remote_baseline.md`
 - Current WAN `504` investigation: `docs/wan_504_rca.md`
+- Current WAN `200` follow-up: `docs/wan_200_followup.md`
 
 ### Ops: golden startup examples (TOML config)
 

@@ -45,6 +45,7 @@ pub struct RemoteBaselineConfig {
     pub exit_addr: String,
     pub route_length: u8,
     pub route_cache_path: String,
+    pub target_scheme: String,
     pub http_host: String,
     pub expected_ready_status: u16,
 }
@@ -218,6 +219,7 @@ impl RemoteBaselineConfig {
                 "VPNNODE_BASELINE_REMOTE_ROUTE_CACHE_PATH",
                 "route_cache_remote_baseline.json",
             ),
+            target_scheme: parse_target_scheme()?,
             http_host: env_or_default("VPNNODE_BASELINE_REMOTE_HTTP_HOST", "example"),
             expected_ready_status: parse_env_or_default(
                 "VPNNODE_BASELINE_REMOTE_EXPECT_READY_STATUS",
@@ -293,4 +295,15 @@ fn reject_loopback(name: &str, value: &str) -> Result<()> {
         bail!("{name} must point to a real remote node, not loopback: {value}");
     }
     Ok(())
+}
+
+fn parse_target_scheme() -> Result<String> {
+    let scheme = env_or_default("VPNNODE_BASELINE_REMOTE_TARGET_SCHEME", "http");
+    if scheme.eq_ignore_ascii_case("http") {
+        Ok("http".to_string())
+    } else {
+        bail!(
+            "VPNNODE_BASELINE_REMOTE_TARGET_SCHEME={scheme:?} is not supported in remote baseline mode; use a plain HTTP target for the current smoke harness"
+        );
+    }
 }

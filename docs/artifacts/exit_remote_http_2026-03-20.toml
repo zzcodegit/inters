@@ -1,0 +1,10 @@
+role = "exit"
+bind_ip = "0.0.0.0"
+bind_port = 30000
+
+# Remote target HTTP service (runs on the same server for the public-node smoke).
+exit_target_addr = "127.0.0.1:8080"
+
+ants_enabled = false
+drain_timeout_sec = 20
+health_enabled = true

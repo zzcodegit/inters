@@ -15,9 +15,10 @@ async fn remote_http_smoke_requires_usable_path() -> anyhow::Result<()> {
     let request = support::http_get_request(&config.http_host);
 
     eprintln!(
-        "baseline_mode=remote local_listen={} route_length={} expected_status={} route_chain={}",
+        "baseline_mode=remote local_listen={} route_length={} target_scheme={} expected_status={} route_chain={}",
         config.local_listen,
         config.route_length,
+        config.target_scheme,
         config.expected_ready_status,
         config.route_chain()
     );
