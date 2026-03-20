@@ -80,7 +80,11 @@ pub fn prepare_baseline(mode: BaselineMode) {
 }
 
 pub fn http_get_request(host: &str) -> Vec<u8> {
-    format!("GET / HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n").into_bytes()
+    http_get_request_path(host, "/")
+}
+
+pub fn http_get_request_path(host: &str, path: &str) -> Vec<u8> {
+    format!("GET {path} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n").into_bytes()
 }
 
 pub fn spawn_local_stack(spec: &LocalBaselineSpec<'_>) {
@@ -177,10 +181,14 @@ pub fn local_client_args(spec: &LocalBaselineSpec<'_>) -> ClientConfigCli {
 }
 
 pub fn spawn_remote_client(config: &RemoteBaselineConfig) {
+    let _ = spawn_remote_client_task(config);
+}
+
+pub fn spawn_remote_client_task(config: &RemoteBaselineConfig) -> tokio::task::JoinHandle<()> {
     let client_args = config.client_args();
     tokio::spawn(async move {
         let _ = vpnnode::roles::client::run_client(client_args).await;
-    });
+    })
 }
 
 impl RemoteBaselineConfig {

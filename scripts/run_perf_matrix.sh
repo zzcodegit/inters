@@ -1,0 +1,59 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+export PATH="$HOME/.cargo/bin:$PATH"
+export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-/tmp/vpnnode-target}"
+export CARGO_TERM_COLOR=never
+if [[ -n "${MSYS2_ENV_CONV_EXCL:-}" ]]; then
+  export MSYS2_ENV_CONV_EXCL="${MSYS2_ENV_CONV_EXCL};VPNNODE_PERF_REQUEST_PATH;VPNNODE_PERF_RAW_PATH;VPNNODE_PERF_REPORT_PATH;VPNNODE_PERF_SETUP_CMD;VPNNODE_BASELINE_REMOTE_RESET_CMD"
+else
+  export MSYS2_ENV_CONV_EXCL="VPNNODE_PERF_REQUEST_PATH;VPNNODE_PERF_RAW_PATH;VPNNODE_PERF_REPORT_PATH;VPNNODE_PERF_SETUP_CMD;VPNNODE_BASELINE_REMOTE_RESET_CMD"
+fi
+export VPNNODE_BASELINE_MODE=remote
+export RUST_LOG="${RUST_LOG:-vpnnode=info,vpnnode::roles::client=debug,vpnnode::roles::relay=debug,vpnnode::roles::exit=debug}"
+
+: "${VPNNODE_BASELINE_REMOTE_EXIT_ADDR:?set VPNNODE_BASELINE_REMOTE_EXIT_ADDR (for example 31.192.232.26:30000)}"
+: "${VPNNODE_BASELINE_REMOTE_RELAY1_ADDR:?set VPNNODE_BASELINE_REMOTE_RELAY1_ADDR (for example 45.197.133.115:30001)}"
+: "${VPNNODE_BASELINE_REMOTE_RELAY2_ADDR:?set VPNNODE_BASELINE_REMOTE_RELAY2_ADDR (for example 185.144.28.95:30002)}"
+: "${VPNNODE_PERF_DIRECT_ADDR:?set VPNNODE_PERF_DIRECT_ADDR (for example 31.192.232.26:18080)}"
+
+export VPNNODE_BASELINE_REMOTE_TARGET_SCHEME="${VPNNODE_BASELINE_REMOTE_TARGET_SCHEME:-http}"
+export VPNNODE_BASELINE_REMOTE_EXPECT_READY_STATUS="${VPNNODE_BASELINE_REMOTE_EXPECT_READY_STATUS:-200}"
+export VPNNODE_BASELINE_REMOTE_HTTP_HOST="${VPNNODE_BASELINE_REMOTE_HTTP_HOST:-example}"
+export VPNNODE_BASELINE_REMOTE_EXACT_ROUTE_ONLY="${VPNNODE_BASELINE_REMOTE_EXACT_ROUTE_ONLY:-true}"
+export VPNNODE_BASELINE_REMOTE_READY_TIMEOUT_SECS="${VPNNODE_BASELINE_REMOTE_READY_TIMEOUT_SECS:-90}"
+export VPNNODE_BASELINE_REMOTE_PROBE_ATTEMPT_TIMEOUT_SECS="${VPNNODE_BASELINE_REMOTE_PROBE_ATTEMPT_TIMEOUT_SECS:-45}"
+export VPNNODE_BASELINE_REMOTE_RESET_CMD="${VPNNODE_BASELINE_REMOTE_RESET_CMD:-}"
+
+export VPNNODE_PERF_SETUP_CMD="${VPNNODE_PERF_SETUP_CMD:-powershell.exe -ExecutionPolicy Bypass -File scripts/setup_perf_target_public.ps1}"
+export VPNNODE_PERF_REQUEST_PATH="${VPNNODE_PERF_REQUEST_PATH:-/perf-262144.bin}"
+export VPNNODE_PERF_RUNS="${VPNNODE_PERF_RUNS:-5}"
+export VPNNODE_PERF_RAW_PATH="${VPNNODE_PERF_RAW_PATH:-docs/artifacts/remote_perf_matrix_2026-03-21.jsonl}"
+export VPNNODE_PERF_REPORT_PATH="${VPNNODE_PERF_REPORT_PATH:-docs/artifacts/remote_perf_matrix_2026-03-21.md}"
+
+cd "$(dirname "$0")/.."
+
+rm -f "${VPNNODE_PERF_RAW_PATH}" "${VPNNODE_PERF_REPORT_PATH}" \
+  route_cache_perf_1hop.json route_cache_perf_2hop.json route_cache_perf_3hop.json
+
+echo "=== remote perf matrix ==="
+echo "direct=${VPNNODE_PERF_DIRECT_ADDR}"
+echo "relay1=${VPNNODE_BASELINE_REMOTE_RELAY1_ADDR}"
+echo "relay2=${VPNNODE_BASELINE_REMOTE_RELAY2_ADDR}"
+echo "exit=${VPNNODE_BASELINE_REMOTE_EXIT_ADDR}"
+echo "request_path=${VPNNODE_PERF_REQUEST_PATH}"
+echo "runs=${VPNNODE_PERF_RUNS}"
+echo "setup_cmd=${VPNNODE_PERF_SETUP_CMD}"
+if [[ -n "${VPNNODE_BASELINE_REMOTE_RESET_CMD}" ]]; then
+  echo "reset_cmd=${VPNNODE_BASELINE_REMOTE_RESET_CMD}"
+else
+  echo "reset_cmd=<none>"
+fi
+
+if [[ -n "${VPNNODE_PERF_SETUP_CMD}" ]]; then
+  echo "=== perf target setup start $(date -Iseconds) ==="
+  eval "${VPNNODE_PERF_SETUP_CMD}"
+  echo "=== perf target setup end $(date -Iseconds) ==="
+fi
+
+cargo test --test remote_perf remote_perf_matrix_collects_measurements -- --test-threads=1 --nocapture
