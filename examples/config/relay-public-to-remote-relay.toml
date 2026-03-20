@@ -1,0 +1,14 @@
+role = "relay"
+bind_ip = "192.168.88.52"
+bind_port = 30000
+
+# For relay: peers[0] is the next hop.
+# Here we forward to the remote relay.
+peers = [
+  { ip = "155.212.135.95", port = 30001, protocol = "Udp" },
+]
+
+ants_enabled = false
+drain_timeout_sec = 20
+health_enabled = true
+

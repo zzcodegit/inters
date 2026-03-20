@@ -1,0 +1,42 @@
+/target/
+/.vs/
+/run-local-logs/
+
+# Local infrastructure inventory
+/scripts/hosts.env
+
+# Local/temporary analysis artifacts
+/_tmp_old_client.rs
+/src/src.zip
+/baseline_*.log
+/baseline_*.txt
+/baseline_*.diff
+/baseline_acceptance_artifacts.md
+/baseline_verbatim_files.txt
+
+# Runtime caches and validation outputs
+/route_cache*.json
+/results*.csv
+/summary*.csv
+/artifacts_usa.log
+/client-err.txt
+/client-out.txt
+/client_run.log
+/client_run_err.log
+/exit_journal*.txt
+/ps_out_test.txt
+/ps_out_test_err.txt
+/run_usa_validation.log
+/t1.out
+/t1.err
+/t2.err
+/t3.err
+/validation_*.log
+/wan_client.log
+# Root-level ad-hoc command outputs
+/*.out
+/*.err
+
+# OS/editor noise
+/.DS_Store
+/Thumbs.db

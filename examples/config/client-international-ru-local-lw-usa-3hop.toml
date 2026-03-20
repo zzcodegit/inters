@@ -1,0 +1,28 @@
+role = "client"
+bind_ip = "0.0.0.0"
+bind_port = 30003
+
+# Local TCP listener (operators/curl connect here)
+client_local_listen = "127.0.0.1:10080"
+
+# Route: client (RU local) -> relay1 (London) -> relay2 (Warsaw) -> exit (USA)
+route_length = 3
+peers = [
+  { ip = "45.197.133.115", port = 30001, protocol = "Udp" }, # London relay1
+  { ip = "185.144.28.95", port = 30002, protocol = "Udp" },  # Warsaw relay2
+  { ip = "31.192.232.26", port = 30000, protocol = "Udp" },   # USA exit
+]
+
+ants_enabled = false
+drain_timeout_sec = 20
+health_enabled = true
+
+# Stage 9.1 minimal discovery (optional, control-plane only)
+# Discovery is best-effort and conservative: it only caches supplemental
+# candidate node advertisements locally; it does NOT auto-rewrite routes/config.
+#
+# discovery_enabled = false
+# discovery_query_on_start = false
+# discovery_max_entries = 256
+# discovery_advertise_ttl_sec = 300
+

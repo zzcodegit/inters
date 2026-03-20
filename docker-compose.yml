@@ -1,0 +1,56 @@
+services:
+  target:
+    build: .
+    image: vpnnode:dev
+    environment:
+      - RUST_LOG=debug
+    command: ["target", "--listen", "0.0.0.0:8080"]
+
+  exit:
+    image: vpnnode:dev
+    depends_on:
+      - target
+    environment:
+      - RUST_LOG=debug
+    command: ["exit", "--listen", "0.0.0.0:30001", "--target-addr", "target:8080"]
+
+  relay:
+    image: vpnnode:dev
+    depends_on:
+      - exit
+    environment:
+      - RUST_LOG=debug
+    command: ["relay", "--listen", "0.0.0.0:30000", "--exit-addr", "exit:30001"]
+
+  client:
+    image: vpnnode:dev
+    depends_on:
+      - relay
+    ports:
+      - "10080:10080"
+    environment:
+      - RUST_LOG=debug
+    command: ["client", "--local-listen", "0.0.0.0:10080", "--relay-addr", "relay:30000"]
+
+  # Test from inside Docker network (client is reachable as client:10080)
+  test-curl:
+    image: vpnnode:dev
+    entrypoint: ["/bin/sh", "-c"]
+    depends_on:
+      - client
+    command: ["sleep 5 && curl -v -m 15 http://client:10080/ || true"]
+
+  tests:
+    image: rust:latest
+    working_dir: /app
+    volumes:
+      - .:/app
+    depends_on:
+      - target
+      - exit
+      - relay
+      - client
+    environment:
+      - RUST_LOG=error
+    command: ["cargo", "test", "--test", "integration", "large_http_transfer", "--", "--nocapture"]
+

@@ -1,0 +1,18 @@
+role = "client"
+bind_ip = "0.0.0.0"
+bind_port = 30002
+
+client_local_listen = "127.0.0.1:10080"
+
+# Route: client -> relay(local) -> relay(remote) -> exit(remote)
+route_length = 3
+peers = [
+  { ip = "192.168.88.52", port = 30000, protocol = "Udp" },
+  { ip = "155.212.135.95", port = 30001, protocol = "Udp" },
+  { ip = "155.212.143.112", port = 30000, protocol = "Udp" },
+]
+
+ants_enabled = false
+drain_timeout_sec = 20
+health_enabled = true
+

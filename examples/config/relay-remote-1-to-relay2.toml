@@ -1,0 +1,25 @@
+role = "relay"
+bind_ip = "0.0.0.0"
+bind_port = 30001
+
+# peers[0] is the next hop (relay #2).
+peers = [
+  { ip = "185.144.28.95", port = 30002, protocol = "Udp" }, # Warsaw relay2
+]
+
+ants_enabled = false
+drain_timeout_sec = 20
+health_enabled = true
+
+# Stage 9.1 minimal discovery (optional, control-plane only)
+# Discovery is best-effort and conservative: it only caches supplemental
+# candidate node advertisements locally; it does NOT auto-rewrite routes/config.
+#
+# discovery_enabled = true
+# discovery_query_on_start = true   # optional; asks bootstrap peers for known nodes
+# discovery_max_entries = 256       # bounded local cache size
+# discovery_advertise_ttl_sec = 300 # how long accepted advertisements remain fresh (seconds)
+#
+# Bootstrap peers for discovery are taken from existing `peers[]` as UDP targets.
+# Relays are blind forwarders and do not answer discovery requests today.
+

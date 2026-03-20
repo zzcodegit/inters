@@ -1,0 +1,30 @@
+role = "client"
+bind_ip = "0.0.0.0"
+bind_port = 30002
+
+# Local TCP listener (operators/curl connect here)
+client_local_listen = "127.0.0.1:10080"
+
+# Route: client -> relay(local) -> exit(remote)
+route_length = 2
+peers = [
+  { ip = "192.168.88.52", port = 30000, protocol = "Udp" },
+  { ip = "155.212.143.112", port = 30000, protocol = "Udp" },
+]
+
+ants_enabled = false
+drain_timeout_sec = 20
+health_enabled = true
+
+# Stage 9.1 minimal discovery (optional, control-plane only)
+# Discovery is best-effort and conservative: it only caches supplemental
+# candidate node advertisements locally; it does NOT auto-rewrite routes/config.
+#
+# discovery_enabled = true
+# discovery_query_on_start = true   # optional; asks bootstrap peers for known nodes
+# discovery_max_entries = 256       # bounded local cache size
+# discovery_advertise_ttl_sec = 300 # how long accepted advertisements remain fresh (seconds)
+#
+# Bootstrap peers for discovery are taken from existing `peers[]` as UDP targets.
+# Relays are blind forwarders; exit nodes are the primary responders for discovery.
+

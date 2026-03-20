@@ -1,0 +1,16 @@
+[Unit]
+Description=vpnnode relay #1 node
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/opt/vpnnode/bin/vpnnode run --config /etc/vpnnode/relay1.toml
+WorkingDirectory=/opt/vpnnode
+Restart=on-failure
+RestartSec=5
+Environment=RUST_LOG=info
+
+[Install]
+WantedBy=multi-user.target
+

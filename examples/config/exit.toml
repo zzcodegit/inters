@@ -1,0 +1,12 @@
+role = "exit"
+bind_ip = "0.0.0.0"
+bind_port = 30001
+
+# TCP target service address (exit connects here).
+exit_target_addr = "127.0.0.1:8080"
+
+ants_enabled = false
+
+# Foundation only (not enforced yet):
+# exit_target_allowlist = ["127.0.0.1:8080"]
+

@@ -1,0 +1,19 @@
+role = "client"
+bind_ip = "0.0.0.0"
+bind_port = 0
+
+# Local TCP listener (operators/curl connect here)
+client_local_listen = "0.0.0.0:10080"
+
+# Ordered hop seed for manual deployments (UDP-only in this stage).
+# For route_length=2: [relay, exit]
+# For route_length=3: [relay1, relay2, exit]
+route_length = 2
+peers = [
+  { ip = "127.0.0.1", port = 30000, protocol = "Udp" },
+  { ip = "127.0.0.1", port = 30001, protocol = "Udp" },
+]
+
+# Optional: enable measurement ants (Stage 7). Default false.
+ants_enabled = false
+

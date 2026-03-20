@@ -1,0 +1,11 @@
+role = "relay"
+bind_ip = "0.0.0.0"
+bind_port = 30000
+
+# For relay: peers[0] is the exit UDP address.
+peers = [
+  { ip = "127.0.0.1", port = 30001, protocol = "Udp" },
+]
+
+ants_enabled = false
+

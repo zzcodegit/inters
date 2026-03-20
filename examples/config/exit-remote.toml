@@ -1,0 +1,11 @@
+role = "exit"
+bind_ip = "0.0.0.0"
+bind_port = 30000
+
+# Internet target (exit connects here).
+exit_target_addr = "example.com:80"
+
+ants_enabled = false
+drain_timeout_sec = 20
+health_enabled = true
+

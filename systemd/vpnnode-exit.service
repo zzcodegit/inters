@@ -1,0 +1,16 @@
+[Unit]
+Description=vpnnode exit node
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/opt/vpnnode/bin/vpnnode run --config /etc/vpnnode/exit.toml
+WorkingDirectory=/opt/vpnnode
+Restart=on-failure
+RestartSec=5
+Environment=RUST_LOG=info
+
+[Install]
+WantedBy=multi-user.target
+
