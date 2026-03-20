@@ -44,10 +44,13 @@ pub struct RemoteBaselineConfig {
     pub relay2_addr: Option<String>,
     pub exit_addr: String,
     pub route_length: u8,
+    pub exact_route_only: bool,
     pub route_cache_path: String,
     pub target_scheme: String,
     pub http_host: String,
     pub expected_ready_status: u16,
+    pub ready_timeout_secs: u64,
+    pub probe_attempt_timeout_secs: u64,
 }
 
 pub fn init_tracing() {
@@ -215,6 +218,10 @@ impl RemoteBaselineConfig {
             relay2_addr,
             exit_addr,
             route_length,
+            exact_route_only: parse_env_or_default(
+                "VPNNODE_BASELINE_REMOTE_EXACT_ROUTE_ONLY",
+                true,
+            )?,
             route_cache_path: env_or_default(
                 "VPNNODE_BASELINE_REMOTE_ROUTE_CACHE_PATH",
                 "route_cache_remote_baseline.json",
@@ -225,6 +232,55 @@ impl RemoteBaselineConfig {
                 "VPNNODE_BASELINE_REMOTE_EXPECT_READY_STATUS",
                 200_u16,
             )?,
+            ready_timeout_secs: parse_env_or_default(
+                "VPNNODE_BASELINE_REMOTE_READY_TIMEOUT_SECS",
+                90_u64,
+            )?,
+            probe_attempt_timeout_secs: parse_env_or_default(
+                "VPNNODE_BASELINE_REMOTE_PROBE_ATTEMPT_TIMEOUT_SECS",
+                45_u64,
+            )?,
+        })
+    }
+
+    pub fn for_scenario(
+        &self,
+        route_length: u8,
+        local_listen: SocketAddr,
+        route_cache_path: impl Into<String>,
+        http_host: impl Into<String>,
+    ) -> Result<Self> {
+        if !(1..=3).contains(&route_length) {
+            bail!("remote scenario route length must be 1, 2, or 3; got {route_length}");
+        }
+        if route_length >= 2 && self.relay1_addr == "127.0.0.1:1" {
+            bail!("relay1 is required for remote route length {route_length}");
+        }
+        if route_length >= 3 && self.relay2_addr.is_none() {
+            bail!("relay2 is required for remote route length 3");
+        }
+
+        Ok(Self {
+            local_listen,
+            relay1_addr: if route_length >= 2 {
+                self.relay1_addr.clone()
+            } else {
+                "127.0.0.1:1".to_string()
+            },
+            relay2_addr: if route_length >= 3 {
+                self.relay2_addr.clone()
+            } else {
+                None
+            },
+            exit_addr: self.exit_addr.clone(),
+            route_length,
+            exact_route_only: self.exact_route_only,
+            route_cache_path: route_cache_path.into(),
+            target_scheme: self.target_scheme.clone(),
+            http_host: http_host.into(),
+            expected_ready_status: self.expected_ready_status,
+            ready_timeout_secs: self.ready_timeout_secs,
+            probe_attempt_timeout_secs: self.probe_attempt_timeout_secs,
         })
     }
 
@@ -232,10 +288,19 @@ impl RemoteBaselineConfig {
         ClientConfigCli {
             local_listen: self.local_listen,
             mode: "tcp".to_string(),
-            relay_addr: self.relay1_addr.clone(),
+            relay_addr: if self.route_length == 1 {
+                "127.0.0.1:1".to_string()
+            } else {
+                self.relay1_addr.clone()
+            },
             exit_addr: self.exit_addr.clone(),
             route_length: self.route_length,
-            relay2_addr: self.relay2_addr.clone(),
+            relay2_addr: if self.route_length >= 3 {
+                self.relay2_addr.clone()
+            } else {
+                None
+            },
+            exact_route_only: self.exact_route_only,
             client_key_path: "client.key".to_string(),
             relay_pubkey_path: "relay.pub".to_string(),
             route_cache_path: self.route_cache_path.clone(),

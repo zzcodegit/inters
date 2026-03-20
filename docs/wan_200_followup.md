@@ -40,3 +40,46 @@ That means:
 - original fail: `docs/artifacts/remote_wan_smoke_2026-03-20.log`
 - pass run: `docs/artifacts/remote_wan_smoke_2026-03-20_pass.log`
 - config/evidence snapshot: `docs/artifacts/wan_2026-03-20_pass_evidence.md`
+- expanded matrix: `docs/artifacts/remote_wan_matrix_2026-03-20.log`
+- expanded matrix evidence: `docs/artifacts/wan_matrix_2026-03-20_evidence.md`
+
+## What the expanded 1-hop/2-hop/3-hop matrix exposed
+
+Once the exit target mismatch was fixed, the next honest remote check was a sequential WAN matrix over the same shared public nodes.
+
+That matrix exposed a second issue: relay/exit still behave as effectively single-session processes.
+
+In particular, `src/roles/exit.rs` stores one shared reverse-path peer and route:
+
+- one `session_crypto`
+- one `session_route`
+- one `session_peer`
+
+That is enough for a single smoke path, but not enough for back-to-back WAN scenarios that change hop-count. After a successful 1-hop run, a later 2-hop run can still reach the exit and produce `HTTP 200`, yet the reverse traffic can be addressed using stale peer/route state from the previous session.
+
+Operationally, that produced this pattern:
+
+- client handshake succeeds
+- exit receives request bytes and logs `http_code=200`
+- client eventually times out with `504`
+
+This was not another fake acceptance problem. It was a real dataplane limitation on the shared public topology.
+
+## Current honest mitigation
+
+The remote runner now supports an explicit topology reset hook before each scenario:
+
+- `VPNNODE_BASELINE_REMOTE_RESET_CMD`
+- example implementation: `scripts/reset_remote_topology.ps1`
+
+The reset restarts `vpnnode-relay1.service`, `vpnnode-relay2.service`, and `vpnnode-exit.service` before each scenario. That clears stale single-session state and allows the same real WAN topology to pass 1-hop, 2-hop, and 3-hop verification as three independent remote scenarios.
+
+This is an operational workaround, not a claim that the runtime is already multi-session safe.
+
+The committed pass artifacts for that matrix are:
+
+- `docs/artifacts/remote_wan_matrix_2026-03-20.log`
+- `docs/artifacts/wan_matrix_2026-03-20_evidence.md`
+- `docs/artifacts/relay1_remote_matrix_2026-03-20.log`
+- `docs/artifacts/relay2_remote_matrix_2026-03-20.log`
+- `docs/artifacts/exit_remote_matrix_2026-03-20.log`

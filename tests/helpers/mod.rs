@@ -16,6 +16,27 @@ const DEFAULT_HTTP_READY_STATUSES: &[u16] = &[200];
 const DEFAULT_READY_RETRY_DELAY: Duration = Duration::from_millis(100);
 const DEFAULT_HTTP_PROBE_RETRY_DELAY: Duration = Duration::from_millis(250);
 
+#[derive(Debug, Clone, Copy)]
+pub struct HttpProbeOptions {
+    pub ready_timeout: Duration,
+    pub connect_timeout: Duration,
+    pub probe_io_timeout: Duration,
+    pub probe_attempt_timeout: Duration,
+    pub retry_delay: Duration,
+}
+
+impl Default for HttpProbeOptions {
+    fn default() -> Self {
+        Self {
+            ready_timeout: DEFAULT_READY_TIMEOUT,
+            connect_timeout: DEFAULT_CONNECT_TIMEOUT,
+            probe_io_timeout: DEFAULT_PROBE_IO_TIMEOUT,
+            probe_attempt_timeout: DEFAULT_PROBE_ATTEMPT_TIMEOUT,
+            retry_delay: DEFAULT_HTTP_PROBE_RETRY_DELAY,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct HttpProbeResult {
     pub response: Vec<u8>,
@@ -72,11 +93,26 @@ pub async fn wait_http_status_with_request(
     request: &[u8],
     accepted_statuses: &[u16],
 ) -> Result<HttpProbeResult> {
+    wait_http_status_with_request_options(
+        addr,
+        request,
+        accepted_statuses,
+        HttpProbeOptions::default(),
+    )
+    .await
+}
+
+pub async fn wait_http_status_with_request_options(
+    addr: SocketAddr,
+    request: &[u8],
+    accepted_statuses: &[u16],
+    options: HttpProbeOptions,
+) -> Result<HttpProbeResult> {
     let start = tokio::time::Instant::now();
     let mut last_status = None;
 
     loop {
-        if start.elapsed() >= DEFAULT_READY_TIMEOUT {
+        if start.elapsed() >= options.ready_timeout {
             let accepted = accepted_statuses
                 .iter()
                 .map(u16::to_string)
@@ -92,17 +128,17 @@ pub async fn wait_http_status_with_request(
             }
         }
 
-        match probe_http(addr, request).await {
+        match probe_http_with_options(addr, request, options).await {
             Ok(result) => {
                 last_status = Some(result.status_code);
                 if accepted_statuses.contains(&result.status_code) {
                     return Ok(result);
                 }
-                tokio::time::sleep(DEFAULT_HTTP_PROBE_RETRY_DELAY).await;
+                tokio::time::sleep(options.retry_delay).await;
             }
             _ => {
                 // ignore and retry until the global deadline
-                tokio::time::sleep(DEFAULT_HTTP_PROBE_RETRY_DELAY).await;
+                tokio::time::sleep(options.retry_delay).await;
             }
         }
     }
@@ -110,14 +146,22 @@ pub async fn wait_http_status_with_request(
 
 /// Perform a single HTTP probe and return the raw response plus parsed status.
 pub async fn probe_http(addr: SocketAddr, request: &[u8]) -> Result<HttpProbeResult> {
+    probe_http_with_options(addr, request, HttpProbeOptions::default()).await
+}
+
+pub async fn probe_http_with_options(
+    addr: SocketAddr,
+    request: &[u8],
+    options: HttpProbeOptions,
+) -> Result<HttpProbeResult> {
     let attempt = async {
-        let stream = timeout(DEFAULT_CONNECT_TIMEOUT, TcpStream::connect(addr))
+        let stream = timeout(options.connect_timeout, TcpStream::connect(addr))
             .await
             .map_err(|e| anyhow!("connect timeout/err: {e}"))??;
 
         let mut stream = stream;
         let resp = timeout(
-            DEFAULT_PROBE_IO_TIMEOUT,
+            options.probe_io_timeout,
             async {
                 stream.write_all(request).await?;
                 stream.flush().await?;
@@ -132,7 +176,7 @@ pub async fn probe_http(addr: SocketAddr, request: &[u8]) -> Result<HttpProbeRes
         Ok::<Vec<u8>, anyhow::Error>(resp)
     };
 
-    let resp = timeout(DEFAULT_PROBE_ATTEMPT_TIMEOUT, attempt)
+    let resp = timeout(options.probe_attempt_timeout, attempt)
         .await
         .map_err(|e| anyhow!("probe attempt timeout/err: {e}"))??;
     let status_code = extract_http_status_code(&resp)

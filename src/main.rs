@@ -118,6 +118,7 @@ async fn run_from_config(path: &PathBuf, drain: bool) -> anyhow::Result<()> {
                 exit_addr: exit.map(|a| a.to_string()).unwrap_or_else(|| "127.0.0.1:30001".to_string()),
                 route_length: cfg.route_length,
                 relay2_addr: cfg.peers.get(1).and_then(|n| n.as_socket_addr()).map(|a| a.to_string()),
+                exact_route_only: false,
                 client_key_path: "client.key".to_string(),
                 relay_pubkey_path: "relay.pub".to_string(),
                 route_cache_path: "route_cache.json".to_string(),

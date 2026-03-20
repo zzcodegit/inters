@@ -31,6 +31,10 @@ pub struct ClientConfigCli {
     /// Stage 5: second relay (for route-length 3). E.g. 127.0.0.1:30002
     #[arg(long)]
     pub relay2_addr: Option<String>,
+    /// When true, use only the configured route length and disable adaptive
+    /// shorter-route fallback candidates.
+    #[arg(long, default_value_t = false)]
+    pub exact_route_only: bool,
     /// Path to client static private key (x25519)
     #[arg(long, default_value = "client.key")]
     pub client_key_path: String,
@@ -140,6 +144,7 @@ impl Default for ClientConfigCli {
             exit_addr: "127.0.0.1:30001".to_string(),
             route_length: 2,
             relay2_addr: None,
+            exact_route_only: false,
             client_key_path: "client.key".to_string(),
             relay_pubkey_path: "relay.pub".to_string(),
             route_cache_path: "route_cache.json".to_string(),

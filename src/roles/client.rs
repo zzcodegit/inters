@@ -170,6 +170,9 @@ async fn build_route(args: &ClientArgs) -> Result<Route> {
 /// also register shorter alternatives for adaptive selection/fallback.
 async fn build_initial_routes(args: &ClientArgs) -> Result<(Route, Vec<Route>)> {
     let primary = build_route(args).await?;
+    if args.exact_route_only {
+        return Ok((primary.clone(), vec![primary]));
+    }
     let max_len = primary.len().max(args.route_length as usize);
 
     // Resolve exit/relay/relay2 once to avoid repeated DNS work.
