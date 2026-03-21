@@ -1,0 +1,99 @@
+﻿=== remote baseline matrix ===
+mode=remote
+relay1=45.197.133.115:30001
+relay2=185.144.28.95:30002
+exit=31.192.232.26:30000
+target_scheme=http
+expected_status=200
+exact_route_only=true
+ready_timeout_secs=90
+probe_attempt_timeout_secs=45
+reset_cmd=powershell.exe -ExecutionPolicy Bypass -File scripts/reset_remote_topology.ps1
+scenarios=remote_http_1hop_returns_200,remote_http_2hop_returns_200,remote_http_3hop_returns_200
+=== scenario remote_http_1hop_returns_200 start 2026-03-22T00:13:20+03:00 ===
+=== scenario remote_http_1hop_returns_200 reset-start 2026-03-22T00:13:20+03:00 ===
+reset_topology label=relay-1 host=45.197.133.115 services=vpnnode-relay1.service
+active
+reset_topology label=relay-2 host=185.144.28.95 services=vpnnode-relay2.service
+active
+reset_topology label=exit host=31.192.232.26 services=vpnnode-exit.service
+active
+check_service label=exit-target-http host=31.192.232.26 service=vpnnode-target-http.service
+active
+=== scenario remote_http_1hop_returns_200 reset-end 2026-03-22T00:18:02+03:00 ===
+bash.exe :    Compiling vpnnode v0.1.0 (C:\neinternet\vpnnode)
+At line:2 char:1997
++ ... _stability.md'; & $bash 'scripts/run_baseline_remote.sh' 2>&1 | Out-F ...
++                     ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (   Compiling vp...ternet\vpnnode):String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 6.81s
+     Running tests\remote_baseline.rs (C:/Users/zekin/AppData/Local/Temp/vpnnode-target\debug\deps\remote_baseline-5879
+b8b4a197b6ef.exe)
+
+running 1 test
+remote_scenario=1hop local_listen=127.0.0.1:19081 route_length=1 exact_route_only=true target_scheme=http expected_stat
+us=200 ready_timeout_secs=90 probe_attempt_timeout_secs=45 route_chain=client -> 31.192.232.26:30000 -> target http_hos
+t=remote-1hop
+remote_scenario=1hop observed_status=200 response_bytes=188 duration_ms=8788 route_chain=client -> 31.192.232.26:30000 
+-> target http_host=remote-1hop
+test remote_http_1hop_returns_200 ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 2 filtered out; finished in 8.80s
+
+=== scenario remote_http_1hop_returns_200 end 2026-03-22T00:18:19+03:00 ===
+=== scenario remote_http_2hop_returns_200 start 2026-03-22T00:18:19+03:00 ===
+=== scenario remote_http_2hop_returns_200 reset-start 2026-03-22T00:18:19+03:00 ===
+reset_topology label=relay-1 host=45.197.133.115 services=vpnnode-relay1.service
+active
+reset_topology label=relay-2 host=185.144.28.95 services=vpnnode-relay2.service
+active
+reset_topology label=exit host=31.192.232.26 services=vpnnode-exit.service
+active
+check_service label=exit-target-http host=31.192.232.26 service=vpnnode-target-http.service
+active
+=== scenario remote_http_2hop_returns_200 reset-end 2026-03-22T00:23:02+03:00 ===
+   Compiling vpnnode v0.1.0 (C:\neinternet\vpnnode)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 6.46s
+     Running tests\remote_baseline.rs (C:/Users/zekin/AppData/Local/Temp/vpnnode-target\debug\deps\remote_baseline-5879
+b8b4a197b6ef.exe)
+
+running 1 test
+remote_scenario=2hop local_listen=127.0.0.1:19082 route_length=2 exact_route_only=true target_scheme=http expected_stat
+us=200 ready_timeout_secs=90 probe_attempt_timeout_secs=45 route_chain=client -> 45.197.133.115:30001 -> 31.192.232.26:
+30000 -> target http_host=remote-2hop
+remote_scenario=2hop observed_status=200 response_bytes=188 duration_ms=1202 route_chain=client -> 45.197.133.115:30001
+ -> 31.192.232.26:30000 -> target http_host=remote-2hop
+test remote_http_2hop_returns_200 ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 2 filtered out; finished in 1.21s
+
+=== scenario remote_http_2hop_returns_200 end 2026-03-22T00:23:10+03:00 ===
+=== scenario remote_http_3hop_returns_200 start 2026-03-22T00:23:10+03:00 ===
+=== scenario remote_http_3hop_returns_200 reset-start 2026-03-22T00:23:10+03:00 ===
+reset_topology label=relay-1 host=45.197.133.115 services=vpnnode-relay1.service
+active
+reset_topology label=relay-2 host=185.144.28.95 services=vpnnode-relay2.service
+active
+reset_topology label=exit host=31.192.232.26 services=vpnnode-exit.service
+active
+check_service label=exit-target-http host=31.192.232.26 service=vpnnode-target-http.service
+active
+=== scenario remote_http_3hop_returns_200 reset-end 2026-03-22T00:26:42+03:00 ===
+   Compiling vpnnode v0.1.0 (C:\neinternet\vpnnode)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 6.52s
+     Running tests\remote_baseline.rs (C:/Users/zekin/AppData/Local/Temp/vpnnode-target\debug\deps\remote_baseline-5879
+b8b4a197b6ef.exe)
+
+running 1 test
+remote_scenario=3hop local_listen=127.0.0.1:19083 route_length=3 exact_route_only=true target_scheme=http expected_stat
+us=200 ready_timeout_secs=90 probe_attempt_timeout_secs=45 route_chain=client -> 45.197.133.115:30001 -> 185.144.28.95:
+30002 -> 31.192.232.26:30000 -> target http_host=remote-3hop
+remote_scenario=3hop observed_status=200 response_bytes=188 duration_ms=7055 route_chain=client -> 45.197.133.115:30001
+ -> 185.144.28.95:30002 -> 31.192.232.26:30000 -> target http_host=remote-3hop
+test remote_http_3hop_returns_200 ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 2 filtered out; finished in 7.06s
+
+=== scenario remote_http_3hop_returns_200 end 2026-03-22T00:26:56+03:00 ===

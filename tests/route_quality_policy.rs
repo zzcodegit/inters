@@ -22,6 +22,12 @@ struct CandidateArtifact {
     transport_agg: f32,
     quality_agg: f32,
     hop_factor: f32,
+    quality_confidence: f32,
+    warmup_confidence: f32,
+    instability_factor: f32,
+    metric_instability_ppm: Option<u32>,
+    flap_penalty_factor: f32,
+    recent_flap_count: u64,
     recent_ttfb_ms: Option<u64>,
     recent_total_ms: Option<u64>,
     recent_ack_p95_ms: Option<u64>,
@@ -140,6 +146,12 @@ fn capture_phase(
             transport_agg: details.transport_agg,
             quality_agg: details.quality_agg,
             hop_factor: details.hop_factor,
+            quality_confidence: details.quality_confidence,
+            warmup_confidence: details.warmup_confidence,
+            instability_factor: details.instability_factor,
+            metric_instability_ppm: details.metric_instability_ppm,
+            flap_penalty_factor: details.flap_penalty_factor,
+            recent_flap_count: details.recent_flap_count,
             recent_ttfb_ms: details.recent_ttfb_ms,
             recent_total_ms: details.recent_total_ms,
             recent_ack_p95_ms: details.recent_ack_p95_ms,
@@ -201,20 +213,28 @@ fn render_report(policy: RouteSelectionPolicy, phases: &[PhaseArtifact]) -> Stri
                 .map(|value| value.to_string())
                 .unwrap_or_else(|| "-".to_string())
         ));
-        markdown.push_str("| route | hops | score | base | transport | quality | hop factor | TTFB ms | total ms | ACK p95 ms | retrans ppm | stall ppm |\n");
+        markdown.push_str("| route | hops | score | base | transport | quality | q conf | warmup | instability ppm / factor | flap penalty | flap count | TTFB ms | total ms | ACK p95 ms | retrans ppm | stall ppm |\n");
         markdown.push_str(
-            "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |\n",
+            "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |\n",
         );
         for candidate in &phase.candidates {
             markdown.push_str(&format!(
-                "| {} | {} | {:.4} | {:.4} | {:.4} | {:.4} | {:.4} | {} | {} | {} | {} | {} |\n",
+                "| {} | {} | {:.4} | {:.4} | {:.4} | {:.4} | {:.3} | {:.3} | {} / {:.3} | {:.3} | {} | {} | {} | {} | {} | {} |\n",
                 candidate.route_id,
                 candidate.route_len,
                 candidate.final_score,
                 candidate.base,
                 candidate.transport_agg,
                 candidate.quality_agg,
-                candidate.hop_factor,
+                candidate.quality_confidence,
+                candidate.warmup_confidence,
+                candidate
+                    .metric_instability_ppm
+                    .map(|value| value.to_string())
+                    .unwrap_or_else(|| "-".to_string()),
+                candidate.instability_factor,
+                candidate.flap_penalty_factor,
+                candidate.recent_flap_count,
                 candidate
                     .recent_ttfb_ms
                     .map(|value| value.to_string())
@@ -240,7 +260,7 @@ fn render_report(policy: RouteSelectionPolicy, phases: &[PhaseArtifact]) -> Stri
         markdown.push('\n');
     }
     markdown.push_str("## Result\n\n");
-    markdown.push_str("The controlled policy run proves causality: route A wins when healthy, route A is then degraded with ACK/retransmit/stall plus failures, its score drops below route B, and the selector switches to B. The anti-flap sub-scenario then shows a smaller B-over-A edge that is real enough to make B the best-score candidate, but still too small to justify a switch during hold time or after hysteresis.\n");
+    markdown.push_str("The controlled policy run proves three things at once: cold-start luck is damped by warmup confidence, noisy routes are penalized by instability, and real degradation still causes a deterministic switch once the challenger is materially better. The anti-flap sub-scenario then shows a smaller B-over-A edge that is recorded, but still suppressed by hold time and hysteresis.\n");
     markdown
 }
 
@@ -331,6 +351,67 @@ fn controlled_route_quality_switch_and_hysteresis() -> anyhow::Result<()> {
     );
     assert_eq!(phase_a.selected_route_id, "A");
 
+    let mut warmup_store = RouteStore::new();
+    warmup_store.add_route(route_a.clone(), 0.86);
+    warmup_store.add_route(route_b.clone(), 0.86);
+    warmup_store.update_metrics(0, Some(90), true);
+    warmup_store.update_metrics(1, Some(95), true);
+    for _ in 0..6 {
+        warmup_store.record_local_observation(
+            0,
+            &LocalRouteObservation {
+                success: true,
+                status_code: Some(200),
+                ttfb_ms: Some(540),
+                total_ms: 980,
+                response_bytes: 256 * 1024,
+            },
+        );
+        assert!(warmup_store.record_response_quality_for_route(
+            &route_a,
+            &sample_feedback(1, 240, 0, 120, 980, 200),
+        ));
+    }
+    let phase_w0 = capture_phase(
+        &mut warmup_store,
+        &[route_a.clone(), route_b.clone()],
+        "W0: warmed route A becomes current route",
+        t0 + Duration::from_secs(40),
+    )?;
+    assert_eq!(phase_w0.selected_route_id, "A");
+
+    warmup_store.record_local_observation(
+        1,
+        &LocalRouteObservation {
+            success: true,
+            status_code: Some(200),
+            ttfb_ms: Some(140),
+            total_ms: 320,
+            response_bytes: 256 * 1024,
+        },
+    );
+    assert!(warmup_store.record_response_quality_for_route(
+        &route_b,
+        &sample_feedback(2, 90, 0, 30, 350, 200),
+    ));
+    let phase_w1 = capture_phase(
+        &mut warmup_store,
+        &[route_a.clone(), route_b.clone()],
+        "W1: one lucky cold-start sample does not steal selection",
+        t0 + Duration::from_secs(44),
+    )?;
+    eprintln!(
+        "phase=W1 selected={} reason={} previous={:?} switched={} delta_abs={:.4} delta_ratio={:.2}%",
+        phase_w1.selected_route_id,
+        phase_w1.decision_reason,
+        phase_w1.previous_route_id,
+        phase_w1.switched,
+        phase_w1.score_delta_abs,
+        phase_w1.score_delta_ratio * 100.0
+    );
+    assert_eq!(phase_w1.selected_route_id, "A");
+    assert!(!phase_w1.switched);
+
     for _ in 0..3 {
         store.record_local_observation(
             0,
@@ -380,6 +461,73 @@ fn controlled_route_quality_switch_and_hysteresis() -> anyhow::Result<()> {
     assert_eq!(phase_c.decision_reason, "switch_margin_exceeded");
     assert!(phase_c.switched);
 
+    let route_n0 = Route {
+        hops: vec![NodeAddr::from(r("127.0.0.1:6201"))],
+    };
+    let route_n1 = Route {
+        hops: vec![NodeAddr::from(r("127.0.0.1:6202"))],
+    };
+    let mut noisy_store = RouteStore::new();
+    noisy_store.add_route(route_n0.clone(), 0.86);
+    noisy_store.add_route(route_n1.clone(), 0.86);
+    noisy_store.update_metrics(0, Some(100), true);
+    noisy_store.update_metrics(1, Some(100), true);
+    for _ in 0..5 {
+        noisy_store.record_local_observation(
+            0,
+            &LocalRouteObservation {
+                success: true,
+                status_code: Some(200),
+                ttfb_ms: Some(500),
+                total_ms: 1_000,
+                response_bytes: 256 * 1024,
+            },
+        );
+        assert!(noisy_store.record_response_quality_for_route(
+            &route_n0,
+            &sample_feedback(1, 250, 8_000, 140, 1_000, 200),
+        ));
+    }
+    for (ttfb_ms, total_ms, ack_ms, retrans_ppm) in [
+        (220, 520, 120, 0),
+        (940, 1_520, 540, 60_000),
+        (260, 560, 150, 5_000),
+        (980, 1_480, 580, 75_000),
+        (280, 540, 160, 8_000),
+    ] {
+        noisy_store.record_local_observation(
+            1,
+            &LocalRouteObservation {
+                success: true,
+                status_code: Some(200),
+                ttfb_ms: Some(ttfb_ms),
+                total_ms,
+                response_bytes: 256 * 1024,
+            },
+        );
+        assert!(noisy_store.record_response_quality_for_route(
+            &route_n1,
+            &sample_feedback(1, ack_ms, retrans_ppm, 180, total_ms, 200),
+        ));
+    }
+    let phase_n = capture_phase(
+        &mut noisy_store,
+        &[route_n0.clone(), route_n1.clone()],
+        "N: noisy route is penalized even when average latency looks competitive",
+        t0 + Duration::from_secs(58),
+    )?;
+    eprintln!(
+        "phase=N selected={} reason={} best={} switched={}",
+        phase_n.selected_route_id, phase_n.decision_reason, phase_n.best_route_id, phase_n.switched
+    );
+    assert_eq!(phase_n.selected_route_id, "A");
+    assert!(
+        phase_n.candidates[1]
+            .metric_instability_ppm
+            .unwrap_or_default()
+            > phase_n.candidates[0].metric_instability_ppm.unwrap_or_default()
+    );
+
     let mut flap_store = RouteStore::new();
     flap_store.add_route(route_a.clone(), 0.86);
     flap_store.add_route(route_b.clone(), 0.86);
@@ -410,25 +558,25 @@ fn controlled_route_quality_switch_and_hysteresis() -> anyhow::Result<()> {
         &LocalRouteObservation {
             success: false,
             status_code: Some(504),
-            ttfb_ms: Some(760),
-            total_ms: 980,
+            ttfb_ms: Some(980),
+            total_ms: 1_180,
             response_bytes: 0,
         },
     );
-    for _ in 0..4 {
+    for _ in 0..5 {
         flap_store.record_local_observation(
             1,
             &LocalRouteObservation {
                 success: true,
                 status_code: Some(200),
-                ttfb_ms: Some(450),
-                total_ms: 800,
+                ttfb_ms: Some(430),
+                total_ms: 780,
                 response_bytes: 256 * 1024,
             },
         );
         assert!(flap_store.record_response_quality_for_route(
             &route_b,
-            &sample_feedback(2, 220, 0, 90, 900, 200),
+            &sample_feedback(2, 210, 0, 85, 880, 200),
         ));
     }
 
@@ -487,7 +635,10 @@ fn controlled_route_quality_switch_and_hysteresis() -> anyhow::Result<()> {
 
     let phases = vec![
         phase_a,
+        phase_w0,
+        phase_w1,
         phase_c,
+        phase_n,
         flap_initial,
         phase_h1,
         phase_h2,

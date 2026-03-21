@@ -98,7 +98,7 @@ For one route candidate:
 
 `success_rate` is itself smoothed over time by the existing route success/failure updates.
 
-### EMA
+### EMA and temporal smoothing
 
 All local and exit-side timing counters use the same EMA:
 
@@ -108,6 +108,14 @@ All local and exit-side timing counters use the same EMA:
 That is:
 
 `ema_next = 0.7 * ema_prev + 0.3 * sample`
+
+The same update is also applied to absolute deviation from the previous EMA.
+So for `TTFB`, `total`, `ACK p95`, and `retransmit rate` the route keeps:
+
+- a smoothed mean
+- a smoothed absolute deviation
+
+This turns the score from "latest sample wins" into "recent centerline plus recent noise".
 
 ### Quality factors
 
@@ -150,12 +158,37 @@ Those factors are blended with a geometric mean:
 
 Optional factors are included only when data exists.
 
+### Instability factor
+
+The model now derives a separate instability signal from smoothed deviation:
+
+- `total_jitter_ppm = total_dev / max(total_mean, 200) * 1_000_000`
+- `ttfb_jitter_ppm = ttfb_dev / max(ttfb_mean, 100) * 1_000_000`
+- `ack_jitter_ppm = ack_p95_dev / max(ack_p95_mean, 50) * 1_000_000`
+- `retransmit_jitter_ppm = retrans_dev / max(retrans_mean, 5000) * 1_000_000`
+
+Those available jitters are averaged into `instability_ppm`.
+
+Current normalization:
+
+- `good=40000 ppm`
+- `bad=350000 ppm`
+- factor range `1.02 .. 0.80`
+
+That factor is included in the geometric mean when instability data exists.
+
 ### Confidence model
 
 Quality is confidence-gated, so one fresh sample does not dominate:
 
 - `confidence = min((local_samples + feedback_samples) / 8, 1.0)`
-- `quality_agg = clamp((1 - confidence) + confidence * measured_quality, 0.75, 1.25)`
+- `warmup_confidence = min((local_samples + feedback_samples) / 12, 1.0) ^ 1.35`
+- `quality_agg = clamp(1 + (measured_quality - 1) * warmup_confidence, 0.78, 1.22)`
+
+The important distinction is:
+
+- `confidence` is the linear trust level
+- `warmup_confidence` is the slower neutral-blend used to stop one lucky or unlucky early sample from dominating
 
 ### Aging and recency penalties
 
@@ -163,13 +196,28 @@ Two recency controls apply on top of `quality_agg`:
 
 - recent-failure penalty:
   - if the newest failure is newer than the newest success and happened within `20s`
-  - multiply by `0.88`
+  - multiply by a confidence-scaled penalty derived from `0.88`
+  - minimum failure confidence floor: `0.35`
 - age decay:
   - exponential half-life `5 minutes`
   - `age_weight = exp(-ln(2) * age / half_life)`
   - clamped to `0.05 .. 1.0`
 
 Final quality factor after aging is clamped to `0.60 .. 1.25`.
+
+### Route-instability penalty
+
+Selection history now feeds back into score too.
+
+If a route is selected and then switched away from within `30s`, it records a recent flap event.
+
+Route flap penalty:
+
+- flap window: `30s`
+- flap half-life: `2 minutes`
+- maximum penalty: `18%`
+
+This is applied as a multiplicative factor on top of the route score, so unstable routes become less attractive even if they are still technically reachable.
 
 ### Transport factor
 
@@ -219,6 +267,35 @@ Hold time:
 - after a selection, the current route is sticky for `15s`
 - during that window a merely somewhat-better challenger is recorded in the scoreboard, but not selected
 
+### Adaptive hysteresis and cooldown
+
+The static thresholds above are now only the base policy.
+
+At decision time the selector increases switch strictness when:
+
+- confidence is low
+- metric instability is high
+- a real switch happened recently
+
+Current bonuses:
+
+- low-confidence bonus:
+  - abs `+ up to 0.025`
+  - rel `+ up to 5%`
+- instability bonus:
+  - abs `+ up to 0.020`
+  - rel `+ up to 4%`
+- recent-switch cooldown bonus:
+  - abs `+ 0.010`
+  - rel `+ 2%`
+
+Cooldown:
+
+- recent switch window: `45s`
+- extra hold during cooldown: `10s`
+
+So route switching is now both hysteresis-based and time-aware.
+
 Decision reasons emitted into stage trace:
 
 - `initial_selection`
@@ -257,7 +334,7 @@ Live WAN series:
 
 ## Known limitation
 
-The score is now quality-aware, but it is still sample-driven. A short burst of
+The score is now quality-aware, temporally smoothed, and flap-aware, but it is still sample-driven. A short burst of
 bad early outcomes can down-rank a route aggressively until fresh successful
 samples arrive. The follow-up document records the current remote WAN behavior
 and that remaining sensitivity.

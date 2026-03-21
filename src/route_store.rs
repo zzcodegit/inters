@@ -12,12 +12,22 @@ use tracing::debug;
 const EMA_PREV_WEIGHT: u128 = 7;
 const EMA_SAMPLE_WEIGHT: u128 = 3;
 const QUALITY_CONFIDENCE_TARGET_SAMPLES: u64 = 8;
+const QUALITY_WARMUP_TARGET_SAMPLES: u64 = 12;
+const QUALITY_WARMUP_EXPONENT: f32 = 1.35;
 const QUALITY_HALF_LIFE_MS: u64 = 5 * 60 * 1_000;
 const QUALITY_RECENT_FAILURE_WINDOW_MS: u64 = 20_000;
 const QUALITY_RECENT_FAILURE_PENALTY: f32 = 0.88;
+const QUALITY_RECENT_FAILURE_MIN_CONFIDENCE: f32 = 0.35;
+const QUALITY_INSTABILITY_GOOD_PPM: u32 = 40_000;
+const QUALITY_INSTABILITY_BAD_PPM: u32 = 350_000;
+const QUALITY_INSTABILITY_BEST_FACTOR: f32 = 1.02;
+const QUALITY_INSTABILITY_WORST_FACTOR: f32 = 0.80;
 const TRANSPORT_COOLDOWN_MS: u64 = 5_000;
 const TRANSPORT_CONFIDENCE_TARGET_SAMPLES: u64 = 20;
 const TRANSPORT_HALF_LIFE_MS: u64 = 5 * 60 * 1_000;
+const ROUTE_FLAP_WINDOW_MS: u64 = 30_000;
+const ROUTE_FLAP_HALF_LIFE_MS: u64 = 2 * 60 * 1_000;
+const ROUTE_FLAP_MAX_PENALTY: f32 = 0.18;
 const ROUTE_SWITCH_HOLD_TIME: Duration = Duration::from_secs(15);
 const ROUTE_SWITCH_REL_MARGIN: f32 = 0.08;
 const ROUTE_SWITCH_ABS_MARGIN: f32 = 0.04;
@@ -25,6 +35,14 @@ const ROUTE_SWITCH_TIE_REL_MARGIN: f32 = 0.03;
 const ROUTE_SWITCH_TIE_ABS_MARGIN: f32 = 0.015;
 const ROUTE_SWITCH_EMERGENCY_REL_MARGIN: f32 = 0.20;
 const ROUTE_SWITCH_EMERGENCY_ABS_MARGIN: f32 = 0.10;
+const ROUTE_SWITCH_COOLDOWN_WINDOW: Duration = Duration::from_secs(45);
+const ROUTE_SWITCH_COOLDOWN_EXTENSION: Duration = Duration::from_secs(10);
+const ROUTE_SWITCH_LOW_CONFIDENCE_ABS_MARGIN_BONUS: f32 = 0.025;
+const ROUTE_SWITCH_LOW_CONFIDENCE_REL_MARGIN_BONUS: f32 = 0.05;
+const ROUTE_SWITCH_INSTABILITY_ABS_MARGIN_BONUS: f32 = 0.02;
+const ROUTE_SWITCH_INSTABILITY_REL_MARGIN_BONUS: f32 = 0.04;
+const ROUTE_SWITCH_COOLDOWN_ABS_MARGIN_BONUS: f32 = 0.01;
+const ROUTE_SWITCH_COOLDOWN_REL_MARGIN_BONUS: f32 = 0.02;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct TransportKey {
@@ -51,13 +69,19 @@ pub struct RouteQualityStats {
     pub last_failure_at_ms: Option<u64>,
     pub last_feedback_at_ms: Option<u64>,
     pub local_ttfb_ms: Option<u64>,
+    pub local_ttfb_dev_ms: Option<u64>,
     pub local_total_ms: Option<u64>,
+    pub local_total_dev_ms: Option<u64>,
     pub response_bytes: Option<u64>,
     pub ack_latency_ms_avg: Option<u64>,
+    pub ack_latency_ms_avg_dev: Option<u64>,
     pub ack_latency_ms_p95: Option<u64>,
+    pub ack_latency_ms_p95_dev: Option<u64>,
     pub retransmit_rate_ppm: Option<u32>,
+    pub retransmit_rate_dev_ppm: Option<u32>,
     pub window_wait_total_ms: Option<u64>,
     pub window_wait_ratio_ppm: Option<u32>,
+    pub window_wait_ratio_dev_ppm: Option<u32>,
     pub overlay_first_send_gap_ms: Option<u64>,
     pub last_http_code: Option<u16>,
 }
@@ -127,6 +151,46 @@ fn ema_u32(slot: &mut Option<u32>, sample: u32) {
                 / (EMA_PREV_WEIGHT + EMA_SAMPLE_WEIGHT)) as u32
         }
     });
+}
+
+fn ema_u64_with_dev(mean_slot: &mut Option<u64>, dev_slot: &mut Option<u64>, sample: u64) {
+    if let Some(previous) = *mean_slot {
+        ema_u64(dev_slot, sample.abs_diff(previous));
+    }
+    ema_u64(mean_slot, sample);
+}
+
+fn ema_u32_with_dev(mean_slot: &mut Option<u32>, dev_slot: &mut Option<u32>, sample: u32) {
+    if let Some(previous) = *mean_slot {
+        ema_u32(dev_slot, sample.abs_diff(previous));
+    }
+    ema_u32(mean_slot, sample);
+}
+
+fn ratio_ppm_u64(numerator: Option<u64>, denominator: Option<u64>, floor: u64) -> Option<u32> {
+    let numerator = numerator?;
+    let denominator = denominator?;
+    let denominator = denominator.max(floor).max(1);
+    Some(
+        ((numerator as u128 * 1_000_000u128) / denominator as u128).min(u32::MAX as u128) as u32,
+    )
+}
+
+fn ratio_ppm_u32(numerator: Option<u32>, denominator: Option<u32>, floor: u32) -> Option<u32> {
+    let numerator = numerator?;
+    let denominator = denominator?;
+    let denominator = denominator.max(floor).max(1);
+    Some(
+        ((numerator as u128 * 1_000_000u128) / denominator as u128).min(u32::MAX as u128) as u32,
+    )
+}
+
+fn average_ppm(values: &[u32]) -> Option<u32> {
+    if values.is_empty() {
+        return None;
+    }
+    let sum: u128 = values.iter().map(|value| *value as u128).sum();
+    Some((sum / values.len() as u128).min(u32::MAX as u128) as u32)
 }
 
 fn lower_is_better_factor(
@@ -240,6 +304,10 @@ impl RouteSelectionPolicy {
 struct RouteQualityFactorDetails {
     factor: f32,
     hop_factor: f32,
+    quality_confidence: f32,
+    warmup_confidence: f32,
+    instability_factor: f32,
+    instability_ppm: Option<u32>,
     local_ttfb_ms: Option<u64>,
     local_total_ms: Option<u64>,
     ack_latency_p95_ms: Option<u64>,
@@ -254,10 +322,18 @@ impl RouteQualityStats {
         let now = now_ms();
         self.local_samples = self.local_samples.saturating_add(1);
         self.last_http_code = sample.status_code;
-        ema_u64(&mut self.local_total_ms, sample.total_ms);
+        ema_u64_with_dev(
+            &mut self.local_total_ms,
+            &mut self.local_total_dev_ms,
+            sample.total_ms,
+        );
         ema_u64(&mut self.response_bytes, sample.response_bytes as u64);
         if let Some(ttfb_ms) = sample.ttfb_ms {
-            ema_u64(&mut self.local_ttfb_ms, ttfb_ms);
+            ema_u64_with_dev(
+                &mut self.local_ttfb_ms,
+                &mut self.local_ttfb_dev_ms,
+                ttfb_ms,
+            );
         }
         if sample.success {
             self.success_count = self.success_count.saturating_add(1);
@@ -277,24 +353,37 @@ impl RouteQualityStats {
         self.last_http_code = feedback.http_code.or(self.last_http_code);
         ema_u64(&mut self.response_bytes, feedback.resp_bytes);
         if let Some(value) = feedback.ack_latency_ms_avg {
-            ema_u64(&mut self.ack_latency_ms_avg, value);
+            ema_u64_with_dev(
+                &mut self.ack_latency_ms_avg,
+                &mut self.ack_latency_ms_avg_dev,
+                value,
+            );
         }
         if let Some(value) = feedback.ack_latency_ms_p95 {
-            ema_u64(&mut self.ack_latency_ms_p95, value);
+            ema_u64_with_dev(
+                &mut self.ack_latency_ms_p95,
+                &mut self.ack_latency_ms_p95_dev,
+                value,
+            );
         }
         ema_u64(
             &mut self.window_wait_total_ms,
             feedback.window_wait_total_ms,
         );
-        ema_u32(
+        ema_u32_with_dev(
             &mut self.retransmit_rate_ppm,
+            &mut self.retransmit_rate_dev_ppm,
             feedback.retransmit_rate_ppm.min(1_000_000),
         );
         if feedback.stream_duration_ms > 0 {
             let ratio_ppm = ((feedback.window_wait_total_ms as u128 * 1_000_000u128)
                 / feedback.stream_duration_ms as u128)
                 .min(u32::MAX as u128) as u32;
-            ema_u32(&mut self.window_wait_ratio_ppm, ratio_ppm);
+            ema_u32_with_dev(
+                &mut self.window_wait_ratio_ppm,
+                &mut self.window_wait_ratio_dev_ppm,
+                ratio_ppm,
+            );
         }
         if let (Some(first_target), Some(first_overlay)) = (
             feedback.first_target_byte_ms,
@@ -310,6 +399,9 @@ impl RouteQualityStats {
     fn score_details(&self, now_ms: u64, hop_count: usize) -> RouteQualityFactorDetails {
         let total_samples = self.local_samples.saturating_add(self.feedback_samples);
         let confidence = confidence_from_samples(total_samples, QUALITY_CONFIDENCE_TARGET_SAMPLES);
+        let warmup_confidence =
+            confidence_from_samples(total_samples, QUALITY_WARMUP_TARGET_SAMPLES)
+                .powf(QUALITY_WARMUP_EXPONENT);
 
         let total_factor = lower_is_better_factor(self.local_total_ms, 700, 6_000, 1.12, 0.70);
         let ttfb_factor = lower_is_better_factor(self.local_ttfb_ms, 250, 4_000, 1.10, 0.68);
@@ -318,6 +410,27 @@ impl RouteQualityStats {
             lower_ratio_is_better_factor(self.retransmit_rate_ppm, 0, 120_000, 1.06, 0.65);
         let stall_factor =
             lower_ratio_is_better_factor(self.window_wait_ratio_ppm, 20_000, 500_000, 1.05, 0.68);
+        let instability_components = [
+            ratio_ppm_u64(self.local_total_dev_ms, self.local_total_ms, 200),
+            ratio_ppm_u64(self.local_ttfb_dev_ms, self.local_ttfb_ms, 100),
+            ratio_ppm_u64(self.ack_latency_ms_p95_dev, self.ack_latency_ms_p95, 50),
+            ratio_ppm_u32(
+                self.retransmit_rate_dev_ppm,
+                self.retransmit_rate_ppm,
+                5_000,
+            ),
+        ]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>();
+        let instability_ppm = average_ppm(&instability_components);
+        let instability_factor = lower_ratio_is_better_factor(
+            instability_ppm,
+            QUALITY_INSTABILITY_GOOD_PPM,
+            QUALITY_INSTABILITY_BAD_PPM,
+            QUALITY_INSTABILITY_BEST_FACTOR,
+            QUALITY_INSTABILITY_WORST_FACTOR,
+        );
         let success_rel = (self.success_count as f32 + 1.0)
             / (self.success_count.saturating_add(self.failure_count) as f32 + 2.0);
         let success_factor = 0.85 + success_rel * 0.30;
@@ -332,16 +445,20 @@ impl RouteQualityStats {
         if self.window_wait_ratio_ppm.is_some() {
             factors.push(stall_factor);
         }
+        if instability_ppm.is_some() {
+            factors.push(instability_factor);
+        }
 
         let measured_quality = geometric_mean(&factors).clamp(0.65, 1.25);
-        let mut factor = ((1.0 - confidence) + confidence * measured_quality).clamp(0.75, 1.25);
+        let mut factor = (1.0 + (measured_quality - 1.0) * warmup_confidence).clamp(0.78, 1.22);
 
         let last_failure = self.last_failure_at_ms.unwrap_or(0);
         let last_success = self.last_success_at_ms.unwrap_or(0);
         if last_failure > last_success
             && now_ms.saturating_sub(last_failure) < QUALITY_RECENT_FAILURE_WINDOW_MS
         {
-            factor *= QUALITY_RECENT_FAILURE_PENALTY;
+            let failure_confidence = confidence.max(QUALITY_RECENT_FAILURE_MIN_CONFIDENCE);
+            factor *= 1.0 - (1.0 - QUALITY_RECENT_FAILURE_PENALTY) * failure_confidence;
         }
 
         let last_feedback = self
@@ -357,6 +474,10 @@ impl RouteQualityStats {
         RouteQualityFactorDetails {
             factor,
             hop_factor,
+            quality_confidence: confidence,
+            warmup_confidence,
+            instability_factor,
+            instability_ppm,
             local_ttfb_ms: self.local_ttfb_ms,
             local_total_ms: self.local_total_ms,
             ack_latency_p95_ms: self.ack_latency_ms_p95,
@@ -376,6 +497,9 @@ pub struct RouteCandidate {
     pub failure_count: u32,
     pub last_used: Instant,
     pub quality: RouteQualityStats,
+    pub recent_flap_count: u64,
+    pub last_flap_at_ms: Option<u64>,
+    pub last_selected_at_ms: Option<u64>,
 }
 
 impl RouteCandidate {
@@ -463,6 +587,12 @@ pub struct RouteScoreDetails {
     pub final_score: f32,
     pub pheromone_score: f64,
     pub pheromone_confidence: f64,
+    pub quality_confidence: f32,
+    pub warmup_confidence: f32,
+    pub instability_factor: f32,
+    pub metric_instability_ppm: Option<u32>,
+    pub flap_penalty_factor: f32,
+    pub recent_flap_count: u64,
     pub recent_ttfb_ms: Option<u64>,
     pub recent_total_ms: Option<u64>,
     pub recent_ack_p95_ms: Option<u64>,
@@ -499,6 +629,7 @@ pub struct RouteStore {
     route_switch_count: u64,
     last_selected_fingerprint: Option<u64>,
     last_selected_at: Option<Instant>,
+    last_switch_at: Option<Instant>,
 }
 
 impl RouteStore {
@@ -511,6 +642,7 @@ impl RouteStore {
             route_switch_count: 0,
             last_selected_fingerprint: None,
             last_selected_at: None,
+            last_switch_at: None,
         }
     }
 
@@ -537,6 +669,9 @@ impl RouteStore {
             failure_count: 0,
             last_used: Instant::now(),
             quality: RouteQualityStats::default(),
+            recent_flap_count: 0,
+            last_flap_at_ms: None,
+            last_selected_at_ms: None,
         });
     }
 
@@ -569,8 +704,21 @@ impl RouteStore {
         let (pheromone_score, pheromone_confidence) =
             self.pheromones.score_for_route(&candidate.route);
         let pheromone_factor = (1.0f32 + 0.3f32 * pheromone_score as f32).clamp(0.7, 1.5);
-        let final_score =
-            base * transport_agg * quality.factor * quality.hop_factor * pheromone_factor;
+        let flap_recency = candidate
+            .last_flap_at_ms
+            .map(|last| age_weight(now_ms(), last, ROUTE_FLAP_HALF_LIFE_MS))
+            .unwrap_or(0.0);
+        let flap_penalty = ((candidate.recent_flap_count.min(4) as f32 / 4.0)
+            * ROUTE_FLAP_MAX_PENALTY
+            * flap_recency)
+            .clamp(0.0, ROUTE_FLAP_MAX_PENALTY);
+        let flap_penalty_factor = (1.0 - flap_penalty).clamp(1.0 - ROUTE_FLAP_MAX_PENALTY, 1.0);
+        let final_score = base
+            * transport_agg
+            * quality.factor
+            * quality.hop_factor
+            * pheromone_factor
+            * flap_penalty_factor;
 
         Some(RouteScoreDetails {
             base,
@@ -580,6 +728,12 @@ impl RouteStore {
             final_score,
             pheromone_score,
             pheromone_confidence,
+            quality_confidence: quality.quality_confidence,
+            warmup_confidence: quality.warmup_confidence,
+            instability_factor: quality.instability_factor,
+            metric_instability_ppm: quality.instability_ppm,
+            flap_penalty_factor,
+            recent_flap_count: candidate.recent_flap_count,
             recent_ttfb_ms: quality.local_ttfb_ms,
             recent_total_ms: quality.local_total_ms,
             recent_ack_p95_ms: quality.ack_latency_p95_ms,
@@ -721,6 +875,48 @@ impl RouteStore {
                 selected_details = previous_details.clone();
                 decision_reason = "current_still_best";
             } else {
+                let low_confidence = 1.0
+                    - previous_details
+                        .quality_confidence
+                        .min(best_details.quality_confidence)
+                        .clamp(0.0, 1.0);
+                let instability_peak = previous_details
+                    .metric_instability_ppm
+                    .unwrap_or(0)
+                    .max(best_details.metric_instability_ppm.unwrap_or(0));
+                let instability_pressure = if instability_peak <= QUALITY_INSTABILITY_GOOD_PPM {
+                    0.0
+                } else {
+                    ((instability_peak - QUALITY_INSTABILITY_GOOD_PPM) as f32
+                        / (QUALITY_INSTABILITY_BAD_PPM - QUALITY_INSTABILITY_GOOD_PPM) as f32)
+                        .clamp(0.0, 1.0)
+                };
+                let in_switch_cooldown = self
+                    .last_switch_at
+                    .map(|last| now.saturating_duration_since(last) < ROUTE_SWITCH_COOLDOWN_WINDOW)
+                    .unwrap_or(false);
+                let dynamic_abs_margin = policy.switch_absolute_margin
+                    + ROUTE_SWITCH_LOW_CONFIDENCE_ABS_MARGIN_BONUS * low_confidence
+                    + ROUTE_SWITCH_INSTABILITY_ABS_MARGIN_BONUS * instability_pressure
+                    + if in_switch_cooldown {
+                        ROUTE_SWITCH_COOLDOWN_ABS_MARGIN_BONUS
+                    } else {
+                        0.0
+                    };
+                let dynamic_rel_margin = policy.switch_relative_margin
+                    + ROUTE_SWITCH_LOW_CONFIDENCE_REL_MARGIN_BONUS * low_confidence
+                    + ROUTE_SWITCH_INSTABILITY_REL_MARGIN_BONUS * instability_pressure
+                    + if in_switch_cooldown {
+                        ROUTE_SWITCH_COOLDOWN_REL_MARGIN_BONUS
+                    } else {
+                        0.0
+                    };
+                let effective_hold_time = policy.hold_time
+                    + if in_switch_cooldown {
+                        ROUTE_SWITCH_COOLDOWN_EXTENSION
+                    } else {
+                        Duration::ZERO
+                    };
                 score_delta_abs =
                     (best_details.final_score - previous_details.final_score).max(0.0);
                 score_delta_ratio =
@@ -728,27 +924,48 @@ impl RouteStore {
                 let elapsed = self
                     .last_selected_at
                     .map(|last| now.saturating_duration_since(last))
-                    .unwrap_or(policy.hold_time);
-                let in_hold = elapsed < policy.hold_time;
+                    .unwrap_or(effective_hold_time);
+                let in_hold = elapsed < effective_hold_time;
+                let emergency_abs_margin = policy.emergency_switch_absolute_margin
+                    + ROUTE_SWITCH_INSTABILITY_ABS_MARGIN_BONUS * instability_pressure
+                    + if in_switch_cooldown {
+                        ROUTE_SWITCH_COOLDOWN_ABS_MARGIN_BONUS
+                    } else {
+                        0.0
+                    };
+                let emergency_rel_margin = policy.emergency_switch_relative_margin
+                    + ROUTE_SWITCH_INSTABILITY_REL_MARGIN_BONUS * instability_pressure
+                    + if in_switch_cooldown {
+                        ROUTE_SWITCH_COOLDOWN_REL_MARGIN_BONUS
+                    } else {
+                        0.0
+                    };
                 let emergency_switch = score_delta_abs >= policy.emergency_switch_absolute_margin
                     || score_delta_ratio >= policy.emergency_switch_relative_margin;
-                let switch_margin_met = score_delta_abs >= policy.switch_absolute_margin
-                    && score_delta_ratio >= policy.switch_relative_margin;
+                let emergency_switch = emergency_switch
+                    || score_delta_abs >= emergency_abs_margin
+                    || score_delta_ratio >= emergency_rel_margin;
+                let switch_margin_met = score_delta_abs >= dynamic_abs_margin
+                    && score_delta_ratio >= dynamic_rel_margin;
                 if in_hold && !emergency_switch {
                     selected_idx = previous_idx;
                     selected_details = previous_details.clone();
                     decision_reason = "hold_time_active";
-                    required_abs_margin = policy.emergency_switch_absolute_margin;
-                    required_rel_margin = policy.emergency_switch_relative_margin;
+                    required_abs_margin = emergency_abs_margin;
+                    required_rel_margin = emergency_rel_margin;
                     hold_remaining_ms =
-                        Some(policy.hold_time.saturating_sub(elapsed).as_millis() as u64);
+                        Some(effective_hold_time.saturating_sub(elapsed).as_millis() as u64);
                 } else if !switch_margin_met {
                     selected_idx = previous_idx;
                     selected_details = previous_details.clone();
                     decision_reason = "within_hysteresis_margin";
+                    required_abs_margin = dynamic_abs_margin;
+                    required_rel_margin = dynamic_rel_margin;
                     hold_remaining_ms = Some(0);
                 } else {
                     decision_reason = "switch_margin_exceeded";
+                    required_abs_margin = dynamic_abs_margin;
+                    required_rel_margin = dynamic_rel_margin;
                 }
             }
         }
@@ -774,6 +991,7 @@ impl RouteStore {
 
     pub fn note_route_selection(&mut self, idx: usize, score: f32, now: Instant) -> bool {
         self.route_selection_count = self.route_selection_count.saturating_add(1);
+        let now_ms = now_ms();
         let route_chain = if let Some(candidate) = self.routes.get(idx) {
             candidate
                 .route
@@ -790,12 +1008,29 @@ impl RouteStore {
             .get(idx)
             .map(|candidate| route_fingerprint(&candidate.route))
             .unwrap_or_default();
+        let previous_idx = self.last_selected_fingerprint.and_then(|previous_fingerprint| {
+            self.routes
+                .iter()
+                .position(|candidate| route_fingerprint(&candidate.route) == previous_fingerprint)
+        });
         let switched = matches!(
             self.last_selected_fingerprint,
             Some(previous) if previous != fingerprint
         );
         if switched {
             self.route_switch_count = self.route_switch_count.saturating_add(1);
+            self.last_switch_at = Some(now);
+            if let Some(previous_idx) = previous_idx {
+                if let Some(previous) = self.routes.get_mut(previous_idx) {
+                    if let Some(last_selected_at_ms) = previous.last_selected_at_ms {
+                        if now_ms.saturating_sub(last_selected_at_ms) <= ROUTE_FLAP_WINDOW_MS {
+                            previous.recent_flap_count =
+                                previous.recent_flap_count.saturating_add(1);
+                            previous.last_flap_at_ms = Some(now_ms);
+                        }
+                    }
+                }
+            }
         }
         debug!(
             event = "route_select",
@@ -806,6 +1041,9 @@ impl RouteStore {
             switch_count = self.route_switch_count,
             switched
         );
+        if let Some(candidate) = self.routes.get_mut(idx) {
+            candidate.last_selected_at_ms = Some(now_ms);
+        }
         self.last_selected_at = Some(now);
         self.last_selected_fingerprint = Some(fingerprint);
         switched
@@ -1090,32 +1328,38 @@ mod tests {
         store.update_metrics(0, Some(90), true);
         store.update_metrics(1, Some(110), true);
 
-        store.record_local_observation(
-            0,
-            &LocalRouteObservation {
-                success: true,
-                status_code: Some(200),
-                ttfb_ms: Some(4_200),
-                total_ms: 5_500,
-                response_bytes: 256 * 1024,
-            },
-        );
-        store.record_local_observation(
-            1,
-            &LocalRouteObservation {
-                success: true,
-                status_code: Some(200),
-                ttfb_ms: Some(850),
-                total_ms: 1_300,
-                response_bytes: 256 * 1024,
-            },
-        );
-        assert!(store.record_response_quality_for_route(
-            &short,
-            &sample_feedback(1, 1_400, 120_000, 2_000, 5_000),
-        ));
-        assert!(store
-            .record_response_quality_for_route(&long, &sample_feedback(2, 220, 0, 160, 1_300),));
+        for _ in 0..4 {
+            store.record_local_observation(
+                0,
+                &LocalRouteObservation {
+                    success: true,
+                    status_code: Some(200),
+                    ttfb_ms: Some(4_200),
+                    total_ms: 5_500,
+                    response_bytes: 256 * 1024,
+                },
+            );
+            assert!(store.record_response_quality_for_route(
+                &short,
+                &sample_feedback(1, 1_400, 120_000, 2_000, 5_000),
+            ));
+        }
+        for _ in 0..4 {
+            store.record_local_observation(
+                1,
+                &LocalRouteObservation {
+                    success: true,
+                    status_code: Some(200),
+                    ttfb_ms: Some(850),
+                    total_ms: 1_300,
+                    response_bytes: 256 * 1024,
+                },
+            );
+            assert!(store.record_response_quality_for_route(
+                &long,
+                &sample_feedback(2, 220, 0, 160, 1_300),
+            ));
+        }
 
         let now = Instant::now();
         let scored = store.scored_candidates(now, &[]);
@@ -1320,26 +1564,26 @@ mod tests {
             &LocalRouteObservation {
                 success: false,
                 status_code: Some(504),
-                ttfb_ms: Some(760),
-                total_ms: 980,
+                ttfb_ms: Some(980),
+                total_ms: 1_180,
                 response_bytes: 0,
             },
         );
-        for _ in 0..4 {
+        for _ in 0..5 {
             store.record_local_observation(
                 1,
                 &LocalRouteObservation {
                     success: true,
                     status_code: Some(200),
-                    ttfb_ms: Some(450),
-                    total_ms: 800,
+                    ttfb_ms: Some(430),
+                    total_ms: 780,
                     response_bytes: 256 * 1024,
                 },
             );
             assert!(
                 store.record_response_quality_for_route(
                     &route_b,
-                    &sample_feedback(2, 220, 0, 90, 900),
+                    &sample_feedback(2, 210, 0, 85, 880),
                 )
             );
         }
@@ -1388,5 +1632,273 @@ mod tests {
         assert_eq!(decision.selected_idx, 0);
         assert_eq!(decision.decision_reason, "initial_selection");
         assert_eq!(decision.tie_break_reason, Some("shorter_route_tie_break"));
+    }
+
+    #[test]
+    fn cold_start_lucky_sample_stays_below_warmed_route() {
+        let mut store = RouteStore::new();
+        let route_a = Route {
+            hops: vec![NodeAddr::from(r("127.0.0.1:5401"))],
+        };
+        let route_b = Route {
+            hops: vec![
+                NodeAddr::from(r("127.0.0.1:5402")),
+                NodeAddr::from(r("127.0.0.1:5403")),
+            ],
+        };
+        store.add_route(route_a.clone(), 0.86);
+        store.add_route(route_b.clone(), 0.86);
+        store.update_metrics(0, Some(90), true);
+        store.update_metrics(1, Some(95), true);
+
+        for _ in 0..6 {
+            store.record_local_observation(
+                0,
+                &LocalRouteObservation {
+                    success: true,
+                    status_code: Some(200),
+                    ttfb_ms: Some(520),
+                    total_ms: 960,
+                    response_bytes: 256 * 1024,
+                },
+            );
+            assert!(store.record_response_quality_for_route(
+                &route_a,
+                &sample_feedback(1, 250, 0, 120, 980),
+            ));
+        }
+        let base = Instant::now();
+        let initial_scored = store.scored_candidates(base, &[]);
+        let initial = store.apply_selection_policy(&initial_scored, base);
+        assert_eq!(initial.unwrap().selected_idx, 0);
+
+        store.record_local_observation(
+            1,
+            &LocalRouteObservation {
+                success: true,
+                status_code: Some(200),
+                ttfb_ms: Some(140),
+                total_ms: 320,
+                response_bytes: 256 * 1024,
+            },
+        );
+        assert!(store.record_response_quality_for_route(
+            &route_b,
+            &sample_feedback(2, 90, 0, 30, 350),
+        ));
+
+        let scored = store.scored_candidates(base + Duration::from_secs(4), &[]);
+        let route_b_details = scored
+            .iter()
+            .find(|(idx, _)| *idx == 1)
+            .map(|(_, details)| details.clone())
+            .unwrap();
+        assert!(
+            route_b_details.warmup_confidence < route_b_details.quality_confidence,
+            "cold route should still be partially neutralized by warmup confidence"
+        );
+        let decision = store
+            .apply_selection_policy(&scored, base + Duration::from_secs(4))
+            .unwrap();
+        assert_eq!(decision.selected_idx, 0);
+        assert!(!decision.switched);
+    }
+
+    #[test]
+    fn instability_penalty_demotes_noisy_route() {
+        let mut store = RouteStore::new();
+        let stable = Route {
+            hops: vec![NodeAddr::from(r("127.0.0.1:5501"))],
+        };
+        let noisy = Route {
+            hops: vec![NodeAddr::from(r("127.0.0.1:5502"))],
+        };
+        store.add_route(stable.clone(), 0.86);
+        store.add_route(noisy.clone(), 0.86);
+        store.update_metrics(0, Some(100), true);
+        store.update_metrics(1, Some(100), true);
+
+        for _ in 0..5 {
+            store.record_local_observation(
+                0,
+                &LocalRouteObservation {
+                    success: true,
+                    status_code: Some(200),
+                    ttfb_ms: Some(480),
+                    total_ms: 960,
+                    response_bytes: 256 * 1024,
+                },
+            );
+            assert!(store.record_response_quality_for_route(
+                &stable,
+                &sample_feedback(1, 240, 8_000, 120, 960),
+            ));
+        }
+
+        for (ttfb_ms, total_ms, ack_ms, retrans_ppm) in [
+            (180, 420, 120, 0),
+            (960, 1_520, 620, 80_000),
+            (210, 500, 140, 5_000),
+            (1_020, 1_480, 650, 85_000),
+            (260, 520, 160, 10_000),
+        ] {
+            store.record_local_observation(
+                1,
+                &LocalRouteObservation {
+                    success: true,
+                    status_code: Some(200),
+                    ttfb_ms: Some(ttfb_ms),
+                    total_ms,
+                    response_bytes: 256 * 1024,
+                },
+            );
+            assert!(store.record_response_quality_for_route(
+                &noisy,
+                &sample_feedback(1, ack_ms, retrans_ppm, 180, total_ms),
+            ));
+        }
+
+        let scored = store.scored_candidates(Instant::now(), &[]);
+        let stable_details = scored
+            .iter()
+            .find(|(idx, _)| *idx == 0)
+            .map(|(_, details)| details.clone())
+            .unwrap();
+        let noisy_details = scored
+            .iter()
+            .find(|(idx, _)| *idx == 1)
+            .map(|(_, details)| details.clone())
+            .unwrap();
+        assert!(
+            noisy_details.metric_instability_ppm.unwrap_or_default()
+                > stable_details.metric_instability_ppm.unwrap_or_default()
+        );
+        assert!(
+            stable_details.final_score > noisy_details.final_score,
+            "noisy route should lose to the similarly fast but stable route"
+        );
+    }
+
+    #[test]
+    fn cooldown_extends_hold_after_real_switch() {
+        let mut store = RouteStore::new();
+        let route_a = Route {
+            hops: vec![NodeAddr::from(r("127.0.0.1:5601"))],
+        };
+        let route_b = Route {
+            hops: vec![
+                NodeAddr::from(r("127.0.0.1:5602")),
+                NodeAddr::from(r("127.0.0.1:5603")),
+            ],
+        };
+        store.add_route(route_a.clone(), 0.88);
+        store.add_route(route_b.clone(), 0.86);
+        store.update_metrics(0, Some(85), true);
+        store.update_metrics(1, Some(95), true);
+
+        store.record_local_observation(
+            0,
+            &LocalRouteObservation {
+                success: true,
+                status_code: Some(200),
+                ttfb_ms: Some(320),
+                total_ms: 640,
+                response_bytes: 256 * 1024,
+            },
+        );
+        assert!(store.record_response_quality_for_route(
+            &route_a,
+            &sample_feedback(1, 140, 0, 40, 700),
+        ));
+        let base = Instant::now();
+        let initial_scored = store.scored_candidates(base, &[]);
+        let initial = store
+            .apply_selection_policy(&initial_scored, base)
+            .unwrap();
+        assert_eq!(initial.selected_idx, 0);
+
+        for _ in 0..3 {
+            store.record_local_observation(
+                0,
+                &LocalRouteObservation {
+                    success: false,
+                    status_code: Some(504),
+                    ttfb_ms: Some(3_800),
+                    total_ms: 4_600,
+                    response_bytes: 0,
+                },
+            );
+            store.record_failure(0, RouteFailureKind::Congestion);
+            assert!(store.record_response_quality_for_route(
+                &route_a,
+                &sample_feedback(1, 1_250, 180_000, 3_500, 4_900),
+            ));
+        }
+        for _ in 0..5 {
+            store.record_local_observation(
+                1,
+                &LocalRouteObservation {
+                    success: true,
+                    status_code: Some(200),
+                    ttfb_ms: Some(470),
+                    total_ms: 860,
+                    response_bytes: 256 * 1024,
+                },
+            );
+            assert!(store.record_response_quality_for_route(
+                &route_b,
+                &sample_feedback(2, 220, 0, 100, 930),
+            ));
+        }
+        let switch_time = base + Duration::from_secs(20);
+        let switched_scored = store.scored_candidates(switch_time, &[]);
+        let switched = store
+            .apply_selection_policy(&switched_scored, switch_time)
+            .unwrap();
+        assert_eq!(switched.selected_idx, 1);
+        assert!(switched.switched);
+
+        for _ in 0..8 {
+            store.record_local_observation(
+                0,
+                &LocalRouteObservation {
+                    success: true,
+                    status_code: Some(200),
+                    ttfb_ms: Some(180),
+                    total_ms: 420,
+                    response_bytes: 256 * 1024,
+                },
+            );
+            assert!(store.record_response_quality_for_route(
+                &route_a,
+                &sample_feedback(1, 90, 0, 30, 480),
+            ));
+        }
+        for _ in 0..3 {
+            store.record_local_observation(
+                1,
+                &LocalRouteObservation {
+                    success: false,
+                    status_code: Some(504),
+                    ttfb_ms: Some(1_020),
+                    total_ms: 1_580,
+                    response_bytes: 0,
+                },
+            );
+            store.record_failure(1, RouteFailureKind::Congestion);
+            assert!(store.record_response_quality_for_route(
+                &route_b,
+                &sample_feedback(2, 520, 75_000, 360, 1_580),
+            ));
+        }
+        let switchback_attempt_time = base + Duration::from_secs(38);
+        let switchback_scored = store.scored_candidates(switchback_attempt_time, &[]);
+        assert_eq!(switchback_scored.first().map(|(idx, _)| *idx), Some(0));
+        let switchback_attempt = store
+            .apply_selection_policy(&switchback_scored, switchback_attempt_time)
+            .unwrap();
+        assert_eq!(switchback_attempt.selected_idx, 1);
+        assert_eq!(switchback_attempt.decision_reason, "hold_time_active");
+        assert!(switchback_attempt.hold_remaining_ms.unwrap_or_default() > 0);
     }
 }

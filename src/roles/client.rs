@@ -1587,6 +1587,12 @@ async fn run_client_tcp_mode(
                                 "transport_agg": details.transport_agg,
                                 "quality_agg": details.quality_agg,
                                 "hop_factor": details.hop_factor,
+                                "quality_confidence": details.quality_confidence,
+                                "warmup_confidence": details.warmup_confidence,
+                                "instability_factor": details.instability_factor,
+                                "metric_instability_ppm": details.metric_instability_ppm,
+                                "flap_penalty_factor": details.flap_penalty_factor,
+                                "recent_flap_count": details.recent_flap_count,
                                 "recent_ttfb_ms": details.recent_ttfb_ms,
                                 "recent_total_ms": details.recent_total_ms,
                                 "recent_ack_p95_ms": details.recent_ack_p95_ms,
@@ -1655,6 +1661,12 @@ async fn run_client_tcp_mode(
                         "required_abs_margin": decision.required_abs_margin,
                         "required_rel_margin": decision.required_rel_margin,
                         "hold_remaining_ms": decision.hold_remaining_ms,
+                        "selected_quality_confidence": decision.selected_details.quality_confidence,
+                        "best_quality_confidence": decision.best_details.quality_confidence,
+                        "previous_quality_confidence": decision.previous_details.as_ref().map(|details| details.quality_confidence),
+                        "selected_metric_instability_ppm": decision.selected_details.metric_instability_ppm,
+                        "best_metric_instability_ppm": decision.best_details.metric_instability_ppm,
+                        "previous_metric_instability_ppm": decision.previous_details.as_ref().and_then(|details| details.metric_instability_ppm),
                     })
                 });
                 emit_client_stage(
@@ -1752,6 +1764,12 @@ async fn run_client_tcp_mode(
                         "required_abs_margin": decision.required_abs_margin,
                         "required_rel_margin": decision.required_rel_margin,
                         "hold_remaining_ms": decision.hold_remaining_ms,
+                        "selected_quality_confidence": decision.selected_details.quality_confidence,
+                        "best_quality_confidence": decision.best_details.quality_confidence,
+                        "previous_quality_confidence": decision.previous_details.as_ref().map(|details| details.quality_confidence),
+                        "selected_metric_instability_ppm": decision.selected_details.metric_instability_ppm,
+                        "best_metric_instability_ppm": decision.best_details.metric_instability_ppm,
+                        "previous_metric_instability_ppm": decision.previous_details.as_ref().and_then(|details| details.metric_instability_ppm),
                         "since_request_buffered_ms": accept_start.elapsed().as_millis() as u64,
                     }),
                 );

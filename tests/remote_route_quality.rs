@@ -54,6 +54,12 @@ struct CandidateScore {
     route_len: u64,
     route_chain: String,
     final_score: f64,
+    quality_confidence: Option<f64>,
+    warmup_confidence: Option<f64>,
+    instability_factor: Option<f64>,
+    metric_instability_ppm: Option<u64>,
+    flap_penalty_factor: Option<f64>,
+    recent_flap_count: Option<u64>,
     recent_ttfb_ms: Option<u64>,
     recent_total_ms: Option<u64>,
     recent_ack_p95_ms: Option<u64>,
@@ -79,6 +85,12 @@ struct RouteSelection {
     required_abs_margin: Option<f64>,
     required_rel_margin: Option<f64>,
     hold_remaining_ms: Option<u64>,
+    selected_quality_confidence: Option<f64>,
+    best_quality_confidence: Option<f64>,
+    previous_quality_confidence: Option<f64>,
+    selected_metric_instability_ppm: Option<u64>,
+    best_metric_instability_ppm: Option<u64>,
+    previous_metric_instability_ppm: Option<u64>,
     recent_ttfb_ms: Option<u64>,
     recent_total_ms: Option<u64>,
     recent_ack_p95_ms: Option<u64>,
@@ -395,6 +407,24 @@ fn analyze_stage_trace(path: &Path) -> anyhow::Result<StageTraceAnalysis> {
                             .get("final_score")
                             .and_then(Value::as_f64)
                             .unwrap_or(0.0),
+                        quality_confidence: candidate
+                            .get("quality_confidence")
+                            .and_then(Value::as_f64),
+                        warmup_confidence: candidate
+                            .get("warmup_confidence")
+                            .and_then(Value::as_f64),
+                        instability_factor: candidate
+                            .get("instability_factor")
+                            .and_then(Value::as_f64),
+                        metric_instability_ppm: candidate
+                            .get("metric_instability_ppm")
+                            .and_then(Value::as_u64),
+                        flap_penalty_factor: candidate
+                            .get("flap_penalty_factor")
+                            .and_then(Value::as_f64),
+                        recent_flap_count: candidate
+                            .get("recent_flap_count")
+                            .and_then(Value::as_u64),
                         recent_ttfb_ms: candidate.get("recent_ttfb_ms").and_then(Value::as_u64),
                         recent_total_ms: candidate.get("recent_total_ms").and_then(Value::as_u64),
                         recent_ack_p95_ms: candidate
@@ -444,6 +474,24 @@ fn analyze_stage_trace(path: &Path) -> anyhow::Result<StageTraceAnalysis> {
                     required_abs_margin: value.get("required_abs_margin").and_then(Value::as_f64),
                     required_rel_margin: value.get("required_rel_margin").and_then(Value::as_f64),
                     hold_remaining_ms: value.get("hold_remaining_ms").and_then(Value::as_u64),
+                    selected_quality_confidence: value
+                        .get("selected_quality_confidence")
+                        .and_then(Value::as_f64),
+                    best_quality_confidence: value
+                        .get("best_quality_confidence")
+                        .and_then(Value::as_f64),
+                    previous_quality_confidence: value
+                        .get("previous_quality_confidence")
+                        .and_then(Value::as_f64),
+                    selected_metric_instability_ppm: value
+                        .get("selected_metric_instability_ppm")
+                        .and_then(Value::as_u64),
+                    best_metric_instability_ppm: value
+                        .get("best_metric_instability_ppm")
+                        .and_then(Value::as_u64),
+                    previous_metric_instability_ppm: value
+                        .get("previous_metric_instability_ppm")
+                        .and_then(Value::as_u64),
                     recent_ttfb_ms: value.get("recent_ttfb_ms").and_then(Value::as_u64),
                     recent_total_ms: value.get("recent_total_ms").and_then(Value::as_u64),
                     recent_ack_p95_ms: value.get("recent_ack_p95_ms").and_then(Value::as_u64),
@@ -558,11 +606,11 @@ fn render_report(
         analysis.feedback_events.len()
     ));
 
-    markdown.push_str("| selection | route len | selected route | score | reason | switched | score delta abs | score delta rel % | recent TTFB ms | recent total ms | recent ACK p95 ms | recent retransmit ppm | recent stall ppm |\n");
-    markdown.push_str("| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |\n");
+    markdown.push_str("| selection | route len | selected route | score | reason | switched | score delta abs | score delta rel % | q conf sel/best | instability sel/best ppm | recent TTFB ms | recent total ms | recent ACK p95 ms | recent retransmit ppm | recent stall ppm |\n");
+    markdown.push_str("| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |\n");
     for (idx, selection) in analysis.selections.iter().take(12).enumerate() {
         markdown.push_str(&format!(
-            "| {} | {} | `{}` | {:.4} | `{}` | `{}` | {} | {} | {} | {} | {} | {} | {} |\n",
+            "| {} | {} | `{}` | {:.4} | `{}` | `{}` | {} | {} | {} / {} | {} / {} | {} | {} | {} | {} | {} |\n",
             idx + 1,
             selection.route_len,
             selection.route_chain,
@@ -571,6 +619,10 @@ fn render_report(
             selection.switched,
             fmt_opt_f64(selection.score_delta_abs),
             fmt_opt_percent(selection.score_delta_ratio),
+            fmt_opt_f64(selection.selected_quality_confidence),
+            fmt_opt_f64(selection.best_quality_confidence),
+            fmt_opt(selection.selected_metric_instability_ppm),
+            fmt_opt(selection.best_metric_instability_ppm),
             fmt_opt(selection.recent_ttfb_ms),
             fmt_opt(selection.recent_total_ms),
             fmt_opt(selection.recent_ack_p95_ms),
@@ -585,14 +637,20 @@ fn render_report(
             .get(&(first_selection.stream_id, first_selection.attempt))
         {
             markdown.push_str("\nRepresentative candidate snapshot:\n\n");
-            markdown.push_str("| route len | candidate route | final score | recent TTFB ms | recent total ms | recent ACK p95 ms | retransmit ppm | stall ppm |\n");
-            markdown.push_str("| --- | --- | --- | --- | --- | --- | --- | --- |\n");
+            markdown.push_str("| route len | candidate route | final score | q conf | warmup | instability ppm / factor | flap penalty | flap count | recent TTFB ms | recent total ms | recent ACK p95 ms | retransmit ppm | stall ppm |\n");
+            markdown.push_str("| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |\n");
             for candidate in candidates {
                 markdown.push_str(&format!(
-                    "| {} | `{}` | {:.4} | {} | {} | {} | {} | {} |\n",
+                    "| {} | `{}` | {:.4} | {} | {} | {} / {} | {} | {} | {} | {} | {} | {} | {} |\n",
                     candidate.route_len,
                     candidate.route_chain,
                     candidate.final_score,
+                    fmt_opt_f64(candidate.quality_confidence),
+                    fmt_opt_f64(candidate.warmup_confidence),
+                    fmt_opt(candidate.metric_instability_ppm),
+                    fmt_opt_f64(candidate.instability_factor),
+                    fmt_opt_f64(candidate.flap_penalty_factor),
+                    fmt_opt(candidate.recent_flap_count),
                     fmt_opt(candidate.recent_ttfb_ms),
                     fmt_opt(candidate.recent_total_ms),
                     fmt_opt(candidate.recent_ack_p95_ms),

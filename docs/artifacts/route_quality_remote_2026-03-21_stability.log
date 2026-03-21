@@ -1,0 +1,56 @@
+﻿=== remote route-quality selection ===
+relay1=45.197.133.115:30001
+relay2=185.144.28.95:30002
+exit=31.192.232.26:30000
+route_length=3
+exact_route_only=false
+request_path=/perf-262144.bin
+runs=6
+local_listen=127.0.0.1:19390
+raw_path=docs/artifacts/route_quality_remote_2026-03-21_stability.jsonl
+stage_trace_path=docs/artifacts/route_quality_remote_2026-03-21_stability.client.jsonl
+report_path=docs/artifacts/route_quality_remote_2026-03-21_stability.md
+reset_cmd=powershell.exe -ExecutionPolicy Bypass -File scripts/reset_remote_topology.ps1
+bash.exe :    Compiling vpnnode v0.1.0 (C:\neinternet\vpnnode)
+At line:2 char:2340
++ ... ity-probe'; & $bash 'scripts/run_route_quality_remote.sh' 2>&1 | Out- ...
++                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (   Compiling vp...ternet\vpnnode):String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 6.40s
+     Running tests\remote_route_quality.rs (C:/Users/zekin/AppData/Local/Temp/vpnnode-target\debug\deps\remote_route_qu
+ality-30e597e8cc779cf8.exe)
+
+running 1 test
+test remote_route_quality_selection_uses_quality_feedback ... reset_topology label=relay-1 host=45.197.133.115 services=vpnnode-relay1.service
+active
+reset_topology label=relay-2 host=185.144.28.95 services=vpnnode-relay2.service
+active
+reset_topology label=exit host=31.192.232.26 services=vpnnode-exit.service
+active
+check_service label=exit-target-http host=31.192.232.26 service=vpnnode-target-http.service
+active
+route_quality mode=remote exact_route_only=false route_length=3 local_listen=127.0.0.1:19390 request_path=/perf-262144.
+bin route_chain=client -> 45.197.133.115:30001 -> 185.144.28.95:30002 -> 31.192.232.26:30000 -> target runs=6 raw=docs/
+artifacts/route_quality_remote_2026-03-21_stability.jsonl stage_trace=docs/artifacts/route_quality_remote_2026-03-21_st
+ability.client.jsonl report=docs/artifacts/route_quality_remote_2026-03-21_stability.md
+route_quality_run=1 status=200 connect_ms=0.83 ttfb_ms=2066.71 total_ms=2067.89 body_bytes=262144 throughput_bps=126768
+.59
+route_quality_run=2 status=200 connect_ms=0.70 ttfb_ms=2604.46 total_ms=2605.85 body_bytes=262144 throughput_bps=100598
+.35
+route_quality_run=3 status=200 connect_ms=0.76 ttfb_ms=1340.86 total_ms=1342.02 body_bytes=262144 throughput_bps=195334
+.85
+route_quality_run=4 status=200 connect_ms=0.95 ttfb_ms=1622.40 total_ms=1623.83 body_bytes=262144 throughput_bps=161435
+.34
+route_quality_run=5 status=200 connect_ms=0.73 ttfb_ms=1526.01 total_ms=1527.21 body_bytes=262144 throughput_bps=171649
+.43
+route_quality_run=6 status=200 connect_ms=0.89 ttfb_ms=1331.88 total_ms=1333.10 body_bytes=262144 throughput_bps=196642
+.40
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 294.66s
+
+=== route-quality cleanup start 2026-03-21T23:46:54+03:00 ===
+route_quality_listener_present=none
+=== route-quality cleanup end 2026-03-21T23:46:56+03:00 ===

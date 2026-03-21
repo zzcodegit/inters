@@ -1,0 +1,13 @@
+cleanup_start=2026-03-22T00:40:56.6313059+03:00
+
+ProcessName                     Id Path                                                                                
+-----------                     -- ----                                                                                
+cargo                        13644 C:\Users\zekin\.rustup\toolchains\stable-x86_64-pc-windows-msvc\bin\cargo.exe       
+cargo                        16096 C:\Users\zekin\.cargo\bin\cargo.exe                                                 
+remote_perf-7aca00160271adf9 10448 C:\Users\zekin\AppData\Local\Temp\vpnnode-target\debug\deps\remote_perf-7aca00160...
+
+
+
+after_stop:
+
+cleanup_end=2026-03-22T00:40:58.9283141+03:00
