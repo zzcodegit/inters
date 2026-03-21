@@ -2177,6 +2177,14 @@ pub async fn run_exit(args: ExitArgs) -> Result<()> {
                         continue;
                     }
                 }
+                emit_exit_stage(
+                    "open_message_failed",
+                    json!({
+                        "peer": peer.to_string(),
+                        "route_len": session_route.as_ref().map(|route| route.len()),
+                        "error": e.to_string(),
+                    }),
+                );
                 error!(%e, "exit failed to open message");
                 continue;
             }

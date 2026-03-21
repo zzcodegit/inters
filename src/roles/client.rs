@@ -775,6 +775,13 @@ See README: Stage 2 support matrix."
                                 }
                             }
                         }
+                        emit_client_stage(
+                            "open_message_failed",
+                            json!({
+                                "peer": from.to_string(),
+                                "error": e.to_string(),
+                            }),
+                        );
                         error!(%e, "client failed to open message");
                         continue;
                     }
