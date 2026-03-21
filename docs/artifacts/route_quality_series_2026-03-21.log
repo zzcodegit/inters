@@ -1,0 +1,149 @@
+=== remote route-quality series ===
+series_count=3
+runs_per_series=4
+relay1=45.197.133.115:30001
+relay2=185.144.28.95:30002
+exit=31.192.232.26:30000
+route_length=3
+series_prefix=docs/artifacts/route_quality_series_2026-03-21
+=== series 1/3 ===
+=== remote route-quality selection ===
+relay1=45.197.133.115:30001
+relay2=185.144.28.95:30002
+exit=31.192.232.26:30000
+route_length=3
+exact_route_only=false
+request_path=/perf-262144.bin
+runs=4
+local_listen=127.0.0.1:19381
+raw_path=docs/artifacts/route_quality_series_2026-03-21_run1.jsonl
+stage_trace_path=docs/artifacts/route_quality_series_2026-03-21_run1.client.jsonl
+report_path=docs/artifacts/route_quality_series_2026-03-21_run1.md
+reset_cmd=powershell.exe -ExecutionPolicy Bypass -File scripts/reset_remote_topology.ps1
+
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 4.84s
+     Running tests\remote_route_quality.rs (C:/Users/zekin/AppData/Local/Temp/vpnnode-target\debug\deps\remote_route_qu
+ality-30e597e8cc779cf8.exe)
+
+running 1 test
+test remote_route_quality_selection_uses_quality_feedback ... reset_topology label=relay-1 host=45.197.133.115 services=vpnnode-relay1.service
+active
+reset_topology label=relay-2 host=185.144.28.95 services=vpnnode-relay2.service
+active
+reset_topology label=exit host=31.192.232.26 services=vpnnode-exit.service
+active
+check_service label=exit-target-http host=31.192.232.26 service=vpnnode-target-http.service
+active
+route_quality mode=remote exact_route_only=false route_length=3 local_listen=127.0.0.1:19381 request_path=/perf-262144.
+bin route_chain=client -> 45.197.133.115:30001 -> 185.144.28.95:30002 -> 31.192.232.26:30000 -> target runs=4 raw=docs/
+artifacts/route_quality_series_2026-03-21_run1.jsonl stage_trace=docs/artifacts/route_quality_series_2026-03-21_run1.cl
+ient.jsonl report=docs/artifacts/route_quality_series_2026-03-21_run1.md
+route_quality_run=1 status=200 connect_ms=0.39 ttfb_ms=2111.66 total_ms=2112.25 body_bytes=262144 throughput_bps=124106
+.37
+route_quality_run=2 status=200 connect_ms=0.41 ttfb_ms=5553.15 total_ms=5553.93 body_bytes=262144 throughput_bps=47199.
+75
+route_quality_run=3 status=200 connect_ms=4.67 ttfb_ms=2062.20 total_ms=2067.12 body_bytes=262144 throughput_bps=126815
+.84
+route_quality_run=4 status=200 connect_ms=0.42 ttfb_ms=1247.65 total_ms=1248.31 body_bytes=262144 throughput_bps=209999
+.96
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 291.38s
+
+=== route-quality cleanup start 2026-03-21T22:53:21+03:00 ===
+route_quality_listener_present=none
+=== route-quality cleanup end 2026-03-21T22:53:23+03:00 ===
+=== series 2/3 ===
+=== remote route-quality selection ===
+relay1=45.197.133.115:30001
+relay2=185.144.28.95:30002
+exit=31.192.232.26:30000
+route_length=3
+exact_route_only=false
+request_path=/perf-262144.bin
+runs=4
+local_listen=127.0.0.1:19382
+raw_path=docs/artifacts/route_quality_series_2026-03-21_run2.jsonl
+stage_trace_path=docs/artifacts/route_quality_series_2026-03-21_run2.client.jsonl
+report_path=docs/artifacts/route_quality_series_2026-03-21_run2.md
+reset_cmd=powershell.exe -ExecutionPolicy Bypass -File scripts/reset_remote_topology.ps1
+   Compiling vpnnode v0.1.0 (C:\neinternet\vpnnode)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 4.66s
+     Running tests\remote_route_quality.rs (C:/Users/zekin/AppData/Local/Temp/vpnnode-target\debug\deps\remote_route_qu
+ality-30e597e8cc779cf8.exe)
+
+running 1 test
+test remote_route_quality_selection_uses_quality_feedback ... reset_topology label=relay-1 host=45.197.133.115 services=vpnnode-relay1.service
+active
+reset_topology label=relay-2 host=185.144.28.95 services=vpnnode-relay2.service
+active
+reset_topology label=exit host=31.192.232.26 services=vpnnode-exit.service
+active
+check_service label=exit-target-http host=31.192.232.26 service=vpnnode-target-http.service
+active
+route_quality mode=remote exact_route_only=false route_length=3 local_listen=127.0.0.1:19382 request_path=/perf-262144.
+bin route_chain=client -> 45.197.133.115:30001 -> 185.144.28.95:30002 -> 31.192.232.26:30000 -> target runs=4 raw=docs/
+artifacts/route_quality_series_2026-03-21_run2.jsonl stage_trace=docs/artifacts/route_quality_series_2026-03-21_run2.cl
+ient.jsonl report=docs/artifacts/route_quality_series_2026-03-21_run2.md
+route_quality_run=1 status=200 connect_ms=0.41 ttfb_ms=2134.49 total_ms=2135.11 body_bytes=262144 throughput_bps=122777
+.82
+route_quality_run=2 status=200 connect_ms=0.43 ttfb_ms=2160.17 total_ms=2160.90 body_bytes=262144 throughput_bps=121312
+.29
+route_quality_run=3 status=200 connect_ms=0.40 ttfb_ms=2284.19 total_ms=2284.83 body_bytes=262144 throughput_bps=114732
+.63
+route_quality_run=4 status=200 connect_ms=0.62 ttfb_ms=1236.18 total_ms=1237.05 body_bytes=262144 throughput_bps=211911
+.02
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 293.90s
+
+=== route-quality cleanup start 2026-03-21T22:58:22+03:00 ===
+route_quality_listener_present=none
+=== route-quality cleanup end 2026-03-21T22:58:23+03:00 ===
+=== series 3/3 ===
+=== remote route-quality selection ===
+relay1=45.197.133.115:30001
+relay2=185.144.28.95:30002
+exit=31.192.232.26:30000
+route_length=3
+exact_route_only=false
+request_path=/perf-262144.bin
+runs=4
+local_listen=127.0.0.1:19383
+raw_path=docs/artifacts/route_quality_series_2026-03-21_run3.jsonl
+stage_trace_path=docs/artifacts/route_quality_series_2026-03-21_run3.client.jsonl
+report_path=docs/artifacts/route_quality_series_2026-03-21_run3.md
+reset_cmd=powershell.exe -ExecutionPolicy Bypass -File scripts/reset_remote_topology.ps1
+   Compiling vpnnode v0.1.0 (C:\neinternet\vpnnode)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 4.92s
+     Running tests\remote_route_quality.rs (C:/Users/zekin/AppData/Local/Temp/vpnnode-target\debug\deps\remote_route_qu
+ality-30e597e8cc779cf8.exe)
+
+running 1 test
+test remote_route_quality_selection_uses_quality_feedback ... reset_topology label=relay-1 host=45.197.133.115 services=vpnnode-relay1.service
+active
+reset_topology label=relay-2 host=185.144.28.95 services=vpnnode-relay2.service
+active
+reset_topology label=exit host=31.192.232.26 services=vpnnode-exit.service
+active
+check_service label=exit-target-http host=31.192.232.26 service=vpnnode-target-http.service
+active
+route_quality mode=remote exact_route_only=false route_length=3 local_listen=127.0.0.1:19383 request_path=/perf-262144.
+bin route_chain=client -> 45.197.133.115:30001 -> 185.144.28.95:30002 -> 31.192.232.26:30000 -> target runs=4 raw=docs/
+artifacts/route_quality_series_2026-03-21_run3.jsonl stage_trace=docs/artifacts/route_quality_series_2026-03-21_run3.cl
+ient.jsonl report=docs/artifacts/route_quality_series_2026-03-21_run3.md
+route_quality_run=1 status=200 connect_ms=0.42 ttfb_ms=1946.23 total_ms=1946.89 body_bytes=262144 throughput_bps=134647
+.69
+route_quality_run=2 status=200 connect_ms=0.48 ttfb_ms=2161.55 total_ms=2162.34 body_bytes=262144 throughput_bps=121231
+.41
+route_quality_run=3 status=200 connect_ms=0.40 ttfb_ms=2085.13 total_ms=2085.76 body_bytes=262144 throughput_bps=125682
+.76
+route_quality_run=4 status=200 connect_ms=0.41 ttfb_ms=1261.64 total_ms=1262.27 body_bytes=262144 throughput_bps=207676
+.05
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 287.49s
+
+=== route-quality cleanup start 2026-03-21T23:03:16+03:00 ===
+route_quality_listener_present=none
+=== route-quality cleanup end 2026-03-21T23:03:17+03:00 ===

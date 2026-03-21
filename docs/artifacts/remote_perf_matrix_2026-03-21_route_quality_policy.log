@@ -1,0 +1,68 @@
+=== remote perf matrix ===
+direct=31.192.232.26:18080
+relay1=45.197.133.115:30001
+relay2=185.144.28.95:30002
+exit=31.192.232.26:30000
+request_path=/perf-262144.bin
+runs=5
+setup_cmd=powershell.exe -ExecutionPolicy Bypass -File scripts/setup_perf_target_public.ps1
+reset_cmd=powershell.exe -ExecutionPolicy Bypass -File scripts/reset_remote_topology.ps1
+=== perf target setup start 2026-03-21T22:14:37+03:00 ===
+payload_path=/opt/vpnnode/target-http/perf-262144.bin
+payload_bytes=262144
+
+tcp_forward.py            | 4 kB |   4.0 kB/s | ETA: 00:00:00 |  64%
+tcp_forward.py            | 6 kB |   6.2 kB/s | ETA: 00:00:00 | 100%
+d/system/vpnnode-target-http-public.service.
+
+active
+direct_addr=31.192.232.26:18080
+target_path=/perf-262144.bin
+payload_bytes=262144
+public_service=vpnnode-target-http-public.service
+=== perf target setup end 2026-03-21T22:14:46+03:00 ===
+   Compiling vpnnode v0.1.0 (C:\neinternet\vpnnode)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 6.00s
+     Running tests\remote_perf.rs (C:/Users/zekin/AppData/Local/Temp/vpnnode-target\debug\deps\remote_perf-7aca00160271
+adf9.exe)
+
+running 1 test
+perf_scenario=direct type=direct route_chain=client -> 31.192.232.26:18080 -> target endpoint=31.192.232.26:18080 reque
+st_path=/perf-262144.bin runs=5
+perf_scenario=direct success_count=5 error_count=0 duration_ms=7784
+test remote_perf_matrix_collects_measurements ... reset_topology label=relay-1 host=45.197.133.115 services=vpnnode-relay1.service
+active
+reset_topology label=relay-2 host=185.144.28.95 services=vpnnode-relay2.service
+active
+reset_topology label=exit host=31.192.232.26 services=vpnnode-exit.service
+active
+check_service label=exit-target-http host=31.192.232.26 service=vpnnode-target-http.service
+active
+perf_scenario=remote-1hop type=remote route_length=1 route_chain=client -> 31.192.232.26:30000 -> target endpoint=127.0
+.0.1:19181 request_path=/perf-262144.bin runs=5
+perf_scenario=remote-1hop success_count=5 error_count=0 duration_ms=298832
+reset_topology label=relay-1 host=45.197.133.115 services=vpnnode-relay1.service
+active
+reset_topology label=relay-2 host=185.144.28.95 services=vpnnode-relay2.service
+active
+reset_topology label=exit host=31.192.232.26 services=vpnnode-exit.service
+active
+check_service label=exit-target-http host=31.192.232.26 service=vpnnode-target-http.service
+active
+perf_scenario=remote-2hop type=remote route_length=2 route_chain=client -> 45.197.133.115:30001 -> 31.192.232.26:30000
+-> target endpoint=127.0.0.1:19182 request_path=/perf-262144.bin runs=5
+perf_scenario=remote-2hop success_count=5 error_count=0 duration_ms=287496
+reset_topology label=relay-1 host=45.197.133.115 services=vpnnode-relay1.service
+active
+reset_topology label=relay-2 host=185.144.28.95 services=vpnnode-relay2.service
+active
+reset_topology label=exit host=31.192.232.26 services=vpnnode-exit.service
+active
+check_service label=exit-target-http host=31.192.232.26 service=vpnnode-target-http.service
+active
+perf_scenario=remote-3hop type=remote route_length=3 route_chain=client -> 45.197.133.115:30001 -> 185.144.28.95:30002
+-> 31.192.232.26:30000 -> target endpoint=127.0.0.1:19183 request_path=/perf-262144.bin runs=5
+perf_scenario=remote-3hop success_count=5 error_count=0 duration_ms=287835
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 881.95s

@@ -1,0 +1,13 @@
+   Compiling vpnnode v0.1.0 (C:\neinternet\vpnnode)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 6.74s
+     Running tests\route_quality_policy.rs (target\debug\deps\route_quality_policy-7d6fc432cdcb1ba0.exe)
+
+running 1 test
+test controlled_route_quality_switch_and_hysteresis ... phase=A selected=A reason=initial_selection best=A switched=false
+phase=C selected=B reason=switch_margin_exceeded previous=Some("A") switched=true delta_abs=0.4299 delta_ratio=221.41%
+phase=H1 selected=A reason=hold_time_active previous=Some("A") switched=false hold_remaining_ms=Some(11000)
+phase=H2 selected=A reason=within_hysteresis_margin previous=Some("A") switched=false
+phase=T selected=A reason=initial_selection tie_break=Some("shorter_route_tie_break")
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s

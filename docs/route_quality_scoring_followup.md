@@ -3,12 +3,15 @@
 ## What was verified
 
 - local baseline stayed green
+- readiness semantics stayed green
 - accepted remote WAN matrix stayed green
 - accepted remote perf runner stayed green
 - accepted remote stage runner stayed green
-- new adaptive runner `scripts/run_route_quality_remote.sh` passed on the real WAN topology
+- adaptive runner `scripts/run_route_quality_remote.sh` passed on the real WAN topology
+- new series runner `scripts/run_route_quality_remote_series.sh` passed across multiple independent WAN runs
+- new controlled policy test proved causality and anti-flap behavior without relying on live WAN luck
 
-Topology used:
+Topology used for live WAN runs:
 
 - `relay-1`: `45.197.133.115:30001`
 - `relay-2`: `185.144.28.95:30002`
@@ -16,28 +19,67 @@ Topology used:
 
 ## Key evidence
 
-Adaptive route-quality run:
+Controlled causality proof:
+
+- log: `docs/artifacts/route_quality_controlled_2026-03-21.log`
+- raw phase records: `docs/artifacts/route_quality_controlled_2026-03-21.jsonl`
+- report: `docs/artifacts/route_quality_controlled_2026-03-21.md`
+
+Single adaptive WAN run:
 
 - log: `docs/artifacts/route_quality_remote_2026-03-21.log`
 - raw measurements: `docs/artifacts/route_quality_remote_2026-03-21.jsonl`
 - client stage trace: `docs/artifacts/route_quality_remote_2026-03-21.client.jsonl`
 - report: `docs/artifacts/route_quality_remote_2026-03-21.md`
 
-Regression checks:
+WAN series:
 
-- matrix log: `docs/artifacts/remote_wan_matrix_2026-03-21_route_scoring.log`
-- perf log: `docs/artifacts/remote_perf_matrix_2026-03-21_route_scoring.log`
-- perf report: `docs/artifacts/remote_perf_matrix_2026-03-21_route_scoring.md`
-- stage log: `docs/artifacts/remote_perf_stage_matrix_2026-03-21_route_scoring.log`
-- stage report: `docs/artifacts/remote_perf_stage_matrix_2026-03-21_route_scoring.md`
+- log: `docs/artifacts/route_quality_series_2026-03-21.log`
+- summary jsonl: `docs/artifacts/route_quality_series_2026-03-21.jsonl`
+- summary report: `docs/artifacts/route_quality_series_2026-03-21.md`
 
-Build and deploy:
+Regression checks after scoring/hysteresis changes:
 
-- target add: `docs/artifacts/route_quality_target_add_2026-03-21.log`
-- cross-build with `rust-lld`: `docs/artifacts/route_quality_cross_build_lld_2026-03-21.log`
-- deploy: `docs/artifacts/route_quality_deploy_2026-03-21.log`
+- local readiness log: `docs/artifacts/route_quality_http_probe_ready_2026-03-21.log`
+- local baseline log: `docs/artifacts/route_quality_local_baseline_2026-03-21.log`
+- matrix log: `docs/artifacts/remote_wan_matrix_2026-03-21_route_quality_policy.log`
+- perf log: `docs/artifacts/remote_perf_matrix_2026-03-21_route_quality_policy.log`
+- perf report: `docs/artifacts/remote_perf_matrix_2026-03-21_route_quality_policy.md`
+- stage log: `docs/artifacts/remote_perf_stage_matrix_2026-03-21_route_quality_policy.log`
+- stage report: `docs/artifacts/remote_perf_stage_matrix_2026-03-21_route_quality_policy.md`
 
-## What the adaptive run proved
+## What the controlled proof established
+
+From `docs/artifacts/route_quality_controlled_2026-03-21.md`:
+
+- healthy `A` = 1-hop starts as the selected and best-scored route
+- after explicit degradation, `A` drops from `0.6435` to `0.1709`
+- healthy `B` = 2-hop rises to `0.6240`
+- selector switches from `A` to `B` with reason `switch_margin_exceeded`
+- the switch gap is not ambiguous:
+  - absolute delta `0.4532`
+  - relative delta `265.24%`
+
+That is the required causality chain:
+
+- A: route `A` best -> selected
+- B: `A` degraded with ACK/retransmit/stall + failures
+- C: `A` score falls below `B`
+- D: selector switches to `B`
+
+The same report also proves anti-flap:
+
+- in `H1`, `B` is the best-score route
+- the selector still keeps `A` because hold time is active
+- score delta there is only:
+  - absolute `0.0181`
+  - relative `2.94%`
+- in `H2`, after hold time expires, the selector still keeps `A`
+- reason becomes `within_hysteresis_margin`
+
+This is the required "bad 1-hop vs good 2-hop" case, and it is proven without any hidden localhost fallback.
+
+## What the live WAN run established
 
 From `docs/artifacts/route_quality_remote_2026-03-21.md`:
 
@@ -46,47 +88,58 @@ From `docs/artifacts/route_quality_remote_2026-03-21.md`:
 - feedback events received from exit: `27`
 - non-shortest selections observed: `7`
 
-That last line is the important proof point: the system did not collapse back to
-"shortest path wins". In this live sample it selected the 3-hop path over the
-shorter 1-hop and 2-hop candidates.
+Representative snapshot:
 
-Representative scored snapshot:
+- 3-hop final score: `0.6720`
+- 1-hop final score: `0.4200`
+- 2-hop final score: `0.4116`
 
-- 3-hop final score: `0.7640`
-- 1-hop final score: `0.3020`
-- 2-hop final score: `0.2988`
+Later in the same run the selected 3-hop path kept improving:
 
-The selected 3-hop candidate had attached quality metrics in the selection log:
+- selected score reaches `0.7462`
+- `decision_reason` becomes `current_still_best`
+- attached route-quality metrics include:
+  - `recent_ttfb_ms=996`
+  - `recent_total_ms=2170`
+  - `recent_ack_p95_ms=294`
+  - `recent_retransmit_rate_ppm=2109`
+  - `recent_window_wait_ratio_ppm=831124`
 
-- `recent_total_ms=1382`
-- `recent_ttfb_ms=484`
-- `recent_ack_p95_ms=246`
-- `recent_retransmit_rate_ppm=0`
-- `recent_window_wait_ratio_ppm=850574`
+So the live selector is now visibly quality-driven and auditable. It is no longer "shortest path unless broken".
 
-So the winning route was chosen with response-path quality data attached, not on hop-count luck.
+## What the WAN series established
 
-## Why the result is honest
+From `docs/artifacts/route_quality_series_2026-03-21.md`:
 
-The accepted exact-route perf matrix was rerun independently and stayed green.
-That matrix is still the cleanest apples-to-apples view of isolated 1-hop/2-hop/3-hop costs.
+- independent WAN series runs: `3`
+- total selections observed: `15`
+- selected route matched the current best-score route: `15 / 15`
+- best-score pick ratio: `100%`
+- total switches inside those runs: `0`
 
-The new adaptive run answers a different question:
+Selection distribution in that sample:
 
-- not "which exact route is fastest in isolated replay"
-- but "does the client keep a live candidate set, score it, and choose a route by quality instead of shortest-path bias"
+- 3-hop route `45.197.133.115 -> 185.144.28.95 -> 31.192.232.26`: `15`
 
-That is exactly what the stage trace now shows.
+Reason distribution:
+
+- `initial_selection`: `3`
+- `current_still_best`: `12`
+
+This is important because it separates two claims:
+
+- route choice is caused by the score, not by blind shortest-path bias
+- once a route is clearly winning, the selector stays stable instead of churning
 
 ## Remaining limitation
 
-The current scoring policy is quality-aware, but not omniscient. It reacts
-strongly to recent failure signals, which means early negative samples can keep
-shorter routes down-ranked for a while even when they later look healthier in an
-isolated exact-route benchmark.
+The current scoring policy is quality-aware and now has explicit hysteresis, but it is still sample-driven.
 
-So the result of this step is:
+That means:
 
 - yes, route choice is now visibly quality-driven and auditable
-- yes, non-shortest WAN routes can win
-- no, the current policy should not yet be presented as mathematically optimal under every traffic window
+- yes, a healthy 2-hop route can beat a degraded 1-hop route
+- yes, small score differences no longer cause route flapping
+- no, the current policy should not yet be presented as globally optimal under every traffic window
+
+The live WAN series on March 21, 2026 happened to keep the 3-hop route on top for all observed selections. That is good evidence of stability, but it is not a proof that 3-hop is always globally fastest. It is proof that the system now chooses and sticks to the route that its quality model currently scores highest.

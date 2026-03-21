@@ -1566,7 +1566,7 @@ async fn run_client_tcp_mode(
 
             for attempt in 0..3 {
                 let now = Instant::now();
-                let (pick, candidate_snapshot) = {
+                let (decision, candidate_snapshot) = {
                     let mut store = route_store.lock().await;
                     let scored = store.scored_candidates(now, &excluded);
                     let candidate_snapshot = scored
@@ -1597,12 +1597,66 @@ async fn run_client_tcp_mode(
                             })
                         })
                         .collect::<Vec<_>>();
-                    let pick = scored.first().cloned();
-                    if let Some((idx, details)) = &pick {
-                        store.note_route_selection(*idx, details.final_score);
-                    }
-                    (pick, candidate_snapshot)
+                    let decision = store.apply_selection_policy(&scored, now);
+                    (decision, candidate_snapshot)
                 };
+                let decision_json = decision.as_ref().map(|decision| {
+                    let selected_route = candidate_snapshot
+                        .iter()
+                        .find(|candidate| {
+                            candidate
+                                .get("candidate_idx")
+                                .and_then(|value| value.as_u64())
+                                == Some(decision.selected_idx as u64)
+                        })
+                        .and_then(|candidate| candidate.get("route_chain"))
+                        .and_then(|value| value.as_str())
+                        .unwrap_or("<missing>")
+                        .to_string();
+                    let best_route = candidate_snapshot
+                        .iter()
+                        .find(|candidate| {
+                            candidate
+                                .get("candidate_idx")
+                                .and_then(|value| value.as_u64())
+                                == Some(decision.best_idx as u64)
+                        })
+                        .and_then(|candidate| candidate.get("route_chain"))
+                        .and_then(|value| value.as_str())
+                        .unwrap_or("<missing>")
+                        .to_string();
+                    let previous_route = decision.previous_idx.and_then(|previous_idx| {
+                        candidate_snapshot
+                            .iter()
+                            .find(|candidate| {
+                                candidate
+                                    .get("candidate_idx")
+                                    .and_then(|value| value.as_u64())
+                                    == Some(previous_idx as u64)
+                            })
+                            .and_then(|candidate| candidate.get("route_chain"))
+                            .and_then(|value| value.as_str())
+                            .map(|value| value.to_string())
+                    });
+                    json!({
+                        "decision_reason": decision.decision_reason,
+                        "tie_break_reason": decision.tie_break_reason,
+                        "switched": decision.switched,
+                        "selected_idx": decision.selected_idx,
+                        "selected_route": selected_route,
+                        "best_idx": decision.best_idx,
+                        "best_route": best_route,
+                        "best_score": decision.best_details.final_score,
+                        "previous_idx": decision.previous_idx,
+                        "previous_route": previous_route,
+                        "previous_score": decision.previous_details.as_ref().map(|details| details.final_score),
+                        "score_delta_abs": decision.score_delta_abs,
+                        "score_delta_ratio": decision.score_delta_ratio,
+                        "required_abs_margin": decision.required_abs_margin,
+                        "required_rel_margin": decision.required_rel_margin,
+                        "hold_remaining_ms": decision.hold_remaining_ms,
+                    })
+                });
                 emit_client_stage(
                     "route_candidates_scored",
                     json!({
@@ -1619,11 +1673,14 @@ async fn run_client_tcp_mode(
                                 .join(" -> "))
                             .collect::<Vec<_>>(),
                         "candidates": candidate_snapshot,
+                        "selection_policy": decision_json,
                     }),
                 );
-                let Some((idx, details)) = pick else {
+                let Some(decision) = decision else {
                     break;
                 };
+                let idx = decision.selected_idx;
+                let details = decision.selected_details.clone();
                 let score = details.final_score;
                 let route = {
                     let store = route_store.lock().await;
@@ -1647,7 +1704,11 @@ async fn run_client_tcp_mode(
                     recent_window_wait_ratio_ppm = ?details.recent_window_wait_ratio_ppm,
                     recent_success_count = details.recent_success_count,
                     recent_failure_count = details.recent_failure_count,
-                    "route selected: quality-aware candidate won"
+                    decision_reason = decision.decision_reason,
+                    switched = decision.switched,
+                    score_delta_abs = decision.score_delta_abs,
+                    score_delta_ratio = decision.score_delta_ratio,
+                    "route selected: quality-aware policy applied"
                 );
                 let sid = if attempt == 0 {
                     sid0
@@ -1679,6 +1740,18 @@ async fn run_client_tcp_mode(
                         "recent_window_wait_ratio_ppm": details.recent_window_wait_ratio_ppm,
                         "recent_success_count": details.recent_success_count,
                         "recent_failure_count": details.recent_failure_count,
+                        "decision_reason": decision.decision_reason,
+                        "tie_break_reason": decision.tie_break_reason,
+                        "switched": decision.switched,
+                        "best_idx": decision.best_idx,
+                        "best_score": decision.best_details.final_score,
+                        "previous_idx": decision.previous_idx,
+                        "previous_score": decision.previous_details.as_ref().map(|prev| prev.final_score),
+                        "score_delta_abs": decision.score_delta_abs,
+                        "score_delta_ratio": decision.score_delta_ratio,
+                        "required_abs_margin": decision.required_abs_margin,
+                        "required_rel_margin": decision.required_rel_margin,
+                        "hold_remaining_ms": decision.hold_remaining_ms,
                         "since_request_buffered_ms": accept_start.elapsed().as_millis() as u64,
                     }),
                 );

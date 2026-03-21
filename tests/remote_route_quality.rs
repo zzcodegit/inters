@@ -62,12 +62,23 @@ struct CandidateScore {
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 struct RouteSelection {
     stream_id: u64,
     attempt: u64,
     route_len: u64,
     route_chain: String,
     score: f64,
+    decision_reason: String,
+    tie_break_reason: Option<String>,
+    switched: bool,
+    best_idx: Option<u64>,
+    previous_idx: Option<u64>,
+    score_delta_abs: Option<f64>,
+    score_delta_ratio: Option<f64>,
+    required_abs_margin: Option<f64>,
+    required_rel_margin: Option<f64>,
+    hold_remaining_ms: Option<u64>,
     recent_ttfb_ms: Option<u64>,
     recent_total_ms: Option<u64>,
     recent_ack_p95_ms: Option<u64>,
@@ -416,6 +427,23 @@ fn analyze_stage_trace(path: &Path) -> anyhow::Result<StageTraceAnalysis> {
                         .unwrap_or("<missing>")
                         .to_string(),
                     score: value.get("score").and_then(Value::as_f64).unwrap_or(0.0),
+                    decision_reason: value
+                        .get("decision_reason")
+                        .and_then(Value::as_str)
+                        .unwrap_or("unknown")
+                        .to_string(),
+                    tie_break_reason: value
+                        .get("tie_break_reason")
+                        .and_then(Value::as_str)
+                        .map(|value| value.to_string()),
+                    switched: value.get("switched").and_then(Value::as_bool).unwrap_or(false),
+                    best_idx: value.get("best_idx").and_then(Value::as_u64),
+                    previous_idx: value.get("previous_idx").and_then(Value::as_u64),
+                    score_delta_abs: value.get("score_delta_abs").and_then(Value::as_f64),
+                    score_delta_ratio: value.get("score_delta_ratio").and_then(Value::as_f64),
+                    required_abs_margin: value.get("required_abs_margin").and_then(Value::as_f64),
+                    required_rel_margin: value.get("required_rel_margin").and_then(Value::as_f64),
+                    hold_remaining_ms: value.get("hold_remaining_ms").and_then(Value::as_u64),
                     recent_ttfb_ms: value.get("recent_ttfb_ms").and_then(Value::as_u64),
                     recent_total_ms: value.get("recent_total_ms").and_then(Value::as_u64),
                     recent_ack_p95_ms: value.get("recent_ack_p95_ms").and_then(Value::as_u64),
@@ -530,15 +558,19 @@ fn render_report(
         analysis.feedback_events.len()
     ));
 
-    markdown.push_str("| selection | route len | selected route | score | recent TTFB ms | recent total ms | recent ACK p95 ms | recent retransmit ppm | recent stall ppm |\n");
-    markdown.push_str("| --- | --- | --- | --- | --- | --- | --- | --- | --- |\n");
+    markdown.push_str("| selection | route len | selected route | score | reason | switched | score delta abs | score delta rel % | recent TTFB ms | recent total ms | recent ACK p95 ms | recent retransmit ppm | recent stall ppm |\n");
+    markdown.push_str("| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |\n");
     for (idx, selection) in analysis.selections.iter().take(12).enumerate() {
         markdown.push_str(&format!(
-            "| {} | {} | `{}` | {:.4} | {} | {} | {} | {} | {} |\n",
+            "| {} | {} | `{}` | {:.4} | `{}` | `{}` | {} | {} | {} | {} | {} | {} | {} |\n",
             idx + 1,
             selection.route_len,
             selection.route_chain,
             selection.score,
+            selection.decision_reason,
+            selection.switched,
+            fmt_opt_f64(selection.score_delta_abs),
+            fmt_opt_percent(selection.score_delta_ratio),
             fmt_opt(selection.recent_ttfb_ms),
             fmt_opt(selection.recent_total_ms),
             fmt_opt(selection.recent_ack_p95_ms),
@@ -611,6 +643,18 @@ fn average(values: impl Iterator<Item = f64>) -> f64 {
 fn fmt_opt(value: Option<u64>) -> String {
     value
         .map(|value| value.to_string())
+        .unwrap_or_else(|| "-".to_string())
+}
+
+fn fmt_opt_f64(value: Option<f64>) -> String {
+    value
+        .map(|value| format!("{value:.4}"))
+        .unwrap_or_else(|| "-".to_string())
+}
+
+fn fmt_opt_percent(value: Option<f64>) -> String {
+    value
+        .map(|value| format!("{:.2}", value * 100.0))
         .unwrap_or_else(|| "-".to_string())
 }
 

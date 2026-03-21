@@ -102,6 +102,20 @@ See:
 - `docs/route_quality_scoring_followup.md`
 - `docs/artifacts/route_quality_remote_2026-03-21.md`
 
+For multi-run stability evidence there is also:
+
+```bash
+bash scripts/run_route_quality_remote_series.sh
+```
+
+That runner executes multiple independent adaptive WAN runs, preserves a per-run
+stage trace, and writes an aggregated series report showing:
+
+- which route was selected in each run
+- how often the selected route matched the current best-score candidate
+- decision-reason distribution (`initial_selection`, `current_still_best`, and so on)
+- whether switching occurred or hysteresis kept the current route
+
 ## Remote target requirement
 
 The remote matrix now uses option `A`: a plain-HTTP target that is expected to return `200 OK`.

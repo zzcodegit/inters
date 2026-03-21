@@ -1,9 +1,10 @@
     Blocking waiting for file lock on package cache
     Blocking waiting for file lock on package cache
     Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
     Blocking waiting for file lock on artifact directory
    Compiling vpnnode v0.1.0 (C:\neinternet\vpnnode)
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 8.91s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 18.15s
      Running tests\http_probe_ready.rs (target\debug\deps\http_probe_ready-27bf7af52161d901.exe)
 
 running 1 test

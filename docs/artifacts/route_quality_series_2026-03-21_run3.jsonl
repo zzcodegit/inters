@@ -1,0 +1,4 @@
+{"run_index":1,"status_code":200,"connect_time_ms":0.4168,"ttfb_ms":1946.2287000000001,"total_time_ms":1946.8882,"response_bytes":262349,"body_bytes":262144,"effective_throughput_bps":134647.69060699016}
+{"run_index":2,"status_code":200,"connect_time_ms":0.4813,"ttfb_ms":2161.5499,"total_time_ms":2162.3439000000003,"response_bytes":262349,"body_bytes":262144,"effective_throughput_bps":121231.41004536788}
+{"run_index":3,"status_code":200,"connect_time_ms":0.4048,"ttfb_ms":2085.1259999999997,"total_time_ms":2085.7594000000004,"response_bytes":262349,"body_bytes":262144,"effective_throughput_bps":125682.76091671934}
+{"run_index":4,"status_code":200,"connect_time_ms":0.40850000000000003,"ttfb_ms":1261.6387,"total_time_ms":1262.2736,"response_bytes":262349,"body_bytes":262144,"effective_throughput_bps":207676.05374936148}

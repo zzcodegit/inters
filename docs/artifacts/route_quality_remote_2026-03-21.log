@@ -11,9 +11,10 @@ raw_path=docs/artifacts/route_quality_remote_2026-03-21.jsonl
 stage_trace_path=docs/artifacts/route_quality_remote_2026-03-21.client.jsonl
 report_path=docs/artifacts/route_quality_remote_2026-03-21.md
 reset_cmd=powershell.exe -ExecutionPolicy Bypass -File scripts/reset_remote_topology.ps1
-   Compiling vpnnode v0.1.0 (C:\neinternet\vpnnode)
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 5.02s
-     Running tests\remote_route_quality.rs (C:/Users/zekin/AppData/Local/Temp/vpnnode-target\debug\deps\remote_route_quality-30e597e8cc779cf8.exe)
+
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 24.66s
+     Running tests\remote_route_quality.rs (C:/Users/zekin/AppData/Local/Temp/vpnnode-target\debug\deps\remote_route_qu
+ality-30e597e8cc779cf8.exe)
 
 running 1 test
 test remote_route_quality_selection_uses_quality_feedback ... reset_topology label=relay-1 host=45.197.133.115 services=vpnnode-relay1.service
@@ -24,17 +25,26 @@ reset_topology label=exit host=31.192.232.26 services=vpnnode-exit.service
 active
 check_service label=exit-target-http host=31.192.232.26 service=vpnnode-target-http.service
 active
-route_quality mode=remote exact_route_only=false route_length=3 local_listen=127.0.0.1:19380 request_path=/perf-262144.bin route_chain=client -> 45.197.133.115:30001 -> 185.144.28.95:30002 -> 31.192.232.26:30000 -> target runs=6 raw=docs/artifacts/route_quality_remote_2026-03-21.jsonl stage_trace=docs/artifacts/route_quality_remote_2026-03-21.client.jsonl report=docs/artifacts/route_quality_remote_2026-03-21.md
-route_quality_run=1 status=200 connect_ms=0.44 ttfb_ms=1811.50 total_ms=1812.47 body_bytes=262144 throughput_bps=144633.20
-route_quality_run=2 status=200 connect_ms=0.36 ttfb_ms=1980.75 total_ms=1981.55 body_bytes=262144 throughput_bps=132292.34
-route_quality_run=3 status=200 connect_ms=0.46 ttfb_ms=1136.59 total_ms=1137.52 body_bytes=262144 throughput_bps=230452.70
-route_quality_run=4 status=200 connect_ms=0.59 ttfb_ms=1157.18 total_ms=1158.13 body_bytes=262144 throughput_bps=226350.20
-route_quality_run=5 status=200 connect_ms=0.40 ttfb_ms=1167.45 total_ms=1168.38 body_bytes=262144 throughput_bps=224365.55
-route_quality_run=6 status=200 connect_ms=0.38 ttfb_ms=1140.30 total_ms=1141.12 body_bytes=262144 throughput_bps=229725.46
+route_quality mode=remote exact_route_only=false route_length=3 local_listen=127.0.0.1:19380 request_path=/perf-262144.
+bin route_chain=client -> 45.197.133.115:30001 -> 185.144.28.95:30002 -> 31.192.232.26:30000 -> target runs=6 raw=docs/
+artifacts/route_quality_remote_2026-03-21.jsonl stage_trace=docs/artifacts/route_quality_remote_2026-03-21.client.jsonl
+ report=docs/artifacts/route_quality_remote_2026-03-21.md
+route_quality_run=1 status=200 connect_ms=0.90 ttfb_ms=2453.62 total_ms=2454.94 body_bytes=262144 throughput_bps=106782
+.13
+route_quality_run=2 status=200 connect_ms=1.20 ttfb_ms=2244.37 total_ms=2246.46 body_bytes=262144 throughput_bps=116691
+.79
+route_quality_run=3 status=200 connect_ms=0.83 ttfb_ms=1314.77 total_ms=1316.06 body_bytes=262144 throughput_bps=199187
+.78
+route_quality_run=4 status=200 connect_ms=0.92 ttfb_ms=1165.03 total_ms=1166.40 body_bytes=262144 throughput_bps=224745
+.90
+route_quality_run=5 status=200 connect_ms=0.97 ttfb_ms=1194.76 total_ms=1196.31 body_bytes=262144 throughput_bps=219127
+.46
+route_quality_run=6 status=200 connect_ms=0.96 ttfb_ms=1165.23 total_ms=1166.64 body_bytes=262144 throughput_bps=224700
+.74
 ok
 
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 291.63s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 302.92s
 
-=== route-quality cleanup start 2026-03-21T21:11:48+03:00 ===
+=== route-quality cleanup start 2026-03-21T21:59:13+03:00 ===
 route_quality_listener_present=none
-=== route-quality cleanup end 2026-03-21T21:11:50+03:00 ===
+=== route-quality cleanup end 2026-03-21T21:59:15+03:00 ===

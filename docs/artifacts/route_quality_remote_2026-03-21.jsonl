@@ -1,6 +1,6 @@
-{"run_index":1,"status_code":200,"connect_time_ms":0.437,"ttfb_ms":1811.5033,"total_time_ms":1812.4746,"response_bytes":262349,"body_bytes":262144,"effective_throughput_bps":144633.1992735236}
-{"run_index":2,"status_code":200,"connect_time_ms":0.35750000000000004,"ttfb_ms":1980.748,"total_time_ms":1981.5509,"response_bytes":262349,"body_bytes":262144,"effective_throughput_bps":132292.3372798549}
-{"run_index":3,"status_code":200,"connect_time_ms":0.4554,"ttfb_ms":1136.5885,"total_time_ms":1137.5176000000001,"response_bytes":262349,"body_bytes":262144,"effective_throughput_bps":230452.69805056197}
-{"run_index":4,"status_code":200,"connect_time_ms":0.5864,"ttfb_ms":1157.1781999999998,"total_time_ms":1158.1345999999999,"response_bytes":262349,"body_bytes":262144,"effective_throughput_bps":226350.2014359989}
-{"run_index":5,"status_code":200,"connect_time_ms":0.4015,"ttfb_ms":1167.4481,"total_time_ms":1168.3790000000001,"response_bytes":262349,"body_bytes":262144,"effective_throughput_bps":224365.55261606036}
-{"run_index":6,"status_code":200,"connect_time_ms":0.3837,"ttfb_ms":1140.3048000000001,"total_time_ms":1141.1186,"response_bytes":262349,"body_bytes":262144,"effective_throughput_bps":229725.46411915467}
+{"run_index":1,"status_code":200,"connect_time_ms":0.9027,"ttfb_ms":2453.6156,"total_time_ms":2454.9427,"response_bytes":262349,"body_bytes":262144,"effective_throughput_bps":106782.12570908476}
+{"run_index":2,"status_code":200,"connect_time_ms":1.2048,"ttfb_ms":2244.371,"total_time_ms":2246.4648,"response_bytes":262349,"body_bytes":262144,"effective_throughput_bps":116691.79058581287}
+{"run_index":3,"status_code":200,"connect_time_ms":0.8342,"ttfb_ms":1314.7703,"total_time_ms":1316.0647000000001,"response_bytes":262349,"body_bytes":262144,"effective_throughput_bps":199187.77549462422}
+{"run_index":4,"status_code":200,"connect_time_ms":0.9226,"ttfb_ms":1165.0267999999999,"total_time_ms":1166.4017,"response_bytes":262349,"body_bytes":262144,"effective_throughput_bps":224745.90014743633}
+{"run_index":5,"status_code":200,"connect_time_ms":0.9692000000000001,"ttfb_ms":1194.7608,"total_time_ms":1196.3083000000001,"response_bytes":262349,"body_bytes":262144,"effective_throughput_bps":219127.46070557227}
+{"run_index":6,"status_code":200,"connect_time_ms":0.9586,"ttfb_ms":1165.2316,"total_time_ms":1166.6361000000002,"response_bytes":262349,"body_bytes":262144,"effective_throughput_bps":224700.74430235784}
