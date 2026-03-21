@@ -412,7 +412,7 @@ lines.append(
     "1. Prioritize retransmit/ACK tuning on the response path first; that is where the largest steady-state time is being burned."
 )
 lines.append(
-    "2. Use better exit/route scoring second; the current sample shows `2-hop` outperforming both `1-hop` and `3-hop`, so path quality matters more than hop-count alone."
+    "2. Use better exit/route scoring second; the current sample shows that path quality matters more than hop-count alone, so scoring should prefer the empirically faster overlay path instead of assuming more or fewer hops are always better."
 )
 lines.append(
     "3. Treat warm tunnel/session reuse as a cold-start improvement, not the main fix for current per-request TTFB."
