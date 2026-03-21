@@ -174,6 +174,62 @@ type CompletedResponseStreamTable = Arc<Mutex<HashMap<u32, CompletedResponseStre
 
 const COMPLETED_RESPONSE_STREAM_LINGER: Duration = Duration::from_secs(30);
 const MAX_COMPLETED_RESPONSE_STREAMS: usize = 2048;
+const BUFFERED_HTTP_RESPONSE_SOFT_CAP_SLACK: usize = 256 * 1024;
+const BUFFERED_HTTP_RESPONSE_CONTENT_LENGTH_SLACK: usize = 4 * 1024;
+const BUFFERED_HTTP_RESPONSE_HARD_CAP: usize = 16 * 1024 * 1024;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct BufferedHttpResponseInspection {
+    header_end: Option<usize>,
+    content_length: Option<usize>,
+    expected_total: Option<usize>,
+    fallback_cap: usize,
+    hard_cap: usize,
+    active_cap: usize,
+    content_length_exceeds_cap: bool,
+    completion_reason: Option<&'static str>,
+}
+
+fn inspect_buffered_http_response(
+    request_len: usize,
+    response: &[u8],
+) -> BufferedHttpResponseInspection {
+    let fallback_cap = request_len.saturating_add(BUFFERED_HTTP_RESPONSE_SOFT_CAP_SLACK);
+    let hard_cap = fallback_cap.max(BUFFERED_HTTP_RESPONSE_HARD_CAP);
+    let mut inspection = BufferedHttpResponseInspection {
+        header_end: http_header_end(response),
+        content_length: None,
+        expected_total: None,
+        fallback_cap,
+        hard_cap,
+        active_cap: fallback_cap,
+        content_length_exceeds_cap: false,
+        completion_reason: None,
+    };
+
+    if let Some((header_end, body_len)) = http_content_length(response) {
+        let expected_total = header_end.saturating_add(body_len);
+        inspection.header_end = Some(header_end);
+        inspection.content_length = Some(body_len);
+        inspection.expected_total = Some(expected_total);
+        inspection.active_cap = fallback_cap
+            .max(expected_total.saturating_add(BUFFERED_HTTP_RESPONSE_CONTENT_LENGTH_SLACK))
+            .min(hard_cap);
+        inspection.content_length_exceeds_cap = expected_total > hard_cap;
+
+        if !inspection.content_length_exceeds_cap && response.len() >= expected_total {
+            inspection.completion_reason = Some("content_length_reached");
+        } else if response.len() >= inspection.active_cap {
+            inspection.completion_reason = Some("buffer_cap_reached");
+        }
+        return inspection;
+    }
+
+    if response.len() >= inspection.active_cap {
+        inspection.completion_reason = Some("buffer_cap_reached");
+    }
+    inspection
+}
 
 #[derive(Clone)]
 struct CompletedResponseStream {
@@ -1816,6 +1872,16 @@ async fn tunnel_http_roundtrip(
     let mut resp_bytes_written: usize = 0;
     let mut resp_frames: usize = 0;
     let mut first_client_byte_ms: Option<u64> = None;
+    let mut buffered_header_end: Option<usize> = None;
+    let mut buffered_content_length: Option<usize> = None;
+    let mut buffered_expected_total: Option<usize> = None;
+    let mut buffered_fallback_cap = request
+        .len()
+        .saturating_add(BUFFERED_HTTP_RESPONSE_SOFT_CAP_SLACK);
+    let mut buffered_active_cap = buffered_fallback_cap;
+    let mut buffered_hard_cap = buffered_fallback_cap.max(BUFFERED_HTTP_RESPONSE_HARD_CAP);
+    let mut buffered_content_length_exceeds_cap = false;
+    let mut buffered_completion_reason_hint: Option<&'static str> = None;
     let idle_timeout = if write_response_to_tcp {
         Duration::from_secs(120)
     } else {
@@ -1873,25 +1939,69 @@ async fn tunnel_http_roundtrip(
                     resp_frames += 1;
                 } else {
                     full.extend(chunk);
-                    // Safety cap: in TCP-mode (write_response_to_tcp=false) we buffer
-                    // the entire HTTP response in memory until we detect its
-                    // Content-Length or hit an upper bound.
-                    //
-                    // Previous hard limit (66 KiB) made large transfers impossible.
-                    // We cap based on the request size with a small buffer.
-                    let max_full = request.len().saturating_add(256 * 1024);
-                    if full.len() >= max_full {
-                        break "buffer_cap_reached";
+                    let inspection = inspect_buffered_http_response(request.len(), &full);
+                    buffered_fallback_cap = inspection.fallback_cap;
+                    buffered_hard_cap = inspection.hard_cap;
+                    buffered_active_cap = inspection.active_cap;
+                    buffered_content_length_exceeds_cap = inspection.content_length_exceeds_cap;
+
+                    if inspection.header_end != buffered_header_end {
+                        buffered_header_end = inspection.header_end;
+                        emit_client_stage(
+                            "buffered_headers_parsed",
+                            json!({
+                                "stream_id": stream_id,
+                                "site": request_site.as_str(),
+                                "route_len": route.len(),
+                                "route_chain": route_chain.as_str(),
+                                "response_bytes_total": full.len(),
+                                "header_end": inspection.header_end,
+                                "content_length_detected": inspection.content_length.is_some(),
+                                "content_length": inspection.content_length,
+                                "expected_total": inspection.expected_total,
+                                "fallback_cap": inspection.fallback_cap,
+                                "active_cap": inspection.active_cap,
+                                "hard_cap": inspection.hard_cap,
+                            }),
+                        );
                     }
-                    if let Some((hdr_end, body_len)) = http_content_length(&full) {
-                        let need = hdr_end + body_len;
-                        if full.len() >= need {
-                            break "content_length_satisfied";
+
+                    if inspection.content_length != buffered_content_length {
+                        buffered_content_length = inspection.content_length;
+                        buffered_expected_total = inspection.expected_total;
+                        if inspection.content_length.is_some() {
+                            emit_client_stage(
+                                "buffered_content_length_detected",
+                                json!({
+                                    "stream_id": stream_id,
+                                    "site": request_site.as_str(),
+                                    "route_len": route.len(),
+                                    "route_chain": route_chain.as_str(),
+                                    "response_bytes_total": full.len(),
+                                    "header_end": inspection.header_end,
+                                    "content_length": inspection.content_length,
+                                    "expected_total": inspection.expected_total,
+                                    "fallback_cap": inspection.fallback_cap,
+                                    "active_cap": inspection.active_cap,
+                                    "hard_cap": inspection.hard_cap,
+                                    "content_length_exceeds_cap": inspection.content_length_exceeds_cap,
+                                }),
+                            );
                         }
+                    }
+
+                    if let Some(reason) = inspection.completion_reason {
+                        buffered_completion_reason_hint = Some(reason);
+                        break reason;
                     }
                 }
             }
-            None => break "end_of_stream",
+            None => {
+                if !write_response_to_tcp {
+                    buffered_completion_reason_hint = Some("peer_closed");
+                }
+                break "peer_closed";
+            }
         }
     };
 
@@ -1930,6 +2040,26 @@ async fn tunnel_http_roundtrip(
             "write_response_to_tcp": write_response_to_tcp,
         }),
     );
+    if !write_response_to_tcp {
+        emit_client_stage(
+            "buffered_completion_decision",
+            json!({
+                "stream_id": stream_id,
+                "site": request_site.as_str(),
+                "route_len": route.len(),
+                "route_chain": route_chain.as_str(),
+                "response_bytes_total": full.len(),
+                "header_end": buffered_header_end,
+                "content_length": buffered_content_length,
+                "expected_total": buffered_expected_total,
+                "fallback_cap": buffered_fallback_cap,
+                "active_cap": buffered_active_cap,
+                "hard_cap": buffered_hard_cap,
+                "content_length_exceeds_cap": buffered_content_length_exceeds_cap,
+                "completion_reason": buffered_completion_reason_hint.unwrap_or(completion_reason),
+            }),
+        );
+    }
 
     if !write_response_to_tcp && full.is_empty() {
         anyhow::bail!("no response (timeout or channel closed)");
@@ -2496,5 +2626,90 @@ mod tests {
         assert_eq!(completion_reason, "content_length_satisfied");
         assert_eq!(late_payload_count, 1);
         assert!(completed_age_ms <= COMPLETED_RESPONSE_STREAM_LINGER.as_millis() as u64);
+    }
+
+    fn response_with_content_length(body_len: usize) -> Vec<u8> {
+        let header =
+            format!("HTTP/1.1 200 OK\r\nContent-Length: {body_len}\r\nConnection: close\r\n\r\n");
+        let mut response = Vec::with_capacity(header.len() + body_len);
+        response.extend_from_slice(header.as_bytes());
+        response.extend(std::iter::repeat_n(b'X', body_len));
+        response
+    }
+
+    #[test]
+    fn buffered_completion_uses_content_length_for_small_response() {
+        let request = b"GET / HTTP/1.1\r\nHost: example\r\nConnection: close\r\n\r\n";
+        let response = response_with_content_length(64);
+        let inspection = inspect_buffered_http_response(request.len(), &response);
+
+        assert_eq!(inspection.content_length, Some(64));
+        assert_eq!(inspection.expected_total, Some(response.len()));
+        assert_eq!(inspection.completion_reason, Some("content_length_reached"));
+        assert!(!inspection.content_length_exceeds_cap);
+    }
+
+    #[test]
+    fn buffered_completion_uses_content_length_for_medium_response() {
+        let request =
+            b"GET /perf-262144.bin HTTP/1.1\r\nHost: example\r\nConnection: close\r\n\r\n";
+        let response = response_with_content_length(262_144);
+        let inspection = inspect_buffered_http_response(request.len(), &response);
+
+        assert_eq!(inspection.content_length, Some(262_144));
+        assert_eq!(inspection.expected_total, Some(response.len()));
+        assert_eq!(inspection.completion_reason, Some("content_length_reached"));
+        assert!(
+            inspection.active_cap > response.len(),
+            "content-length aware cap must leave headroom past the exact response size"
+        );
+    }
+
+    #[test]
+    fn buffered_completion_does_not_stop_at_old_soft_cap_before_content_length_total() {
+        let request =
+            b"GET /perf-262144.bin HTTP/1.1\r\nHost: example\r\nConnection: close\r\n\r\n";
+        let full_response =
+            response_with_content_length(BUFFERED_HTTP_RESPONSE_SOFT_CAP_SLACK + 256);
+        let old_soft_cap = request
+            .len()
+            .saturating_add(BUFFERED_HTTP_RESPONSE_SOFT_CAP_SLACK);
+        assert!(
+            full_response.len() > old_soft_cap,
+            "test response must exceed the old soft cap to reproduce the premature-cap scenario"
+        );
+        let partial = &full_response[..old_soft_cap];
+        let inspection = inspect_buffered_http_response(request.len(), partial);
+
+        assert_eq!(
+            inspection.content_length,
+            Some(BUFFERED_HTTP_RESPONSE_SOFT_CAP_SLACK + 256)
+        );
+        assert_eq!(inspection.expected_total, Some(full_response.len()));
+        assert_eq!(
+            inspection.completion_reason,
+            None,
+            "buffered completion must keep waiting when Content-Length says more bytes are expected"
+        );
+    }
+
+    #[test]
+    fn buffered_completion_can_use_cap_as_safety_fallback_for_oversized_response() {
+        let request = b"GET /huge HTTP/1.1\r\nHost: example\r\nConnection: close\r\n\r\n";
+        let oversize_body = BUFFERED_HTTP_RESPONSE_HARD_CAP + 1024;
+        let header = format!(
+            "HTTP/1.1 200 OK\r\nContent-Length: {oversize_body}\r\nConnection: close\r\n\r\n"
+        );
+        let mut partial = Vec::with_capacity(BUFFERED_HTTP_RESPONSE_HARD_CAP);
+        partial.extend_from_slice(header.as_bytes());
+        partial.extend(std::iter::repeat_n(
+            b'Y',
+            BUFFERED_HTTP_RESPONSE_HARD_CAP.saturating_sub(header.len()),
+        ));
+        let inspection = inspect_buffered_http_response(request.len(), &partial);
+
+        assert!(inspection.content_length_exceeds_cap);
+        assert_eq!(inspection.completion_reason, Some("buffer_cap_reached"));
+        assert_eq!(inspection.active_cap, inspection.hard_cap);
     }
 }
