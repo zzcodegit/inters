@@ -22,4 +22,5 @@ pub mod roles;
 pub mod tun;
 pub mod packet;
 pub mod flow;
+pub mod stage_trace;
 

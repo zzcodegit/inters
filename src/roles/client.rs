@@ -15,6 +15,7 @@ use crate::route_store::{RouteFailureKind, RouteStore};
 use crate::ant::{Ant, AntDedup, AntType};
 use crate::session::SessionCrypto;
 use crate::stream_reliable::{AckFrame, ReliableStream};
+use crate::stage_trace;
 use crate::transport::{Transport, UdpTransport};
 use crate::tun::TunDevice;
 use crate::ops::drain;
@@ -22,6 +23,7 @@ use crate::discovery;
 use crate::discovery::DiscoveryMessage;
 use anyhow::Result;
 use crate::node_config::NodeRole;
+use serde_json::json;
 use std::collections::HashMap;
 use std::time::Instant;
 use std::sync::{
@@ -105,6 +107,65 @@ fn http_status_code(buf: &[u8]) -> Option<u16> {
     Some(
         (d[0] - b'0') as u16 * 100 + (d[1] - b'0') as u16 * 10 + (d[2] - b'0') as u16,
     )
+}
+
+fn strip_port_from_host_bytes(host_port: &[u8]) -> Option<&[u8]> {
+    if host_port.is_empty() {
+        return None;
+    }
+    if host_port.first() == Some(&b'[') {
+        let close = host_port.iter().position(|&b| b == b']')?;
+        if close <= 1 {
+            return None;
+        }
+        return Some(&host_port[1..close]);
+    }
+    if let Some(idx) = host_port.iter().rposition(|&b| b == b':') {
+        if idx + 1 < host_port.len()
+            && host_port[idx + 1..].iter().all(|b| b.is_ascii_digit())
+        {
+            return Some(&host_port[..idx]);
+        }
+    }
+    Some(host_port)
+}
+
+fn extract_http_host_from_request<'a>(req: &'a [u8]) -> Option<&'a str> {
+    let marker = b"Host:";
+    let pos = req.windows(marker.len()).position(|window| window == marker)?;
+    let mut idx = pos + marker.len();
+    while idx < req.len() && req[idx].is_ascii_whitespace() {
+        idx += 1;
+    }
+    if idx >= req.len() {
+        return None;
+    }
+    let end = req[idx..]
+        .iter()
+        .position(|&b| b == b'\r' || b == b'\n')
+        .map(|offset| idx + offset)
+        .unwrap_or(req.len());
+    let host_port = &req[idx..end];
+    strip_port_from_host_bytes(host_port)
+        .and_then(|host| std::str::from_utf8(host).ok())
+}
+
+fn request_site_label(req: &[u8]) -> String {
+    extract_http_host_from_request(req)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("unknown")
+        .to_string()
+}
+
+fn emit_client_stage(stage: &str, payload: serde_json::Value) {
+    if !stage_trace::enabled() {
+        return;
+    }
+    let mut object = stage_trace::event("client", stage);
+    if let serde_json::Value::Object(fields) = payload {
+        object.extend(fields);
+    }
+    stage_trace::emit(serde_json::Value::Object(object));
 }
 
 fn build_probe_request() -> Vec<u8> {
@@ -940,7 +1001,7 @@ async fn run_client_tcp_mode(
             let mut request_buf = Vec::new();
             let first_byte_timeout = Duration::from_secs(10);
             let read_idle_timeout = Duration::from_secs(5);
-            let start = std::time::Instant::now();
+            let accept_start = std::time::Instant::now();
             let mut is_tls = false;
 
             loop {
@@ -988,7 +1049,7 @@ async fn run_client_tcp_mode(
                     }
                 }
 
-                let elapsed = start.elapsed();
+                let elapsed = accept_start.elapsed();
                 let tout = if request_buf.is_empty() {
                     first_byte_timeout.saturating_sub(elapsed)
                 } else {
@@ -1047,6 +1108,18 @@ async fn run_client_tcp_mode(
                 return;
             }
             info!(stream_id = sid0, bytes = request_buf.len(), "client: buffered full local request");
+            let request_site = request_site_label(&request_buf);
+            emit_client_stage(
+                "request_buffered",
+                json!({
+                    "stream_id": sid0,
+                    "site": request_site.as_str(),
+                    "request_bytes": request_buf.len(),
+                    "buffer_ms": accept_start.elapsed().as_millis() as u64,
+                    "local_peer": addr.to_string(),
+                    "tls_mode": is_tls,
+                }),
+            );
 
             let chunk_size = args.chunk_size.max(256).min(1200);
             let mut excluded: Vec<Route> = Vec::new();
@@ -1088,12 +1161,28 @@ async fn run_client_tcp_mode(
                 } else {
                     info!(stream_id = sid0, attempt, hops, score, "route selected: hops=N score=X");
                 }
-
                 let sid = if attempt == 0 {
                     sid0
                 } else {
                     next_stream_id.fetch_add(1, Ordering::Relaxed)
                 };
+                emit_client_stage(
+                    "route_selected",
+                json!({
+                    "stream_id": sid,
+                    "site": request_site.as_str(),
+                    "attempt": attempt,
+                    "route_len": hops,
+                        "route_chain": route
+                            .hops
+                            .iter()
+                            .map(|hop| hop.to_string())
+                            .collect::<Vec<_>>()
+                            .join(" -> "),
+                        "score": score,
+                        "since_request_buffered_ms": accept_start.elapsed().as_millis() as u64,
+                    }),
+                );
                 let start_rtt = Instant::now();
                 match tunnel_http_roundtrip(
                     &udp,
@@ -1270,7 +1359,25 @@ async fn tunnel_http_roundtrip(
     let first_hop = route
         .first_hop()
         .ok_or_else(|| anyhow::anyhow!("client: empty route for stream"))?;
+    let request_site = request_site_label(request);
+    let route_chain = route
+        .hops
+        .iter()
+        .map(|hop| hop.to_string())
+        .collect::<Vec<_>>()
+        .join(" -> ");
     debug!(stream_id = stream_id, bytes = request.len(), hops = route.len(), "client: tunnel_http_roundtrip start");
+    emit_client_stage(
+        "roundtrip_started",
+        json!({
+            "stream_id": stream_id,
+            "site": request_site.as_str(),
+            "route_len": route.len(),
+            "route_chain": route_chain.as_str(),
+            "request_bytes": request.len(),
+            "write_response_to_tcp": write_response_to_tcp,
+        }),
+    );
 
     {
         let mut map = stream_routes.lock().unwrap();
@@ -1300,6 +1407,7 @@ async fn tunnel_http_roundtrip(
     let mut offset = 0;
     let mut sent_chunks = 0usize;
     let mut sent_bytes = 0usize;
+    let mut first_hop_sent_logged = false;
     while offset < request.len() {
         // Backpressure: keep inflight bounded to avoid packet storms and
         // excessive out-of-order that could trip session-level replay windows.
@@ -1325,6 +1433,20 @@ async fn tunnel_http_roundtrip(
         let msg = TunnelMessage::new(MsgType::Data, 1, stream_id, 0, frame_bytes);
         let ct = build_encrypted_packet(crypto, &routing, msg)?;
         udp.send(&first_hop, &ct).await?;
+        if !first_hop_sent_logged {
+            emit_client_stage(
+                "first_hop_send",
+                json!({
+                    "stream_id": stream_id,
+                    "site": request_site.as_str(),
+                    "route_len": route.len(),
+                    "route_chain": route_chain.as_str(),
+                    "since_roundtrip_start_ms": stream_start.elapsed().as_millis() as u64,
+                    "first_chunk_bytes": frame.payload.len(),
+                }),
+            );
+            first_hop_sent_logged = true;
+        }
         {
             let mut rs = rs_arc.lock().unwrap();
             rs.mark_sent(frame.frame_seq);
@@ -1375,6 +1497,7 @@ async fn tunnel_http_roundtrip(
     let mut full = Vec::new();
     let mut resp_bytes_written: usize = 0;
     let mut resp_frames: usize = 0;
+    let mut first_client_byte_ms: Option<u64> = None;
     let idle_timeout = if write_response_to_tcp {
         Duration::from_secs(120)
     } else {
@@ -1393,6 +1516,21 @@ async fn tunnel_http_roundtrip(
         let Some(msg) = msg else { break };
         match msg {
             Some(chunk) => {
+                if first_client_byte_ms.is_none() && !chunk.is_empty() {
+                    let since_start = stream_start.elapsed().as_millis() as u64;
+                    first_client_byte_ms = Some(since_start);
+                    emit_client_stage(
+                        "first_byte_delivered",
+                        json!({
+                            "stream_id": stream_id,
+                            "site": request_site.as_str(),
+                            "route_len": route.len(),
+                            "route_chain": route_chain.as_str(),
+                            "since_roundtrip_start_ms": since_start,
+                            "chunk_bytes": chunk.len(),
+                        }),
+                    );
+                }
                 if write_response_to_tcp {
                     let tcp = local_tcp
                         .as_mut()
@@ -1444,6 +1582,20 @@ async fn tunnel_http_roundtrip(
     if !write_response_to_tcp && full.is_empty() {
         anyhow::bail!("no response (timeout or channel closed)");
     }
+    emit_client_stage(
+        "stream_complete",
+        json!({
+            "stream_id": stream_id,
+            "site": request_site.as_str(),
+            "route_len": route.len(),
+            "route_chain": route_chain.as_str(),
+            "since_roundtrip_start_ms": stream_start.elapsed().as_millis() as u64,
+            "first_client_byte_ms": first_client_byte_ms,
+            "response_bytes": if write_response_to_tcp { resp_bytes_written } else { full.len() },
+            "response_frames": resp_frames,
+            "write_response_to_tcp": write_response_to_tcp,
+        }),
+    );
     if write_response_to_tcp {
         info!(
             stream_id = stream_id,
@@ -1778,6 +1930,21 @@ async fn perform_handshake(
     use tokio::time::{sleep, timeout};
 
     let session_id = 1;
+    let handshake_start = Instant::now();
+    let route_chain = route
+        .hops
+        .iter()
+        .map(|hop| hop.to_string())
+        .collect::<Vec<_>>()
+        .join(" -> ");
+    emit_client_stage(
+        "handshake_started",
+        json!({
+            "session_id": session_id,
+            "route_len": route.len(),
+            "route_chain": route_chain.as_str(),
+        }),
+    );
 
     let max_attempts = 10u32;
     let first_hop = route
@@ -1882,6 +2049,16 @@ async fn perform_handshake(
         let ack: HandshakeAckPayload = bincode::deserialize(&msg2.payload)?;
         let aead_key = derive_session_key_from_ack(&local_secret, &ack);
         info!("client handshake: session established with exit (Stage 3.1 challenge flow)");
+        emit_client_stage(
+            "session_established",
+        json!({
+            "session_id": session_id,
+            "route_len": route.len(),
+            "route_chain": route_chain.as_str(),
+            "handshake_ms": handshake_start.elapsed().as_millis() as u64,
+            "attempt": attempt,
+        }),
+        );
         return Ok(SessionCrypto::new(aead_key));
     }
 

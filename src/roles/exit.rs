@@ -11,6 +11,7 @@ use crate::protocol::{decode, MsgType, StreamFrame, TunnelMessage, PROTOCOL_VERS
 use crate::wire::{build_encrypted_packet, parse_routing_header, RoutingInfo};
 use crate::stream_reliable::{AckFrame, ReliableStream};
 use crate::session::SessionCrypto;
+use crate::stage_trace;
 use crate::addr::NodeAddr;
 use crate::node_config::NodeRole;
 use crate::ant::{Ant, AntDedup, AntType, Observation};
@@ -18,6 +19,7 @@ use crate::ops::drain;
 use crate::transport::{Transport, UdpTransport};
 use anyhow::Result;
 use rand_core::{OsRng, RngCore};
+use serde_json::json;
 use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
 use std::net::UdpSocket as StdUdpSocket;
@@ -305,6 +307,17 @@ fn extract_http_status_code(buf: &[u8]) -> Option<u16> {
     }
     let code = (d0 - b'0') as u16 * 100 + (d1 - b'0') as u16 * 10 + (d2 - b'0') as u16;
     Some(code)
+}
+
+fn emit_exit_stage(stage: &str, payload: serde_json::Value) {
+    if !stage_trace::enabled() {
+        return;
+    }
+    let mut object = stage_trace::event("exit", stage);
+    if let serde_json::Value::Object(fields) = payload {
+        object.extend(fields);
+    }
+    stage_trace::emit(serde_json::Value::Object(object));
 }
 
 /// Best-effort detection of the "outbound" IP (useful when bind_ip is `0.0.0.0`).
@@ -637,6 +650,22 @@ pub async fn run_exit(args: ExitArgs) -> Result<()> {
                 debug!(stream_id, "exit reusing existing tcp stream to target");
                 st
             } else {
+                    let connect_start = Instant::now();
+                    emit_exit_stage(
+                        "target_connect_started",
+                        json!({
+                            "stream_id": stream_id,
+                            "site": site.as_str(),
+                            "route_len": shared_route_for_task
+                                .lock()
+                                .unwrap()
+                                .as_ref()
+                                .map(|route| route.len())
+                                .unwrap_or(0),
+                            "peer": peer.to_string(),
+                            "target_addr": target_addr.to_string(),
+                        }),
+                    );
                     // Bounded-time connect to target
                     let connect_res = timeout(
                         Duration::from_secs(1),
@@ -647,6 +676,22 @@ pub async fn run_exit(args: ExitArgs) -> Result<()> {
                     match connect_res {
                         Ok(Ok(s)) => {
                             debug!(stream_id, %target_addr, "exit connected to target");
+                            emit_exit_stage(
+                                "target_connect_completed",
+                                json!({
+                                    "stream_id": stream_id,
+                                    "site": site.as_str(),
+                                    "route_len": shared_route_for_task
+                                        .lock()
+                                        .unwrap()
+                                        .as_ref()
+                                        .map(|route| route.len())
+                                        .unwrap_or(0),
+                                    "peer": peer.to_string(),
+                                    "target_addr": target_addr.to_string(),
+                                    "target_connect_ms": connect_start.elapsed().as_millis() as u64,
+                                }),
+                            );
                             ExitStream { socket: s }
                         }
                         Ok(Err(e)) => {
@@ -786,6 +831,7 @@ pub async fn run_exit(args: ExitArgs) -> Result<()> {
             let mut pending_cursor: usize = 0;
             let mut seen_any = false;
             let mut connection_alive = true;
+            let mut first_target_byte_ms: Option<u64> = None;
 
             // Metrics for this downlink burst.
             let response_start = Instant::now();
@@ -934,6 +980,22 @@ pub async fn run_exit(args: ExitArgs) -> Result<()> {
                                 break;
                             }
                             seen_any = true;
+                            if first_target_byte_ms.is_none() {
+                                let since_response_start = response_start.elapsed().as_millis() as u64;
+                                first_target_byte_ms = Some(since_response_start);
+                                emit_exit_stage(
+                                    "first_target_byte",
+                                    json!({
+                                        "stream_id": stream_id,
+                                        "site": site.as_str(),
+                                        "route_len": routing.route.len(),
+                                        "peer": peer.to_string(),
+                                        "target_addr": target_addr.to_string(),
+                                        "since_response_start_ms": since_response_start,
+                                        "bytes_read": n,
+                                    }),
+                                );
+                            }
                             pending.extend_from_slice(&tmp_buf[..n]);
                             if http_code.is_none() {
                                 // Scan only a small prefix; avoid repeated work after we found it.
@@ -1338,10 +1400,30 @@ pub async fn run_exit(args: ExitArgs) -> Result<()> {
                 peer = %peer,
                 "exit streamed response chunks and end-of-response to client"
             );
-
             let route_hops = routing.route.len();
             let http_code_val = http_code.unwrap_or(0);
             let ack_latency_ms_avg_val = ack_latency_avg_ms.unwrap_or(0);
+            emit_exit_stage(
+                "stream_complete",
+                json!({
+                    "stream_id": stream_id,
+                    "site": site.as_str(),
+                    "route_len": route_hops,
+                    "peer": peer.to_string(),
+                    "target_addr": target_addr.to_string(),
+                    "first_target_byte_ms": first_target_byte_ms,
+                    "stream_duration_ms": stream_duration_ms_total,
+                    "resp_bytes": sent_payload_bytes_total_u64,
+                    "frames_sent": sent_frames_payload_total_u64,
+                    "avg_inflight": avg_inflight,
+                    "max_inflight": max_inflight,
+                    "time_at_inflight_1_ms": time_at_inflight_1_ms,
+                    "retransmit_rate": retransmit_rate,
+                    "ack_latency_ms_avg": ack_latency_ms_avg_val,
+                    "http_code": http_code_val,
+                    "connection_alive": connection_alive,
+                }),
+            );
             debug!(
                 stream_id,
                 site = %site,
@@ -1724,6 +1806,21 @@ pub async fn run_exit(args: ExitArgs) -> Result<()> {
                         session_id,
                         peer = %peer,
                         "exit: session established via HandshakeChallenge then HandshakeAck"
+                    );
+                    emit_exit_stage(
+                        "session_established",
+                        json!({
+                            "session_id": session_id,
+                            "peer": peer.to_string(),
+                            "route_len": routing.route.len(),
+                            "route_chain": routing
+                                .route
+                                .hops
+                                .iter()
+                                .map(|hop| hop.to_string())
+                                .collect::<Vec<_>>()
+                                .join(" -> "),
+                        }),
                     );
                 }
                 other => {

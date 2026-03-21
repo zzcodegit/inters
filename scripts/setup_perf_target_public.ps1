@@ -37,6 +37,7 @@ $targetBytes = Get-OptionalEnv "VPNNODE_PERF_TARGET_BYTES" "262144"
 $publicPort = Get-OptionalEnv "VPNNODE_PERF_PUBLIC_PORT" "18080"
 $publicScriptPath = Get-OptionalEnv "VPNNODE_PERF_FORWARD_SCRIPT_PATH" "/opt/vpnnode/bin/vpnnode-tcp-forward.py"
 $publicServiceName = Get-OptionalEnv "VPNNODE_PERF_PUBLIC_SERVICE" "vpnnode-target-http-public.service"
+$forwardLogPath = Get-OptionalEnv "VPNNODE_PERF_FORWARD_LOG_PATH" ""
 
 $remote = "$exitUser@$exitHost"
 $localForwardScript = Join-Path (Get-Location) "scripts\tcp_forward.py"
@@ -60,6 +61,16 @@ PY
 & $plink -batch -pw $exitPassword $remote $payloadCommand
 & $pscp -batch -pw $exitPassword $localForwardScript "${remote}:${publicScriptPath}"
 
+$forwardExec = "/usr/bin/python3 $publicScriptPath --listen-host 0.0.0.0 --listen-port $publicPort --target-host 127.0.0.1 --target-port 8080"
+$forwardLogSetup = ""
+if (-not [string]::IsNullOrWhiteSpace($forwardLogPath)) {
+    $forwardExec += " --stage-log-path $forwardLogPath"
+    $forwardLogSetup = @"
+mkdir -p "$(dirname "$forwardLogPath")"
+: > "$forwardLogPath"
+"@
+}
+
 $unitCommand = @"
 cat > /etc/systemd/system/$publicServiceName <<'UNIT'
 [Unit]
@@ -67,7 +78,7 @@ Description=Public TCP forward to vpnnode target-http
 After=network.target vpnnode-target-http.service
 
 [Service]
-ExecStart=/usr/bin/python3 $publicScriptPath --listen-host 0.0.0.0 --listen-port $publicPort --target-host 127.0.0.1 --target-port 8080
+ExecStart=$forwardExec
 Restart=always
 RestartSec=2
 
@@ -75,6 +86,7 @@ RestartSec=2
 WantedBy=multi-user.target
 UNIT
 chmod 755 $publicScriptPath
+$forwardLogSetup
 systemctl daemon-reload
 systemctl enable --now $publicServiceName
 systemctl is-active $publicServiceName
@@ -86,3 +98,6 @@ Write-Host "direct_addr=${exitHost}:$publicPort"
 Write-Host "target_path=/$targetFileName"
 Write-Host "payload_bytes=$targetBytes"
 Write-Host "public_service=$publicServiceName"
+if (-not [string]::IsNullOrWhiteSpace($forwardLogPath)) {
+    Write-Host "forward_log_path=$forwardLogPath"
+}

@@ -12,18 +12,18 @@
 
 | scenario | route | success | errors | resp bytes avg | connect ms min/avg/max | TTFB ms min/avg/max | total ms min/avg/max | avg throughput Bps |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| direct | 0 | 5 | 0 | 262349 | 182.85/188.52/197.75 | 182.01/186.08/191.38 | 1272.68/1393.26/1604.38 | 189325 |
-| remote-1hop | 1 | 5 | 0 | 262349 | 0.34/0.35/0.37 | 7612.60/8836.58/10043.25 | 7613.26/8837.21/10043.83 | 30027 |
-| remote-2hop | 2 | 5 | 0 | 262349 | 0.40/0.54/0.71 | 6846.65/7495.14/9520.68 | 6847.55/7495.89/9521.33 | 35515 |
-| remote-3hop | 3 | 5 | 0 | 262349 | 0.36/0.42/0.57 | 8546.67/9274.36/12062.79 | 8547.23/9275.03/12063.53 | 28795 |
+| direct | 0 | 5 | 0 | 262349 | 179.30/249.16/297.06 | 184.64/240.52/312.09 | 1547.91/1660.31/1744.68 | 158195 |
+| remote-1hop | 1 | 5 | 0 | 262349 | 0.56/0.65/0.71 | 7395.89/8071.48/8779.42 | 7397.32/8072.68/8780.48 | 32574 |
+| remote-2hop | 2 | 5 | 0 | 262349 | 0.59/3.20/13.52 | 10237.28/10643.08/11343.36 | 10238.56/10646.82/11344.45 | 24656 |
+| remote-3hop | 3 | 5 | 0 | 262349 | 0.62/1.27/2.63 | 10825.24/11321.50/11562.89 | 10826.32/11323.22/11564.50 | 23164 |
 
 ## Degradation vs direct
 
 | scenario | avg connect delta ms | avg connect delta % | avg TTFB delta ms | avg TTFB delta % | avg total delta ms | avg total delta % | avg throughput delta Bps | avg throughput delta % |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| remote-1hop | -188.16 | -99.81 | 8650.50 | 4648.75 | 7443.95 | 534.28 | -159298 | -84.14 |
-| remote-2hop | -187.98 | -99.71 | 7309.06 | 3927.87 | 6102.64 | 438.01 | -153810 | -81.24 |
-| remote-3hop | -188.09 | -99.78 | 9088.28 | 4884.01 | 7881.77 | 565.71 | -160530 | -84.79 |
+| remote-1hop | -248.51 | -99.74 | 7830.96 | 3255.86 | 6412.36 | 386.21 | -125621 | -79.41 |
+| remote-2hop | -245.96 | -98.72 | 10402.56 | 4325.05 | 8986.50 | 541.25 | -133539 | -84.41 |
+| remote-3hop | -247.89 | -99.49 | 11080.98 | 4607.11 | 9662.91 | 581.99 | -135031 | -85.36 |
 
 ## Topology proof
 
@@ -33,9 +33,3 @@
 - `remote-3hop` endpoint=`127.0.0.1:19183` route_chain=`client -> 45.197.133.115:30001 -> 185.144.28.95:30002 -> 31.192.232.26:30000 -> target`
 
 Current relay/exit runtime still keeps effectively single-session state, so the perf runner uses the same explicit reset hook between remote scenarios as the accepted WAN matrix.
-
-## Interpretation
-
-- The main degradation starts in `TTFB` and carries through to `total_time_ms`; it does not start in the local client ingress connect.
-- `remote-2hop` was the best overlay path in this sample, outperforming both `remote-1hop` and `remote-3hop` on average total time and throughput.
-- `connect_time_ms` is not an apples-to-apples WAN metric across all scenarios: `direct` measures a public TCP connect to `31.192.232.26:18080`, while `remote-*` measures only the local TCP connect to the client listener on `127.0.0.1`.
