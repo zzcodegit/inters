@@ -44,7 +44,7 @@ async fn run_remote_http_scenario(
         config.http_host
     );
 
-    support::spawn_remote_client(&config);
+    let mut client = support::spawn_remote_client(&config)?;
     helpers::wait_tcp_listener(config.local_listen)
         .await
         .with_context(|| format!("{scenario_name}: local client TCP listener must come up"))?;
@@ -79,6 +79,7 @@ async fn run_remote_http_scenario(
         config.route_chain(),
         config.http_host
     );
+    client.stop();
     Ok(())
 }
 

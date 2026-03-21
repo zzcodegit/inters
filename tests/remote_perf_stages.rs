@@ -134,15 +134,14 @@ async fn remote_perf_stage_matrix_collects_measurements() -> anyhow::Result<()> 
             let endpoint = remote_config.local_listen.to_string();
 
             let scenario_start = Instant::now();
-            let handle = support::spawn_remote_client_task(&remote_config);
+            let mut client = support::spawn_remote_client(&remote_config)?;
             helpers::wait_tcp_listener(remote_config.local_listen)
                 .await
                 .with_context(|| format!("{}: listener did not start", scenario.name))?;
             let listener_ready_ms = scenario_start.elapsed().as_secs_f64() * 1000.0;
 
             let warmup_host = format!("stage-{}-warmup", scenario.name);
-            let warmup_request =
-                support::http_get_request_path(&warmup_host, &config.request_path);
+            let warmup_request = support::http_get_request_path(&warmup_host, &config.request_path);
             helpers::wait_http_status_with_request_options(
                 remote_config.local_listen,
                 &warmup_request,
@@ -175,61 +174,57 @@ async fn remote_perf_stage_matrix_collects_measurements() -> anyhow::Result<()> 
 
             for run_index in 1..=config.runs {
                 let request_host = format!("stage-{}-run{}", scenario.name, run_index);
-                let request =
-                    support::http_get_request_path(&request_host, &config.request_path);
-                let record = match do_measure_http_request(
-                    remote_config.local_listen,
-                    &request,
-                    &config,
-                )
-                .await
-                {
-                    Ok(result) => StageRecord::Measurement {
-                        scenario: scenario.name.to_string(),
-                        run_index,
-                        route_length,
-                        route_chain: route_chain.clone(),
-                        endpoint: endpoint.clone(),
-                        request_host,
-                        request_path: config.request_path.clone(),
-                        status_code: Some(result.status_code),
-                        connect_time_ms: Some(result.connect_time_ms),
-                        ttfb_ms: Some(result.ttfb_ms),
-                        total_time_ms: Some(result.total_time_ms),
-                        response_bytes: Some(result.response_bytes),
-                        body_bytes: Some(result.body_bytes),
-                        effective_throughput_bps: Some(result.effective_throughput_bps),
-                        error: None,
-                    },
-                    Err(err) => StageRecord::Measurement {
-                        scenario: scenario.name.to_string(),
-                        run_index,
-                        route_length,
-                        route_chain: route_chain.clone(),
-                        endpoint: endpoint.clone(),
-                        request_host,
-                        request_path: config.request_path.clone(),
-                        status_code: None,
-                        connect_time_ms: None,
-                        ttfb_ms: None,
-                        total_time_ms: None,
-                        response_bytes: None,
-                        body_bytes: None,
-                        effective_throughput_bps: None,
-                        error: Some(err.to_string()),
-                    },
-                };
+                let request = support::http_get_request_path(&request_host, &config.request_path);
+                let record =
+                    match do_measure_http_request(remote_config.local_listen, &request, &config)
+                        .await
+                    {
+                        Ok(result) => StageRecord::Measurement {
+                            scenario: scenario.name.to_string(),
+                            run_index,
+                            route_length,
+                            route_chain: route_chain.clone(),
+                            endpoint: endpoint.clone(),
+                            request_host,
+                            request_path: config.request_path.clone(),
+                            status_code: Some(result.status_code),
+                            connect_time_ms: Some(result.connect_time_ms),
+                            ttfb_ms: Some(result.ttfb_ms),
+                            total_time_ms: Some(result.total_time_ms),
+                            response_bytes: Some(result.response_bytes),
+                            body_bytes: Some(result.body_bytes),
+                            effective_throughput_bps: Some(result.effective_throughput_bps),
+                            error: None,
+                        },
+                        Err(err) => StageRecord::Measurement {
+                            scenario: scenario.name.to_string(),
+                            run_index,
+                            route_length,
+                            route_chain: route_chain.clone(),
+                            endpoint: endpoint.clone(),
+                            request_host,
+                            request_path: config.request_path.clone(),
+                            status_code: None,
+                            connect_time_ms: None,
+                            ttfb_ms: None,
+                            total_time_ms: None,
+                            response_bytes: None,
+                            body_bytes: None,
+                            effective_throughput_bps: None,
+                            error: Some(err.to_string()),
+                        },
+                    };
                 append_record(&config.local_raw_path, &record)?;
                 if let StageRecord::Measurement {
                     error: Some(error), ..
                 } = &record
                 {
-                    handle.abort();
+                    client.stop();
                     bail!("{} run {} failed: {error}", scenario.name, run_index);
                 }
             }
 
-            handle.abort();
+            client.stop();
         } else {
             let route_chain = format!("client -> {} -> target", config.direct_addr);
             let endpoint = config.direct_addr.to_string();
@@ -246,45 +241,44 @@ async fn remote_perf_stage_matrix_collects_measurements() -> anyhow::Result<()> 
             )?;
             for run_index in 1..=config.runs {
                 let request_host = format!("stage-{}-run{}", scenario.name, run_index);
-                let request =
-                    support::http_get_request_path(&request_host, &config.request_path);
-                let record = match do_measure_http_request(config.direct_addr, &request, &config).await
-                {
-                    Ok(result) => StageRecord::Measurement {
-                        scenario: scenario.name.to_string(),
-                        run_index,
-                        route_length: 0,
-                        route_chain: route_chain.clone(),
-                        endpoint: endpoint.clone(),
-                        request_host,
-                        request_path: config.request_path.clone(),
-                        status_code: Some(result.status_code),
-                        connect_time_ms: Some(result.connect_time_ms),
-                        ttfb_ms: Some(result.ttfb_ms),
-                        total_time_ms: Some(result.total_time_ms),
-                        response_bytes: Some(result.response_bytes),
-                        body_bytes: Some(result.body_bytes),
-                        effective_throughput_bps: Some(result.effective_throughput_bps),
-                        error: None,
-                    },
-                    Err(err) => StageRecord::Measurement {
-                        scenario: scenario.name.to_string(),
-                        run_index,
-                        route_length: 0,
-                        route_chain: route_chain.clone(),
-                        endpoint: endpoint.clone(),
-                        request_host,
-                        request_path: config.request_path.clone(),
-                        status_code: None,
-                        connect_time_ms: None,
-                        ttfb_ms: None,
-                        total_time_ms: None,
-                        response_bytes: None,
-                        body_bytes: None,
-                        effective_throughput_bps: None,
-                        error: Some(err.to_string()),
-                    },
-                };
+                let request = support::http_get_request_path(&request_host, &config.request_path);
+                let record =
+                    match do_measure_http_request(config.direct_addr, &request, &config).await {
+                        Ok(result) => StageRecord::Measurement {
+                            scenario: scenario.name.to_string(),
+                            run_index,
+                            route_length: 0,
+                            route_chain: route_chain.clone(),
+                            endpoint: endpoint.clone(),
+                            request_host,
+                            request_path: config.request_path.clone(),
+                            status_code: Some(result.status_code),
+                            connect_time_ms: Some(result.connect_time_ms),
+                            ttfb_ms: Some(result.ttfb_ms),
+                            total_time_ms: Some(result.total_time_ms),
+                            response_bytes: Some(result.response_bytes),
+                            body_bytes: Some(result.body_bytes),
+                            effective_throughput_bps: Some(result.effective_throughput_bps),
+                            error: None,
+                        },
+                        Err(err) => StageRecord::Measurement {
+                            scenario: scenario.name.to_string(),
+                            run_index,
+                            route_length: 0,
+                            route_chain: route_chain.clone(),
+                            endpoint: endpoint.clone(),
+                            request_host,
+                            request_path: config.request_path.clone(),
+                            status_code: None,
+                            connect_time_ms: None,
+                            ttfb_ms: None,
+                            total_time_ms: None,
+                            response_bytes: None,
+                            body_bytes: None,
+                            effective_throughput_bps: None,
+                            error: Some(err.to_string()),
+                        },
+                    };
                 append_record(&config.local_raw_path, &record)?;
                 if let StageRecord::Measurement {
                     error: Some(error), ..
@@ -366,7 +360,10 @@ async fn do_measure_http_request(
 
 fn extract_http_body(response: &[u8]) -> &[u8] {
     let marker = b"\r\n\r\n";
-    if let Some(pos) = response.windows(marker.len()).position(|window| window == marker) {
+    if let Some(pos) = response
+        .windows(marker.len())
+        .position(|window| window == marker)
+    {
         &response[(pos + marker.len())..]
     } else {
         &[]

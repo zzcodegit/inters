@@ -1,6 +1,8 @@
 #![allow(dead_code)]
 
 use std::net::SocketAddr;
+use std::path::PathBuf;
+use std::process::{Child, Command, Stdio};
 use std::sync::Once;
 
 use anyhow::{bail, Context, Result};
@@ -90,7 +92,10 @@ pub fn http_get_request_path(host: &str, path: &str) -> Vec<u8> {
 pub fn spawn_local_stack(spec: &LocalBaselineSpec<'_>) {
     if let Some(target_addr) = spec.target_addr {
         tokio::spawn(async move {
-            let _ = vpnnode::roles::target::run_target(TargetConfigCli { listen: target_addr }).await;
+            let _ = vpnnode::roles::target::run_target(TargetConfigCli {
+                listen: target_addr,
+            })
+            .await;
         });
     }
 
@@ -120,10 +125,7 @@ pub fn spawn_local_stack(spec: &LocalBaselineSpec<'_>) {
     }
 
     if let Some(relay1_udp) = spec.relay1_udp {
-        let downstream = spec
-            .relay2_udp
-            .unwrap_or(spec.exit_udp)
-            .to_string();
+        let downstream = spec.relay2_udp.unwrap_or(spec.exit_udp).to_string();
         tokio::spawn(async move {
             let _ = vpnnode::roles::relay::run_relay(RelayConfigCli {
                 listen: relay1_udp,
@@ -180,15 +182,48 @@ pub fn local_client_args(spec: &LocalBaselineSpec<'_>) -> ClientConfigCli {
     }
 }
 
-pub fn spawn_remote_client(config: &RemoteBaselineConfig) {
-    let _ = spawn_remote_client_task(config);
+pub struct ManagedRemoteClient {
+    child: Option<Child>,
 }
 
-pub fn spawn_remote_client_task(config: &RemoteBaselineConfig) -> tokio::task::JoinHandle<()> {
+impl ManagedRemoteClient {
+    pub fn stop(&mut self) {
+        let Some(mut child) = self.child.take() else {
+            return;
+        };
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+}
+
+impl Drop for ManagedRemoteClient {
+    fn drop(&mut self) {
+        self.stop();
+    }
+}
+
+pub fn spawn_remote_client(config: &RemoteBaselineConfig) -> Result<ManagedRemoteClient> {
+    spawn_remote_client_process(config)
+}
+
+pub fn spawn_remote_client_process(config: &RemoteBaselineConfig) -> Result<ManagedRemoteClient> {
     let client_args = config.client_args();
-    tokio::spawn(async move {
-        let _ = vpnnode::roles::client::run_client(client_args).await;
-    })
+    let binary = vpnnode_binary_path();
+    let cli_args = client_cli_args(&client_args);
+    let child = Command::new(&binary)
+        .args(&cli_args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit())
+        .spawn()
+        .with_context(|| {
+            format!(
+                "failed to spawn remote client process {} {}",
+                binary.display(),
+                cli_args.join(" ")
+            )
+        })?;
+    Ok(ManagedRemoteClient { child: Some(child) })
 }
 
 impl RemoteBaselineConfig {
@@ -220,7 +255,9 @@ impl RemoteBaselineConfig {
         Ok(Self {
             local_listen: parse_env_or_default(
                 "VPNNODE_BASELINE_REMOTE_LOCAL_LISTEN",
-                "127.0.0.1:19080".parse().expect("default remote local listen"),
+                "127.0.0.1:19080"
+                    .parse()
+                    .expect("default remote local listen"),
             )?,
             relay1_addr,
             relay2_addr,
@@ -335,6 +372,85 @@ impl RemoteBaselineConfig {
         hops.push("target".to_string());
         hops.join(" -> ")
     }
+}
+
+fn vpnnode_binary_path() -> PathBuf {
+    if let Ok(path) = std::env::var("CARGO_BIN_EXE_vpnnode") {
+        return PathBuf::from(path);
+    }
+    if let Some(path) = option_env!("CARGO_BIN_EXE_vpnnode") {
+        return PathBuf::from(path);
+    }
+
+    let exe_name = if cfg!(windows) {
+        "target\\debug\\vpnnode.exe"
+    } else {
+        "target/debug/vpnnode"
+    };
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(exe_name)
+}
+
+fn client_cli_args(args: &ClientConfigCli) -> Vec<String> {
+    let mut cli_args = vec![
+        "client".to_string(),
+        "--local-listen".to_string(),
+        args.local_listen.to_string(),
+        "--mode".to_string(),
+        args.mode.clone(),
+        "--relay-addr".to_string(),
+        args.relay_addr.clone(),
+        "--exit-addr".to_string(),
+        args.exit_addr.clone(),
+        "--route-length".to_string(),
+        args.route_length.to_string(),
+        "--client-key-path".to_string(),
+        args.client_key_path.clone(),
+        "--relay-pubkey-path".to_string(),
+        args.relay_pubkey_path.clone(),
+        "--route-cache-path".to_string(),
+        args.route_cache_path.clone(),
+        "--tun-name".to_string(),
+        args.tun_name.clone(),
+        "--tun-address".to_string(),
+        args.tun_address.clone(),
+        "--tun-netmask".to_string(),
+        args.tun_netmask.clone(),
+        "--tun-mtu".to_string(),
+        args.tun_mtu.to_string(),
+        "--max-inflight-frames".to_string(),
+        args.max_inflight_frames.to_string(),
+        "--retransmit-interval".to_string(),
+        args.retransmit_interval.to_string(),
+        "--chunk-size".to_string(),
+        args.chunk_size.to_string(),
+    ];
+
+    if let Some(relay2_addr) = &args.relay2_addr {
+        cli_args.push("--relay2-addr".to_string());
+        cli_args.push(relay2_addr.clone());
+    }
+    if args.exact_route_only {
+        cli_args.push("--exact-route-only".to_string());
+    }
+    if args.discovery_enabled {
+        cli_args.push("--discovery-enabled".to_string());
+    }
+    if args.discovery_query_on_start {
+        cli_args.push("--discovery-query-on-start".to_string());
+    }
+    if let Some(peers) = &args.discovery_bootstrap_peers {
+        let joined = peers
+            .iter()
+            .map(|peer| peer.to_string())
+            .collect::<Vec<_>>()
+            .join(",");
+        if !joined.is_empty() {
+            cli_args.push("--discovery-bootstrap-peers".to_string());
+            cli_args.push(joined);
+        }
+    }
+
+    cli_args
 }
 
 fn required_env(name: &str) -> Result<String> {

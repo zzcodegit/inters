@@ -145,7 +145,7 @@ async fn remote_perf_matrix_collects_measurements() -> anyhow::Result<()> {
                 config.runs
             );
 
-            let handle = support::spawn_remote_client_task(&remote_config);
+            let mut client = support::spawn_remote_client(&remote_config)?;
             let result = run_remote_perf_scenario(
                 &config,
                 &remote_config,
@@ -154,17 +154,13 @@ async fn remote_perf_matrix_collects_measurements() -> anyhow::Result<()> {
                 &request,
             )
             .await;
-            handle.abort();
+            client.stop();
             result?
         } else {
             let route_chain = format!("client -> {} -> target", config.direct_addr);
             eprintln!(
                 "perf_scenario={} type=direct route_chain={} endpoint={} request_path={} runs={}",
-                scenario.name,
-                route_chain,
-                config.direct_addr,
-                config.request_path,
-                config.runs
+                scenario.name, route_chain, config.direct_addr, config.request_path, config.runs
             );
             run_direct_perf_scenario(&config, scenario.name, &route_chain, &request).await?
         };
@@ -189,7 +185,10 @@ async fn remote_perf_matrix_collects_measurements() -> anyhow::Result<()> {
     fs::write(&config.report_output_path, report)
         .with_context(|| format!("write report {}", config.report_output_path.display()))?;
 
-    let total_errors: usize = all_records.iter().filter(|record| record.error.is_some()).count();
+    let total_errors: usize = all_records
+        .iter()
+        .filter(|record| record.error.is_some())
+        .count();
     if total_errors > 0 {
         bail!("remote perf matrix recorded {total_errors} failed measurements");
     }
@@ -235,7 +234,13 @@ async fn run_direct_perf_scenario(
         records.push(record);
     }
 
-    let summary = summarize_records(scenario_name, 0, route_chain, &config.direct_addr.to_string(), &records);
+    let summary = summarize_records(
+        scenario_name,
+        0,
+        route_chain,
+        &config.direct_addr.to_string(),
+        &records,
+    );
     Ok((summary, records))
 }
 
@@ -415,7 +420,10 @@ async fn do_measure_http_request(
 
 fn extract_http_body(response: &[u8]) -> &[u8] {
     let marker = b"\r\n\r\n";
-    if let Some(pos) = response.windows(marker.len()).position(|window| window == marker) {
+    if let Some(pos) = response
+        .windows(marker.len())
+        .position(|window| window == marker)
+    {
         &response[(pos + marker.len())..]
     } else {
         &[]
@@ -656,14 +664,38 @@ fn render_report(config: &PerfMatrixConfig, summaries: &[ScenarioSummary]) -> St
         markdown.push_str(&format!(
             "| {} | {} | {} | {} | {} | {} | {} | {} | {} |\n",
             summary.name,
-            delta_ms(summary.connect_avg_ms, direct.and_then(|item| item.connect_avg_ms)),
-            delta_pct(summary.connect_avg_ms, direct.and_then(|item| item.connect_avg_ms)),
-            delta_ms(summary.ttfb_avg_ms, direct.and_then(|item| item.ttfb_avg_ms)),
-            delta_pct(summary.ttfb_avg_ms, direct.and_then(|item| item.ttfb_avg_ms)),
-            delta_ms(summary.total_avg_ms, direct.and_then(|item| item.total_avg_ms)),
-            delta_pct(summary.total_avg_ms, direct.and_then(|item| item.total_avg_ms)),
-            delta_bps(summary.throughput_avg_bps, direct.and_then(|item| item.throughput_avg_bps)),
-            delta_pct(summary.throughput_avg_bps, direct.and_then(|item| item.throughput_avg_bps)),
+            delta_ms(
+                summary.connect_avg_ms,
+                direct.and_then(|item| item.connect_avg_ms)
+            ),
+            delta_pct(
+                summary.connect_avg_ms,
+                direct.and_then(|item| item.connect_avg_ms)
+            ),
+            delta_ms(
+                summary.ttfb_avg_ms,
+                direct.and_then(|item| item.ttfb_avg_ms)
+            ),
+            delta_pct(
+                summary.ttfb_avg_ms,
+                direct.and_then(|item| item.ttfb_avg_ms)
+            ),
+            delta_ms(
+                summary.total_avg_ms,
+                direct.and_then(|item| item.total_avg_ms)
+            ),
+            delta_pct(
+                summary.total_avg_ms,
+                direct.and_then(|item| item.total_avg_ms)
+            ),
+            delta_bps(
+                summary.throughput_avg_bps,
+                direct.and_then(|item| item.throughput_avg_bps)
+            ),
+            delta_pct(
+                summary.throughput_avg_bps,
+                direct.and_then(|item| item.throughput_avg_bps)
+            ),
         ));
     }
 

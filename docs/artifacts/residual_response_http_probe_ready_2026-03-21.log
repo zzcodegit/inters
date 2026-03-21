@@ -1,0 +1,9 @@
+   Compiling vpnnode v0.1.0 (C:\neinternet\vpnnode)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 8.44s
+     Running tests\http_probe_ready.rs (target\debug\deps\http_probe_ready-27bf7af52161d901.exe)
+
+running 1 test
+test wait_http_ready_rejects_504_until_200_is_observed ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.07s
+

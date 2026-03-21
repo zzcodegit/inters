@@ -1,0 +1,8 @@
+=== remote cleanup ===
+exit_service=active
+public_service=inactive
+cleanup_status=done
+=== local processes ===
+no local vpnnode processes
+=== local listening ports ===
+no matching listening ports

@@ -34,6 +34,9 @@ use tracing::{debug, error, info, warn};
 
 const MIN_EXIT_RESPONSE_WINDOW_FRAMES: usize = 8;
 const MAX_EXIT_RESPONSE_WINDOW_FRAMES: usize = 256;
+const EXIT_RESPONSE_RETRANSMIT_BASE_MS: u64 = 350;
+const EXIT_RESPONSE_RETRANSMIT_SAFETY_MARGIN_MS: u64 = 75;
+const EXIT_RESPONSE_RETRANSMIT_MAX_MS: u64 = 1500;
 
 struct ExitStream {
     socket: TcpStream,
@@ -44,6 +47,19 @@ fn clamp_response_window_frames(frames: usize) -> usize {
         MIN_EXIT_RESPONSE_WINDOW_FRAMES,
         MAX_EXIT_RESPONSE_WINDOW_FRAMES,
     )
+}
+
+fn adaptive_response_retransmit_interval(summary: crate::stream_reliable::AckLatencySummary) -> Duration {
+    let mut interval_ms = EXIT_RESPONSE_RETRANSMIT_BASE_MS;
+    if let Some(p95_ms) = summary.p95_ms {
+        interval_ms = interval_ms.max(p95_ms.saturating_add(EXIT_RESPONSE_RETRANSMIT_SAFETY_MARGIN_MS));
+    } else if let Some(avg_ms) = summary.avg_ms {
+        interval_ms = interval_ms.max(avg_ms.saturating_add(EXIT_RESPONSE_RETRANSMIT_SAFETY_MARGIN_MS));
+    } else if let Some(p50_ms) = summary.p50_ms {
+        interval_ms = interval_ms.max(p50_ms.saturating_add(EXIT_RESPONSE_RETRANSMIT_SAFETY_MARGIN_MS));
+    }
+
+    Duration::from_millis(interval_ms.min(EXIT_RESPONSE_RETRANSMIT_MAX_MS))
 }
 
 /// Minimal HTTP parser helper: try to find Content-Length and header/body split.
@@ -1610,7 +1626,6 @@ pub async fn run_exit(args: ExitArgs) -> Result<()> {
         let reliable_streams_retx = reliable_streams.clone();
         tokio::spawn(async move {
             let tick = Duration::from_millis(50);
-            let interval = Duration::from_millis(300);
             loop {
                 tokio::time::sleep(tick).await;
                 let now = std::time::Instant::now();
@@ -1633,6 +1648,7 @@ pub async fn run_exit(args: ExitArgs) -> Result<()> {
                     let mut map = reliable_streams_retx.lock().unwrap();
                     let mut out = Vec::new();
                     for (&sid, rs) in map.iter_mut() {
+                        let interval = adaptive_response_retransmit_interval(rs.ack_latency_summary());
                         out.extend(rs.frames_for_retransmit(sid, now, interval, 16));
                     }
                     out
@@ -2330,5 +2346,47 @@ pub async fn run_exit(args: ExitArgs) -> Result<()> {
                 // ignore other messages for MVP
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::stream_reliable::AckLatencySummary;
+
+    #[test]
+    fn adaptive_retransmit_interval_uses_base_without_ack_samples() {
+        let interval = adaptive_response_retransmit_interval(AckLatencySummary::default());
+        assert_eq!(interval, Duration::from_millis(EXIT_RESPONSE_RETRANSMIT_BASE_MS));
+    }
+
+    #[test]
+    fn adaptive_retransmit_interval_tracks_high_ack_p95() {
+        let interval = adaptive_response_retransmit_interval(AckLatencySummary {
+            avg_ms: Some(260),
+            min_ms: Some(220),
+            p50_ms: Some(255),
+            p95_ms: Some(420),
+            max_ms: Some(460),
+        });
+        assert_eq!(
+            interval,
+            Duration::from_millis(420 + EXIT_RESPONSE_RETRANSMIT_SAFETY_MARGIN_MS)
+        );
+    }
+
+    #[test]
+    fn adaptive_retransmit_interval_is_clamped() {
+        let interval = adaptive_response_retransmit_interval(AckLatencySummary {
+            avg_ms: Some(1800),
+            min_ms: Some(1600),
+            p50_ms: Some(1700),
+            p95_ms: Some(1900),
+            max_ms: Some(2200),
+        });
+        assert_eq!(
+            interval,
+            Duration::from_millis(EXIT_RESPONSE_RETRANSMIT_MAX_MS)
+        );
     }
 }
