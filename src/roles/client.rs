@@ -1,35 +1,35 @@
-use crate::config::ClientConfigCli as ClientArgs;
-use crate::build_info::BuildInfo;
 use crate::addr::NodeAddr;
+use crate::ant::{Ant, AntDedup, AntType};
+use crate::build_info::BuildInfo;
+use crate::config::ClientConfigCli as ClientArgs;
+use crate::discovery;
+use crate::discovery::DiscoveryMessage;
 use crate::flow::FlowTable;
-use crate::packet::{parse_tcp_ports, FlowKey, Ipv4Header};
 use crate::handshake::{
     build_handshake_init, build_handshake_init_with_cookie, derive_session_key_from_ack,
     encode_plaintext, HandshakeAckPayload, HandshakeChallengePayload,
 };
+use crate::node_config::NodeRole;
+use crate::ops::drain;
+use crate::packet::{parse_tcp_ports, FlowKey, Ipv4Header};
 use crate::protocol::{decode, MsgType, StreamFrame, TunnelMessage, PROTOCOL_VERSION};
 use crate::route::Route;
-use crate::wire::{build_encrypted_packet, parse_routing_header, RoutingInfo};
 use crate::route_memory::RouteCache;
 use crate::route_store::{RouteFailureKind, RouteStore};
-use crate::ant::{Ant, AntDedup, AntType};
 use crate::session::SessionCrypto;
-use crate::stream_reliable::{AckFrame, ReliableStream};
 use crate::stage_trace;
+use crate::stream_reliable::{AckFrame, ReliableStream};
 use crate::transport::{Transport, UdpTransport};
 use crate::tun::TunDevice;
-use crate::ops::drain;
-use crate::discovery;
-use crate::discovery::DiscoveryMessage;
+use crate::wire::{build_encrypted_packet, parse_routing_header, RoutingInfo};
 use anyhow::Result;
-use crate::node_config::NodeRole;
 use serde_json::json;
 use std::collections::HashMap;
-use std::time::Instant;
 use std::sync::{
     atomic::{AtomicU32, Ordering},
     Arc, Mutex,
 };
+use std::time::Instant;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, UdpSocket};
 use tokio::sync::{mpsc, Mutex as AsyncMutex};
@@ -104,9 +104,7 @@ fn http_status_code(buf: &[u8]) -> Option<u16> {
     if !d.iter().all(|b| b.is_ascii_digit()) {
         return None;
     }
-    Some(
-        (d[0] - b'0') as u16 * 100 + (d[1] - b'0') as u16 * 10 + (d[2] - b'0') as u16,
-    )
+    Some((d[0] - b'0') as u16 * 100 + (d[1] - b'0') as u16 * 10 + (d[2] - b'0') as u16)
 }
 
 fn strip_port_from_host_bytes(host_port: &[u8]) -> Option<&[u8]> {
@@ -121,9 +119,7 @@ fn strip_port_from_host_bytes(host_port: &[u8]) -> Option<&[u8]> {
         return Some(&host_port[1..close]);
     }
     if let Some(idx) = host_port.iter().rposition(|&b| b == b':') {
-        if idx + 1 < host_port.len()
-            && host_port[idx + 1..].iter().all(|b| b.is_ascii_digit())
-        {
+        if idx + 1 < host_port.len() && host_port[idx + 1..].iter().all(|b| b.is_ascii_digit()) {
             return Some(&host_port[..idx]);
         }
     }
@@ -132,7 +128,9 @@ fn strip_port_from_host_bytes(host_port: &[u8]) -> Option<&[u8]> {
 
 fn extract_http_host_from_request<'a>(req: &'a [u8]) -> Option<&'a str> {
     let marker = b"Host:";
-    let pos = req.windows(marker.len()).position(|window| window == marker)?;
+    let pos = req
+        .windows(marker.len())
+        .position(|window| window == marker)?;
     let mut idx = pos + marker.len();
     while idx < req.len() && req[idx].is_ascii_whitespace() {
         idx += 1;
@@ -146,8 +144,7 @@ fn extract_http_host_from_request<'a>(req: &'a [u8]) -> Option<&'a str> {
         .map(|offset| idx + offset)
         .unwrap_or(req.len());
     let host_port = &req[idx..end];
-    strip_port_from_host_bytes(host_port)
-        .and_then(|host| std::str::from_utf8(host).ok())
+    strip_port_from_host_bytes(host_port).and_then(|host| std::str::from_utf8(host).ok())
 }
 
 fn request_site_label(req: &[u8]) -> String {
@@ -166,6 +163,105 @@ fn emit_client_stage(stage: &str, payload: serde_json::Value) {
         object.extend(fields);
     }
     stage_trace::emit(serde_json::Value::Object(object));
+}
+
+type ResponseTx = mpsc::UnboundedSender<Option<Vec<u8>>>;
+type ResponseSenderTable = Arc<Mutex<HashMap<u32, ResponseTx>>>;
+type ReliableStreamTable = Arc<Mutex<HashMap<u32, Arc<Mutex<ReliableStream>>>>>;
+type StreamRouteTable = Arc<Mutex<HashMap<u32, Route>>>;
+type ResponseStartedTable = Arc<Mutex<HashMap<u32, bool>>>;
+type CompletedResponseStreamTable = Arc<Mutex<HashMap<u32, CompletedResponseStream>>>;
+
+const COMPLETED_RESPONSE_STREAM_LINGER: Duration = Duration::from_secs(30);
+const MAX_COMPLETED_RESPONSE_STREAMS: usize = 2048;
+
+#[derive(Clone)]
+struct CompletedResponseStream {
+    reliable: Arc<Mutex<ReliableStream>>,
+    route: Route,
+    completed_at: Instant,
+    completion_reason: &'static str,
+    late_payloads: u64,
+    late_close_signals: u64,
+}
+
+fn purge_completed_response_streams(map: &mut HashMap<u32, CompletedResponseStream>, now: Instant) {
+    map.retain(|_, entry| {
+        now.duration_since(entry.completed_at) <= COMPLETED_RESPONSE_STREAM_LINGER
+    });
+    if map.len() <= MAX_COMPLETED_RESPONSE_STREAMS {
+        return;
+    }
+    let mut by_age = map
+        .iter()
+        .map(|(&stream_id, entry)| (stream_id, entry.completed_at))
+        .collect::<Vec<_>>();
+    by_age.sort_by_key(|(_, completed_at)| *completed_at);
+    let remove_count = map.len().saturating_sub(MAX_COMPLETED_RESPONSE_STREAMS);
+    for (stream_id, _) in by_age.into_iter().take(remove_count) {
+        map.remove(&stream_id);
+    }
+}
+
+fn remember_completed_response_stream(
+    completed_streams: &CompletedResponseStreamTable,
+    stream_id: u32,
+    reliable: Arc<Mutex<ReliableStream>>,
+    route: Route,
+    completion_reason: &'static str,
+) {
+    let mut map = completed_streams.lock().unwrap();
+    purge_completed_response_streams(&mut map, Instant::now());
+    map.insert(
+        stream_id,
+        CompletedResponseStream {
+            reliable,
+            route,
+            completed_at: Instant::now(),
+            completion_reason,
+            late_payloads: 0,
+            late_close_signals: 0,
+        },
+    );
+}
+
+fn snapshot_completed_response_stream(
+    completed_streams: &CompletedResponseStreamTable,
+    stream_id: u32,
+) -> Option<CompletedResponseStream> {
+    let mut map = completed_streams.lock().unwrap();
+    purge_completed_response_streams(&mut map, Instant::now());
+    map.get(&stream_id).cloned()
+}
+
+fn note_completed_response_late_payload(
+    completed_streams: &CompletedResponseStreamTable,
+    stream_id: u32,
+) -> Option<(u64, &'static str, u64)> {
+    let mut map = completed_streams.lock().unwrap();
+    purge_completed_response_streams(&mut map, Instant::now());
+    let entry = map.get_mut(&stream_id)?;
+    entry.late_payloads = entry.late_payloads.saturating_add(1);
+    Some((
+        entry.completed_at.elapsed().as_millis() as u64,
+        entry.completion_reason,
+        entry.late_payloads,
+    ))
+}
+
+fn note_completed_response_close(
+    completed_streams: &CompletedResponseStreamTable,
+    stream_id: u32,
+) -> Option<(u64, &'static str, u64)> {
+    let mut map = completed_streams.lock().unwrap();
+    purge_completed_response_streams(&mut map, Instant::now());
+    let entry = map.get_mut(&stream_id)?;
+    entry.late_close_signals = entry.late_close_signals.saturating_add(1);
+    Some((
+        entry.completed_at.elapsed().as_millis() as u64,
+        entry.completion_reason,
+        entry.late_close_signals,
+    ))
 }
 
 fn build_probe_request() -> Vec<u8> {
@@ -201,27 +297,47 @@ async fn build_route(args: &ClientArgs) -> Result<Route> {
     match len {
         1 => {
             let mut addrs = tokio::net::lookup_host(args.exit_addr.clone()).await?;
-            let a = addrs.next().ok_or_else(|| anyhow::anyhow!("client: could not resolve exit address"))?;
+            let a = addrs
+                .next()
+                .ok_or_else(|| anyhow::anyhow!("client: could not resolve exit address"))?;
             hops.push(NodeAddr::from(a));
         }
         2 => {
             let mut r = tokio::net::lookup_host(args.relay_addr.clone()).await?;
-            hops.push(NodeAddr::from(r.next().ok_or_else(|| anyhow::anyhow!("client: could not resolve relay address"))?));
+            hops.push(NodeAddr::from(r.next().ok_or_else(|| {
+                anyhow::anyhow!("client: could not resolve relay address")
+            })?));
             let mut e = tokio::net::lookup_host(args.exit_addr.clone()).await?;
-            hops.push(NodeAddr::from(e.next().ok_or_else(|| anyhow::anyhow!("client: could not resolve exit address"))?));
+            hops.push(NodeAddr::from(e.next().ok_or_else(|| {
+                anyhow::anyhow!("client: could not resolve exit address")
+            })?));
         }
         _ => {
             let mut r1 = tokio::net::lookup_host(args.relay_addr.clone()).await?;
-            hops.push(NodeAddr::from(r1.next().ok_or_else(|| anyhow::anyhow!("client: could not resolve relay address"))?));
-            let r2_addr = args.relay2_addr.as_ref().ok_or_else(|| anyhow::anyhow!("client: route-length 3 requires --relay2-addr"))?;
+            hops.push(NodeAddr::from(r1.next().ok_or_else(|| {
+                anyhow::anyhow!("client: could not resolve relay address")
+            })?));
+            let r2_addr = args
+                .relay2_addr
+                .as_ref()
+                .ok_or_else(|| anyhow::anyhow!("client: route-length 3 requires --relay2-addr"))?;
             let mut r2 = tokio::net::lookup_host(r2_addr).await?;
-            hops.push(NodeAddr::from(r2.next().ok_or_else(|| anyhow::anyhow!("client: could not resolve relay2 address"))?));
+            hops.push(NodeAddr::from(r2.next().ok_or_else(|| {
+                anyhow::anyhow!("client: could not resolve relay2 address")
+            })?));
             let mut e = tokio::net::lookup_host(args.exit_addr.clone()).await?;
-            hops.push(NodeAddr::from(e.next().ok_or_else(|| anyhow::anyhow!("client: could not resolve exit address"))?));
+            hops.push(NodeAddr::from(e.next().ok_or_else(|| {
+                anyhow::anyhow!("client: could not resolve exit address")
+            })?));
         }
     }
     let route = Route { hops };
-    let path_str = route.hops.iter().map(|a| a.to_string()).collect::<Vec<_>>().join(" → ");
+    let path_str = route
+        .hops
+        .iter()
+        .map(|a| a.to_string())
+        .collect::<Vec<_>>()
+        .join(" → ");
     info!(hops = route.len(), path = %path_str, "client route built");
     Ok(route)
 }
@@ -245,7 +361,9 @@ async fn build_initial_routes(args: &ClientArgs) -> Result<(Route, Vec<Route>)> 
     let mut candidates: Vec<Route> = Vec::new();
 
     // 1-hop: client -> exit
-    candidates.push(Route { hops: vec![NodeAddr::from(exit)] });
+    candidates.push(Route {
+        hops: vec![NodeAddr::from(exit)],
+    });
 
     // 2-hop: client -> relay -> exit
     if max_len >= 2 {
@@ -261,7 +379,11 @@ async fn build_initial_routes(args: &ClientArgs) -> Result<(Route, Vec<Route>)> 
                     let mut relay2_addrs = tokio::net::lookup_host(r2s).await?;
                     if let Some(relay2) = relay2_addrs.next() {
                         candidates.push(Route {
-                            hops: vec![NodeAddr::from(relay1), NodeAddr::from(relay2), NodeAddr::from(exit)],
+                            hops: vec![
+                                NodeAddr::from(relay1),
+                                NodeAddr::from(relay2),
+                                NodeAddr::from(exit),
+                            ],
                         });
                     }
                 }
@@ -271,7 +393,10 @@ async fn build_initial_routes(args: &ClientArgs) -> Result<(Route, Vec<Route>)> 
 
     // Ensure primary is present (and unique set).
     let mut out: Vec<Route> = Vec::new();
-    for r in candidates.into_iter().chain(std::iter::once(primary.clone())) {
+    for r in candidates
+        .into_iter()
+        .chain(std::iter::once(primary.clone()))
+    {
         if !out.iter().any(|x| x.hops == r.hops) {
             out.push(r);
         }
@@ -390,13 +515,8 @@ See README: Stage 2 support matrix."
                     advertisement: self_adv_for_task.clone(),
                 };
                 if let Ok(payload_bytes) = bincode::serialize(&adv_payload) {
-                    let msg = TunnelMessage::new(
-                        MsgType::DiscoveryAdvertise,
-                        1,
-                        0,
-                        0,
-                        payload_bytes,
-                    );
+                    let msg =
+                        TunnelMessage::new(MsgType::DiscoveryAdvertise, 1, 0, 0, payload_bytes);
                     if let Ok(packet) = discovery::build_plaintext_packet(&peer, &msg) {
                         let _ = udp_for_task.send(&peer, &packet).await;
                     }
@@ -415,13 +535,8 @@ See README: Stage 2 support matrix."
                         protocol: Some(crate::addr::Protocol::Udp),
                     };
                     if let Ok(payload_bytes) = bincode::serialize(&query) {
-                        let qmsg = TunnelMessage::new(
-                            MsgType::DiscoveryQuery,
-                            1,
-                            0,
-                            0,
-                            payload_bytes,
-                        );
+                        let qmsg =
+                            TunnelMessage::new(MsgType::DiscoveryQuery, 1, 0, 0, payload_bytes);
                         if let Ok(packet) = discovery::build_plaintext_packet(&peer, &qmsg) {
                             if udp_for_task.send(&peer, &packet).await.is_ok() {
                                 let mut store = store_for_task.lock().unwrap();
@@ -442,27 +557,31 @@ See README: Stage 2 support matrix."
 
     if args.mode == "tcp" {
         // Channel: Some(chunk) = response data, None = end-of-response.
-        let response_senders: Arc<Mutex<HashMap<u32, mpsc::UnboundedSender<Option<Vec<u8>>>>>> =
-            Arc::new(Mutex::new(HashMap::new()));
+        let response_senders: ResponseSenderTable = Arc::new(Mutex::new(HashMap::new()));
         // Per-stream reliable state.
-        let reliable_streams: Arc<Mutex<HashMap<u32, Arc<Mutex<ReliableStream>>>>> =
-            Arc::new(Mutex::new(HashMap::new()));
+        let reliable_streams: ReliableStreamTable = Arc::new(Mutex::new(HashMap::new()));
         // Track which streams have received at least one response chunk (optional).
-        let response_started: Arc<Mutex<HashMap<u32, bool>>> = Arc::new(Mutex::new(HashMap::new()));
+        let response_started: ResponseStartedTable = Arc::new(Mutex::new(HashMap::new()));
         // Stage 6: track per-stream route for ACKs/retransmits.
-        let stream_routes_for_io: Arc<Mutex<HashMap<u32, Route>>> = Arc::new(Mutex::new(HashMap::new()));
+        let stream_routes_for_io: StreamRouteTable = Arc::new(Mutex::new(HashMap::new()));
+        let completed_response_streams: CompletedResponseStreamTable =
+            Arc::new(Mutex::new(HashMap::new()));
 
         // Stage 7: ant dedup + optional measurement agents.
-        let ants_enabled = std::env::var("VPNNODE_ANTS").map(|v| v == "1").unwrap_or(false);
-        let ant_dedup: Arc<Mutex<AntDedup>> = Arc::new(Mutex::new(AntDedup::new(
-            256,
-            Duration::from_secs(30),
-        )));
+        let ants_enabled = std::env::var("VPNNODE_ANTS")
+            .map(|v| v == "1")
+            .unwrap_or(false);
+        let ant_dedup: Arc<Mutex<AntDedup>> =
+            Arc::new(Mutex::new(AntDedup::new(256, Duration::from_secs(30))));
 
         // Stage 6/7: adaptive route selection store (in-memory), also used by ants.
         let mut store = RouteStore::new();
         for r in routes {
-            let initial = if r.hops == primary_route.hops { 1.0 } else { 0.6 };
+            let initial = if r.hops == primary_route.hops {
+                1.0
+            } else {
+                0.6
+            };
             store.add_route(r, initial);
         }
         let route_store = Arc::new(AsyncMutex::new(store));
@@ -478,22 +597,23 @@ See README: Stage 2 support matrix."
         let discovery_store_recv = discovery_store.clone();
         let crypto_send_for_ack = crypto.clone();
         let stream_routes_for_ack = stream_routes_for_io.clone();
+        let completed_response_streams_recv = completed_response_streams.clone();
         let default_route_for_ack = primary_route.clone();
         let route_store_for_ants = route_store.clone();
         let ant_dedup_recv = ant_dedup.clone();
         tokio::spawn(async move {
             loop {
-                    let Ok((from, data)) = udp_recv.recv().await else {
-                        break;
-                    };
-                    info!(
-                        protocol = ?from.protocol,
-                        from = %from,
-                        len = data.len(),
-                        "client received via transport (tcp mode)"
-                    );
+                let Ok((from, data)) = udp_recv.recv().await else {
+                    break;
+                };
+                info!(
+                    protocol = ?from.protocol,
+                    from = %from,
+                    len = data.len(),
+                    "client received via transport (tcp mode)"
+                );
 
-                    let (routing, inner) = match parse_routing_header(&data) {
+                let (routing, inner) = match parse_routing_header(&data) {
                     Ok(v) => v,
                     Err(e) => {
                         error!(%e, "client failed to parse routing header (tcp mode)");
@@ -502,95 +622,93 @@ See README: Stage 2 support matrix."
                 };
                 let _hop_index = routing.hop_index;
 
-                    let msg = match crypto_recv.open_message(inner) {
-                        Ok(m) => m,
-                        Err(e) => {
-                            // Stage 9.1: discovery is control-plane only and may arrive
-                            // as a plaintext TunnelMessage (no AEAD session required).
-                            if let Ok(plain_msg) = decode(inner) {
-                                if args.discovery_enabled {
-                                    if let Some(event) =
-                                        discovery::parse_discovery_message(&plain_msg)
-                                    {
-                                        let now = crate::ant::now_ms();
-                                        match event {
-                                            DiscoveryMessage::Advertise(advertisement) => {
-                                                let mut store = discovery_store_recv.lock().unwrap();
+                let msg = match crypto_recv.open_message(inner) {
+                    Ok(m) => m,
+                    Err(e) => {
+                        // Stage 9.1: discovery is control-plane only and may arrive
+                        // as a plaintext TunnelMessage (no AEAD session required).
+                        if let Ok(plain_msg) = decode(inner) {
+                            if args.discovery_enabled {
+                                if let Some(event) = discovery::parse_discovery_message(&plain_msg)
+                                {
+                                    let now = crate::ant::now_ms();
+                                    match event {
+                                        DiscoveryMessage::Advertise(advertisement) => {
+                                            let mut store = discovery_store_recv.lock().unwrap();
+                                            store.purge_expired(now);
+                                            store.insert(advertisement);
+                                            debug!(
+                                                event = "discovery_advertise_received",
+                                                peer = %from,
+                                                "received discovery advertise"
+                                            );
+                                            continue;
+                                        }
+                                        DiscoveryMessage::Query(query) => {
+                                            let response_payload = {
+                                                let mut store =
+                                                    discovery_store_recv.lock().unwrap();
+                                                store.on_query_received();
                                                 store.purge_expired(now);
-                                                store.insert(advertisement);
-                                                debug!(
-                                                    event = "discovery_advertise_received",
-                                                    peer = %from,
-                                                    "received discovery advertise"
-                                                );
-                                                continue;
-                                            }
-                                            DiscoveryMessage::Query(query) => {
-                                                let response_payload = {
-                                                    let mut store = discovery_store_recv
-                                                        .lock()
-                                                        .unwrap();
-                                                    store.on_query_received();
-                                                    store.purge_expired(now);
-                                                    discovery::build_discovery_response_payload(
-                                                        &store,
-                                                        &query,
-                                                        now,
-                                                    )
+                                                discovery::build_discovery_response_payload(
+                                                    &store, &query, now,
+                                                )
+                                            };
+                                            let payload_bytes =
+                                                match bincode::serialize(&response_payload) {
+                                                    Ok(b) => b,
+                                                    Err(_) => continue,
                                                 };
-                                                let payload_bytes =
-                                                    match bincode::serialize(&response_payload)
-                                                    {
-                                                        Ok(b) => b,
-                                                        Err(_) => continue,
-                                                    };
-                                                let resp_msg = TunnelMessage::new(
-                                                    MsgType::DiscoveryResponse,
-                                                    1,
-                                                    0,
-                                                    0,
-                                                    payload_bytes,
-                                                );
-                                                if let Ok(packet) =
-                                                    discovery::build_plaintext_packet(&from, &resp_msg)
-                                                {
-                                                    let send_ok =
-                                                        udp_send_discovery.send(&from, &packet).await.is_ok();
-                                                    if send_ok {
-                                                        let mut store = discovery_store_recv.lock().unwrap();
-                                                        store.on_response_sent();
-                                                    }
+                                            let resp_msg = TunnelMessage::new(
+                                                MsgType::DiscoveryResponse,
+                                                1,
+                                                0,
+                                                0,
+                                                payload_bytes,
+                                            );
+                                            if let Ok(packet) =
+                                                discovery::build_plaintext_packet(&from, &resp_msg)
+                                            {
+                                                let send_ok = udp_send_discovery
+                                                    .send(&from, &packet)
+                                                    .await
+                                                    .is_ok();
+                                                if send_ok {
+                                                    let mut store =
+                                                        discovery_store_recv.lock().unwrap();
+                                                    store.on_response_sent();
                                                 }
-                                                debug!(
-                                                    event = "discovery_response",
-                                                    peer = %from,
-                                                    sent_ads = response_payload.advertisements.len(),
-                                                    "answered discovery query"
-                                                );
-                                                continue;
                                             }
-                                            DiscoveryMessage::Response(resp) => {
-                                                let mut store = discovery_store_recv.lock().unwrap();
-                                                store.on_response_received();
-                                                store.purge_expired(now);
-                                                for adv in resp.advertisements.into_iter() {
-                                                    store.insert(adv);
-                                                }
-                                                debug!(
-                                                    event = "discovery_response_received",
-                                                    peer = %from,
-                                                    "received discovery response"
-                                                );
-                                                continue;
+                                            debug!(
+                                                event = "discovery_response",
+                                                peer = %from,
+                                                sent_ads = response_payload.advertisements.len(),
+                                                "answered discovery query"
+                                            );
+                                            continue;
+                                        }
+                                        DiscoveryMessage::Response(resp) => {
+                                            let mut store = discovery_store_recv.lock().unwrap();
+                                            store.on_response_received();
+                                            store.purge_expired(now);
+                                            for adv in resp.advertisements.into_iter() {
+                                                store.insert(adv);
                                             }
+                                            debug!(
+                                                event = "discovery_response_received",
+                                                peer = %from,
+                                                "received discovery response"
+                                            );
+                                            continue;
                                         }
                                     }
                                 }
                             }
-                            error!(%e, "client failed to open message");
-                            continue;
                         }
-                    };
+                        error!(%e, "client failed to open message");
+                        continue;
+                    }
+                };
                 if msg.header.version != PROTOCOL_VERSION {
                     error!("client: protocol version mismatch");
                     continue;
@@ -620,50 +738,117 @@ See README: Stage 2 support matrix."
                         "client: received StreamFrame from tunnel (response path)"
                     );
 
+                    let active_tx = {
+                        let map = response_senders_recv.lock().unwrap();
+                        map.get(&sid).cloned()
+                    };
+                    let active_rs = {
+                        let map = reliable_streams_recv.lock().unwrap();
+                        map.get(&sid).cloned()
+                    };
+                    let active_route = {
+                        let map = stream_routes_for_ack.lock().unwrap();
+                        map.get(&sid).cloned()
+                    };
+                    let completed_entry = if active_tx.is_none() && active_rs.is_none() {
+                        snapshot_completed_response_stream(&completed_response_streams_recv, sid)
+                    } else {
+                        None
+                    };
+                    let (rs_arc, route_for_this_stream, maybe_tx, completion_reason) =
+                        if let Some(rs_arc) = active_rs {
+                            (
+                                rs_arc,
+                                active_route.unwrap_or_else(|| default_route_for_ack.clone()),
+                                active_tx,
+                                None,
+                            )
+                        } else if active_tx.is_some() {
+                            let rs_arc = {
+                                let mut map = reliable_streams_recv.lock().unwrap();
+                                map.entry(sid)
+                                    .or_insert_with(|| Arc::new(Mutex::new(ReliableStream::new())))
+                                    .clone()
+                            };
+                            (
+                                rs_arc,
+                                active_route.unwrap_or_else(|| default_route_for_ack.clone()),
+                                active_tx,
+                                None,
+                            )
+                        } else if let Some(completed) = completed_entry {
+                            (
+                                completed.reliable.clone(),
+                                completed.route.clone(),
+                                None,
+                                Some(completed.completion_reason),
+                            )
+                        } else {
+                            error!(
+                                stream_id = sid,
+                                frame_seq = frame.frame_seq,
+                                payload_len = frame.payload.len(),
+                                "client: response payload for unknown stream"
+                            );
+                            continue;
+                        };
+
                     // Feed into per-stream reliable receive path and build cumulative ACK.
                     let (deliver, ack_seq, end_of_stream) = {
-                        let rs = {
-                            let mut map = reliable_streams_recv.lock().unwrap();
-                            map.entry(sid)
-                                .or_insert_with(|| Arc::new(Mutex::new(ReliableStream::new())))
-                                .clone()
-                        };
-                        let mut guard = rs.lock().unwrap();
+                        let mut guard = rs_arc.lock().unwrap();
                         guard.process_incoming(&frame)
                     };
 
                     // Send ACK back to exit (as Ping control message).
-                    let ack = AckFrame { stream_id: sid, ack_seq };
+                    let ack = AckFrame {
+                        stream_id: sid,
+                        ack_seq,
+                    };
                     if let Ok(ack_bytes) = bincode::serialize(&ack) {
                         let ack_msg = TunnelMessage::new(MsgType::Ping, 1, sid, 0, ack_bytes);
-                        let route_for_this_stream = {
-                            let map = stream_routes_for_ack.lock().unwrap();
-                            map.get(&sid).cloned().unwrap_or_else(|| default_route_for_ack.clone())
-                        };
                         let Some(first_hop_for_ack) = route_for_this_stream.first_hop() else {
                             continue;
                         };
-                        let routing = RoutingInfo { hop_index: 0, route: route_for_this_stream };
-                        if let Ok(ct) = build_encrypted_packet(&crypto_send_for_ack, &routing, ack_msg) {
+                        let routing = RoutingInfo {
+                            hop_index: 0,
+                            route: route_for_this_stream.clone(),
+                        };
+                        if let Ok(ct) =
+                            build_encrypted_packet(&crypto_send_for_ack, &routing, ack_msg)
+                        {
                             let _ = udp_send_for_ack.send(&first_hop_for_ack, &ct).await;
                         }
                     }
 
-                    let maybe_tx = {
-                        let map = response_senders_recv.lock().unwrap();
-                        let has = map.contains_key(&sid);
-                        debug!(
-                            stream_id = sid,
-                            has_channel = has,
-                            "client: lookup response channel for response payloads"
-                        );
-                        map.get(&sid).cloned()
-                    };
                     if let Some(tx) = maybe_tx {
                         for chunk in deliver {
                             if !chunk.is_empty() {
-                                info!(stream_id = sid, bytes = chunk.len(), "client delivering response chunk");
-                            response_started_recv.lock().unwrap().insert(sid, true);
+                                info!(
+                                    stream_id = sid,
+                                    bytes = chunk.len(),
+                                    "client delivering response chunk"
+                                );
+                                let first_response_payload = {
+                                    let mut map = response_started_recv.lock().unwrap();
+                                    map.insert(sid, true).is_none()
+                                };
+                                if first_response_payload {
+                                    emit_client_stage(
+                                        "response_payload_received",
+                                        json!({
+                                            "stream_id": sid,
+                                            "route_len": route_for_this_stream.len(),
+                                            "route_chain": route_for_this_stream
+                                                .hops
+                                                .iter()
+                                                .map(|hop| hop.to_string())
+                                                .collect::<Vec<_>>()
+                                                .join(" -> "),
+                                            "chunk_bytes": chunk.len(),
+                                            "frame_seq": frame.frame_seq,
+                                        }),
+                                    );
+                                }
                                 let _ = tx.send(Some(chunk));
                             }
                         }
@@ -671,6 +856,47 @@ See README: Stage 2 support matrix."
                             debug!(stream_id = sid, "client: end-of-stream from reliable layer");
                             let _ = tx.send(None);
                         }
+                    } else if let Some(completion_reason) = completion_reason {
+                        let late_bytes: usize = deliver.iter().map(|chunk| chunk.len()).sum();
+                        let (completed_age_ms, _, late_count) =
+                            note_completed_response_late_payload(
+                                &completed_response_streams_recv,
+                                sid,
+                            )
+                            .unwrap_or((0, completion_reason, 0));
+                        emit_client_stage(
+                            "late_payload_after_completion",
+                            json!({
+                                "stream_id": sid,
+                                "route_len": route_for_this_stream.len(),
+                                "route_chain": route_for_this_stream
+                                    .hops
+                                    .iter()
+                                    .map(|hop| hop.to_string())
+                                    .collect::<Vec<_>>()
+                                    .join(" -> "),
+                                "frame_seq": frame.frame_seq,
+                                "ack_seq": ack_seq,
+                                "delivered_chunks": deliver.len(),
+                                "delivered_bytes": late_bytes,
+                                "end_of_stream": end_of_stream,
+                                "completed_age_ms": completed_age_ms,
+                                "completion_reason": completion_reason,
+                                "late_payload_count": late_count,
+                                "duplicate_like": late_bytes == 0 && !end_of_stream,
+                            }),
+                        );
+                        debug!(
+                            stream_id = sid,
+                            frame_seq = frame.frame_seq,
+                            ack_seq,
+                            delivered_bytes = late_bytes,
+                            end_of_stream,
+                            completion_reason,
+                            completed_age_ms,
+                            late_payload_count = late_count,
+                            "client: late response payload after completion"
+                        );
                     } else {
                         error!(
                             stream_id = sid,
@@ -736,8 +962,30 @@ See README: Stage 2 support matrix."
                         map.get(&sid).cloned()
                     };
                     if let Some(tx) = maybe_tx {
-                        debug!(stream_id = sid, "client: received CloseStream, ending response");
+                        debug!(
+                            stream_id = sid,
+                            "client: received CloseStream, ending response"
+                        );
                         let _ = tx.send(None);
+                    } else if let Some((completed_age_ms, completion_reason, late_close_count)) =
+                        note_completed_response_close(&completed_response_streams_recv, sid)
+                    {
+                        emit_client_stage(
+                            "late_close_after_completion",
+                            json!({
+                                "stream_id": sid,
+                                "completed_age_ms": completed_age_ms,
+                                "completion_reason": completion_reason,
+                                "late_close_count": late_close_count,
+                            }),
+                        );
+                        debug!(
+                            stream_id = sid,
+                            completed_age_ms,
+                            completion_reason,
+                            late_close_count,
+                            "client: late CloseStream after completion"
+                        );
                     }
                 } else if msg_type == MsgType::Ant {
                     // Stage 7: measurement-only ants. Optional and bounded.
@@ -776,7 +1024,11 @@ See README: Stage 2 support matrix."
                                 true,
                             );
                         }
-                        debug!(rtt_ms = rtt, obs = ant.observations.len(), "client: applied ant observations");
+                        debug!(
+                            rtt_ms = rtt,
+                            obs = ant.observations.len(),
+                            "client: applied ant observations"
+                        );
                     }
                 } else {
                     debug!(
@@ -813,16 +1065,23 @@ See README: Stage 2 support matrix."
                     out
                 };
                 for (_sid, f) in frames {
-                    let Ok(frame_bytes) = bincode::serialize(&f) else { continue };
+                    let Ok(frame_bytes) = bincode::serialize(&f) else {
+                        continue;
+                    };
                     let msg = TunnelMessage::new(MsgType::Data, 1, f.stream_id, 0, frame_bytes);
                     let route_for_this_stream = {
                         let map = stream_routes_retx.lock().unwrap();
-                        map.get(&f.stream_id).cloned().unwrap_or_else(|| default_route_retx.clone())
+                        map.get(&f.stream_id)
+                            .cloned()
+                            .unwrap_or_else(|| default_route_retx.clone())
                     };
                     let Some(first_hop_for_this_stream) = route_for_this_stream.first_hop() else {
                         continue;
                     };
-                    let routing = RoutingInfo { hop_index: 0, route: route_for_this_stream };
+                    let routing = RoutingInfo {
+                        hop_index: 0,
+                        route: route_for_this_stream,
+                    };
                     if let Ok(ct) = build_encrypted_packet(&crypto_retx, &routing, msg) {
                         let _ = udp_retx.send(&first_hop_for_this_stream, &ct).await;
                     }
@@ -875,9 +1134,14 @@ See README: Stage 2 support matrix."
                         Err(_) => continue,
                     };
                     let msg = TunnelMessage::new(MsgType::Ant, 1, 0, 0, payload);
-                    let routing = RoutingInfo { hop_index: 0, route: route.clone() };
+                    let routing = RoutingInfo {
+                        hop_index: 0,
+                        route: route.clone(),
+                    };
                     if let Ok(ct) = build_encrypted_packet(&crypto_ant, &routing, msg) {
-                        let Some(first_hop) = route.first_hop() else { continue };
+                        let Some(first_hop) = route.first_hop() else {
+                            continue;
+                        };
                         let _ = udp_ant.send(&first_hop, &ct).await;
                         debug!(hops = route.len(), "client: ant created/sent");
                     }
@@ -893,6 +1157,8 @@ See README: Stage 2 support matrix."
             stream_routes_for_io,
             response_senders,
             reliable_streams,
+            response_started,
+            completed_response_streams,
         )
         .await
     } else {
@@ -913,9 +1179,11 @@ async fn run_client_tcp_mode(
     udp: UdpTransport,
     crypto: SessionCrypto,
     route_store: Arc<AsyncMutex<RouteStore>>,
-    stream_routes: Arc<Mutex<HashMap<u32, Route>>>,
-    response_senders: Arc<Mutex<HashMap<u32, mpsc::UnboundedSender<Option<Vec<u8>>>>>>,
-    reliable_streams: Arc<Mutex<HashMap<u32, Arc<Mutex<ReliableStream>>>>>,
+    stream_routes: StreamRouteTable,
+    response_senders: ResponseSenderTable,
+    reliable_streams: ReliableStreamTable,
+    response_started: ResponseStartedTable,
+    completed_response_streams: CompletedResponseStreamTable,
 ) -> Result<()> {
     let listener = TcpListener::bind(args.local_listen).await?;
     info!(addr = %args.local_listen, "client listening for local tcp");
@@ -931,7 +1199,9 @@ async fn run_client_tcp_mode(
         let route_store_probe = route_store.clone();
         let response_senders_probe = response_senders.clone();
         let reliable_streams_probe = reliable_streams.clone();
+        let response_started_probe = response_started.clone();
         let stream_routes_probe = stream_routes.clone();
+        let completed_response_streams_probe = completed_response_streams.clone();
         let next_sid_probe = next_probe_stream_id.clone();
         let chunk_size = args.chunk_size.max(256).min(1200);
         tokio::spawn(async move {
@@ -957,7 +1227,9 @@ async fn run_client_tcp_mode(
                     args.max_inflight_frames,
                     &response_senders_probe,
                     &reliable_streams_probe,
+                    &response_started_probe,
                     &stream_routes_probe,
+                    &completed_response_streams_probe,
                     None,
                     false,
                 )
@@ -990,6 +1262,8 @@ async fn run_client_tcp_mode(
         let next_stream_id = next_stream_id.clone();
         let response_senders_for_task = response_senders.clone();
         let reliable_streams_for_task = reliable_streams.clone();
+        let response_started_for_task = response_started.clone();
+        let completed_response_streams_for_task = completed_response_streams.clone();
 
         tokio::spawn(async move {
             // Read request from local TCP.  For plain HTTP we buffer until the
@@ -1023,11 +1297,12 @@ async fn run_client_tcp_mode(
                 }
 
                 // Determine if we already know how much to read.
-                let target_len = if let Some((hdr_end, body_len)) = http_content_length(&request_buf) {
-                    Some(hdr_end + body_len)
-                } else {
-                    None
-                };
+                let target_len =
+                    if let Some((hdr_end, body_len)) = http_content_length(&request_buf) {
+                        Some(hdr_end + body_len)
+                    } else {
+                        None
+                    };
                 if let Some(need) = target_len {
                     if request_buf.len() >= need {
                         debug!(
@@ -1060,7 +1335,10 @@ async fn run_client_tcp_mode(
                 let n = match read_result {
                     Err(_) => {
                         if request_buf.is_empty() {
-                            error!(stream_id = sid0, "client: timed out waiting for first byte from local tcp");
+                            error!(
+                                stream_id = sid0,
+                                "client: timed out waiting for first byte from local tcp"
+                            );
                             return;
                         }
                         if let Some(need) = target_len {
@@ -1074,7 +1352,10 @@ async fn run_client_tcp_mode(
                                 return;
                             }
                         }
-                        debug!(stream_id = sid0, "client: read idle timeout with buffered request, treating as complete");
+                        debug!(
+                            stream_id = sid0,
+                            "client: read idle timeout with buffered request, treating as complete"
+                        );
                         break;
                     }
                     Ok(Ok(0)) => {
@@ -1084,7 +1365,10 @@ async fn run_client_tcp_mode(
                             debug!("client: local tcp closed before sending request");
                             return;
                         }
-                        debug!(stream_id = sid0, "client: local tcp closed, finishing request buffering");
+                        debug!(
+                            stream_id = sid0,
+                            "client: local tcp closed, finishing request buffering"
+                        );
                         break;
                     }
                     Ok(Ok(n)) => n,
@@ -1107,7 +1391,11 @@ async fn run_client_tcp_mode(
                 error!(stream_id = sid0, "client: empty buffered request, aborting");
                 return;
             }
-            info!(stream_id = sid0, bytes = request_buf.len(), "client: buffered full local request");
+            info!(
+                stream_id = sid0,
+                bytes = request_buf.len(),
+                "client: buffered full local request"
+            );
             let request_site = request_site_label(&request_buf);
             emit_client_stage(
                 "request_buffered",
@@ -1159,7 +1447,10 @@ async fn run_client_tcp_mode(
                         "route selected: hops=N score=X"
                     );
                 } else {
-                    info!(stream_id = sid0, attempt, hops, score, "route selected: hops=N score=X");
+                    info!(
+                        stream_id = sid0,
+                        attempt, hops, score, "route selected: hops=N score=X"
+                    );
                 }
                 let sid = if attempt == 0 {
                     sid0
@@ -1168,7 +1459,7 @@ async fn run_client_tcp_mode(
                 };
                 emit_client_stage(
                     "route_selected",
-                json!({
+                    json!({
                     "stream_id": sid,
                     "site": request_site.as_str(),
                     "attempt": attempt,
@@ -1194,7 +1485,9 @@ async fn run_client_tcp_mode(
                     args.max_inflight_frames,
                     &response_senders_for_task,
                     &reliable_streams_for_task,
+                    &response_started_for_task,
                     &stream_routes,
+                    &completed_response_streams_for_task,
                     Some(&mut tcp),
                     is_tls,
                 )
@@ -1234,7 +1527,13 @@ async fn run_client_tcp_mode(
             }
 
             if let (Some(idx), Some(resp)) = (used_idx, final_resp.as_ref()) {
-                info!(stream_id = sid0, hops = used_hops, score = used_score, rtt_ms = rtt_ms.unwrap_or(0), "route success, updating metrics");
+                info!(
+                    stream_id = sid0,
+                    hops = used_hops,
+                    score = used_score,
+                    rtt_ms = rtt_ms.unwrap_or(0),
+                    "route success, updating metrics"
+                );
                 let mut store = route_store.lock().await;
                 store.record_success(idx, rtt_ms);
                 if let Some(code) = http_status_code(resp) {
@@ -1258,8 +1557,7 @@ async fn run_client_tcp_mode(
                 // For TLS mode we must not write plaintext HTTP fallback into an
                 // active TLS tunnel.
                 if !is_tls {
-                    let fallback =
-                        b"HTTP/1.1 504 Gateway Timeout\r\nConnection: close\r\n\r\n";
+                    let fallback = b"HTTP/1.1 504 Gateway Timeout\r\nConnection: close\r\n\r\n";
                     let _ = tcp.write_all(fallback).await;
                 }
             }
@@ -1275,12 +1573,7 @@ async fn run_client_tcp_mode(
                 let mut cont_buf = vec![0u8; 4096];
                 loop {
                     // Read next chunk from curl (TLS Finished, HTTP request, …)
-                    let n = match timeout(
-                        Duration::from_secs(30),
-                        tcp.read(&mut cont_buf),
-                    )
-                    .await
-                    {
+                    let n = match timeout(Duration::from_secs(30), tcp.read(&mut cont_buf)).await {
                         Ok(Ok(0)) | Err(_) => break, // TCP closed or idle timeout
                         Ok(Ok(n)) => n,
                         Ok(Err(_)) => break,
@@ -1309,7 +1602,9 @@ async fn run_client_tcp_mode(
                         args.max_inflight_frames,
                         &response_senders_for_task,
                         &reliable_streams_for_task,
+                        &response_started_for_task,
                         &stream_routes,
+                        &completed_response_streams_for_task,
                         Some(&mut tcp),
                         true,
                     )
@@ -1349,9 +1644,11 @@ async fn tunnel_http_roundtrip(
     request: &[u8],
     chunk_size: usize,
     max_inflight_frames: usize,
-    response_senders: &Arc<Mutex<HashMap<u32, mpsc::UnboundedSender<Option<Vec<u8>>>>>>,
-    reliable_streams: &Arc<Mutex<HashMap<u32, Arc<Mutex<ReliableStream>>>>>,
-    stream_routes: &Arc<Mutex<HashMap<u32, Route>>>,
+    response_senders: &ResponseSenderTable,
+    reliable_streams: &ReliableStreamTable,
+    response_started: &ResponseStartedTable,
+    stream_routes: &StreamRouteTable,
+    completed_response_streams: &CompletedResponseStreamTable,
     mut local_tcp: Option<&mut tokio::net::TcpStream>,
     write_response_to_tcp: bool,
 ) -> Result<Vec<u8>> {
@@ -1366,7 +1663,12 @@ async fn tunnel_http_roundtrip(
         .map(|hop| hop.to_string())
         .collect::<Vec<_>>()
         .join(" -> ");
-    debug!(stream_id = stream_id, bytes = request.len(), hops = route.len(), "client: tunnel_http_roundtrip start");
+    debug!(
+        stream_id = stream_id,
+        bytes = request.len(),
+        hops = route.len(),
+        "client: tunnel_http_roundtrip start"
+    );
     emit_client_stage(
         "roundtrip_started",
         json!({
@@ -1389,6 +1691,16 @@ async fn tunnel_http_roundtrip(
         let mut map = response_senders.lock().unwrap();
         map.insert(stream_id, tx_from_udp);
     }
+    emit_client_stage(
+        "response_channel_created",
+        json!({
+            "stream_id": stream_id,
+            "site": request_site.as_str(),
+            "route_len": route.len(),
+            "route_chain": route_chain.as_str(),
+            "write_response_to_tcp": write_response_to_tcp,
+        }),
+    );
 
     let rs_arc = {
         let mut map = reliable_streams.lock().unwrap();
@@ -1452,7 +1764,10 @@ async fn tunnel_http_roundtrip(
             rs.mark_sent(frame.frame_seq);
         }
     }
-    debug!(stream_id = stream_id, sent_chunks, sent_bytes, "client: sent request chunks over tunnel");
+    debug!(
+        stream_id = stream_id,
+        sent_chunks, sent_bytes, "client: sent request chunks over tunnel"
+    );
 
     // End-of-request marker.
     loop {
@@ -1484,7 +1799,10 @@ async fn tunnel_http_roundtrip(
             break;
         }
         if Instant::now() >= wait_deadline {
-            debug!(stream_id = stream_id, inflight, "client: request still inflight after wait, proceeding to read response");
+            debug!(
+                stream_id = stream_id,
+                inflight, "client: request still inflight after wait, proceeding to read response"
+            );
             break;
         }
         tokio::time::sleep(Duration::from_millis(10)).await;
@@ -1503,17 +1821,29 @@ async fn tunnel_http_roundtrip(
     } else {
         Duration::from_secs(5)
     };
-    loop {
+    let completion_reason: &'static str = loop {
         let msg = match timeout(idle_timeout, rx_from_udp_stream.recv()).await {
             Ok(v) => v,
             Err(_) => {
                 if write_response_to_tcp {
                     continue; // keep waiting for stream end marker
                 }
-                break;
+                emit_client_stage(
+                    "response_timeout",
+                    json!({
+                        "stream_id": stream_id,
+                        "site": request_site.as_str(),
+                        "route_len": route.len(),
+                        "route_chain": route_chain.as_str(),
+                        "idle_timeout_ms": idle_timeout.as_millis() as u64,
+                    }),
+                );
+                break "response_idle_timeout";
             }
         };
-        let Some(msg) = msg else { break };
+        let Some(msg) = msg else {
+            break "response_channel_closed";
+        };
         match msg {
             Some(chunk) => {
                 if first_client_byte_ms.is_none() && !chunk.is_empty() {
@@ -1537,7 +1867,7 @@ async fn tunnel_http_roundtrip(
                         .expect("write_response_to_tcp=true requires local_tcp");
                     if let Err(e) = tcp.write_all(&chunk).await {
                         error!(stream_id = stream_id, %e, "client failed writing streamed response");
-                        break;
+                        break "local_tcp_write_failed";
                     }
                     resp_bytes_written += chunk.len();
                     resp_frames += 1;
@@ -1551,21 +1881,28 @@ async fn tunnel_http_roundtrip(
                     // We cap based on the request size with a small buffer.
                     let max_full = request.len().saturating_add(256 * 1024);
                     if full.len() >= max_full {
-                        break;
+                        break "buffer_cap_reached";
                     }
                     if let Some((hdr_end, body_len)) = http_content_length(&full) {
                         let need = hdr_end + body_len;
                         if full.len() >= need {
-                            break;
+                            break "content_length_satisfied";
                         }
                     }
                 }
             }
-            None => break,
+            None => break "end_of_stream",
         }
-    }
+    };
 
     // Cleanup.
+    remember_completed_response_stream(
+        completed_response_streams,
+        stream_id,
+        rs_arc.clone(),
+        route.clone(),
+        completion_reason,
+    );
     {
         let mut map = reliable_streams.lock().unwrap();
         map.remove(&stream_id);
@@ -1575,9 +1912,24 @@ async fn tunnel_http_roundtrip(
         map.remove(&stream_id);
     }
     {
+        let mut map = response_started.lock().unwrap();
+        map.remove(&stream_id);
+    }
+    {
         let mut map = stream_routes.lock().unwrap();
         map.remove(&stream_id);
     }
+    emit_client_stage(
+        "response_channel_removed",
+        json!({
+            "stream_id": stream_id,
+            "site": request_site.as_str(),
+            "route_len": route.len(),
+            "route_chain": route_chain.as_str(),
+            "completion_reason": completion_reason,
+            "write_response_to_tcp": write_response_to_tcp,
+        }),
+    );
 
     if !write_response_to_tcp && full.is_empty() {
         anyhow::bail!("no response (timeout or channel closed)");
@@ -1593,6 +1945,7 @@ async fn tunnel_http_roundtrip(
             "first_client_byte_ms": first_client_byte_ms,
             "response_bytes": if write_response_to_tcp { resp_bytes_written } else { full.len() },
             "response_frames": resp_frames,
+            "completion_reason": completion_reason,
             "write_response_to_tcp": write_response_to_tcp,
         }),
     );
@@ -1663,9 +2016,7 @@ async fn run_client_tun_mode(
                     // as a plaintext TunnelMessage (no AEAD session required).
                     if discovery_enabled {
                         if let Ok(plain_msg) = decode(inner) {
-                            if let Some(event) =
-                                discovery::parse_discovery_message(&plain_msg)
-                            {
+                            if let Some(event) = discovery::parse_discovery_message(&plain_msg) {
                                 let now = crate::ant::now_ms();
                                 match event {
                                     DiscoveryMessage::Advertise(advertisement) => {
@@ -1685,15 +2036,14 @@ async fn run_client_tun_mode(
                                             store.on_query_received();
                                             store.purge_expired(now);
                                             discovery::build_discovery_response_payload(
-                                                &store,
-                                                &query,
-                                                now,
+                                                &store, &query, now,
                                             )
                                         };
-                                        let payload_bytes = match bincode::serialize(&response_payload) {
-                                            Ok(b) => b,
-                                            Err(_) => continue,
-                                        };
+                                        let payload_bytes =
+                                            match bincode::serialize(&response_payload) {
+                                                Ok(b) => b,
+                                                Err(_) => continue,
+                                            };
                                         let resp_msg = TunnelMessage::new(
                                             MsgType::DiscoveryResponse,
                                             1,
@@ -1701,9 +2051,16 @@ async fn run_client_tun_mode(
                                             0,
                                             payload_bytes,
                                         );
-                                        if let Ok(packet) = discovery::build_plaintext_packet(&_from, &resp_msg) {
-                                            if udp_send_discovery.send(&_from, &packet).await.is_ok() {
-                                                let mut store = discovery_store_recv.lock().unwrap();
+                                        if let Ok(packet) =
+                                            discovery::build_plaintext_packet(&_from, &resp_msg)
+                                        {
+                                            if udp_send_discovery
+                                                .send(&_from, &packet)
+                                                .await
+                                                .is_ok()
+                                            {
+                                                let mut store =
+                                                    discovery_store_recv.lock().unwrap();
                                                 store.on_response_sent();
                                             }
                                         }
@@ -1859,13 +2216,7 @@ async fn run_client_tun_mode(
             }
         };
 
-        let flow_key = FlowKey::new(
-            ip_hdr.src,
-            ip_hdr.dst,
-            src_port,
-            dst_port,
-            ip_hdr.protocol,
-        );
+        let flow_key = FlowKey::new(ip_hdr.src, ip_hdr.dst, src_port, dst_port, ip_hdr.protocol);
 
         let stream_id = {
             let mut table = flow_table.lock().await;
@@ -1923,10 +2274,7 @@ async fn run_client_tun_mode(
 /// Client-side runtime handshake with the exit over UDP via relay(s).
 /// Stage 5: handshake messages follow the same routed path as DATA:
 /// client -> relay(ы) -> exit and обратно.
-async fn perform_handshake(
-    udp: &UdpTransport,
-    route: &Route,
-) -> Result<SessionCrypto> {
+async fn perform_handshake(udp: &UdpTransport, route: &Route) -> Result<SessionCrypto> {
     use tokio::time::{sleep, timeout};
 
     let session_id = 1;
@@ -1953,8 +2301,7 @@ async fn perform_handshake(
     for attempt in 1..=max_attempts {
         info!(
             attempt,
-            max_attempts,
-            "client handshake: sending HandshakeInit via routed path (hop 0 -> exit)"
+            max_attempts, "client handshake: sending HandshakeInit via routed path (hop 0 -> exit)"
         );
         let (init_msg, local_secret, _local_pub) = build_handshake_init(session_id);
         let init_bytes = encode_plaintext(&init_msg)?;
@@ -1998,12 +2345,13 @@ async fn perform_handshake(
             sleep(Duration::from_millis(500)).await;
             continue;
         }
-        let challenge: HandshakeChallengePayload =
-            bincode::deserialize(&msg.payload).map_err(|e| anyhow::anyhow!("challenge decode: {}", e))?;
+        let challenge: HandshakeChallengePayload = bincode::deserialize(&msg.payload)
+            .map_err(|e| anyhow::anyhow!("challenge decode: {}", e))?;
 
         // Preserve client_nonce from our first init (same payload we sent).
         let first_payload: crate::handshake::HandshakeInitPayload =
-            bincode::deserialize(&init_msg.payload).map_err(|e| anyhow::anyhow!("init payload decode: {}", e))?;
+            bincode::deserialize(&init_msg.payload)
+                .map_err(|e| anyhow::anyhow!("init payload decode: {}", e))?;
 
         // Step 2: send HandshakeInit with cookie
         let init_with_cookie = build_handshake_init_with_cookie(
@@ -2051,13 +2399,13 @@ async fn perform_handshake(
         info!("client handshake: session established with exit (Stage 3.1 challenge flow)");
         emit_client_stage(
             "session_established",
-        json!({
-            "session_id": session_id,
-            "route_len": route.len(),
-            "route_chain": route_chain.as_str(),
-            "handshake_ms": handshake_start.elapsed().as_millis() as u64,
-            "attempt": attempt,
-        }),
+            json!({
+                "session_id": session_id,
+                "route_len": route.len(),
+                "route_chain": route_chain.as_str(),
+                "handshake_ms": handshake_start.elapsed().as_millis() as u64,
+                "attempt": attempt,
+            }),
         );
         return Ok(SessionCrypto::new(aead_key));
     }
@@ -2065,4 +2413,88 @@ async fn perform_handshake(
     Err(anyhow::anyhow!(
         "client handshake: failed to establish session after {max_attempts} attempts"
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::net::SocketAddr;
+
+    fn test_route() -> Route {
+        Route {
+            hops: vec![NodeAddr::from(
+                "127.0.0.1:30000".parse::<SocketAddr>().unwrap(),
+            )],
+        }
+    }
+
+    #[test]
+    fn completed_response_stream_retains_ack_state_for_late_duplicates() {
+        let stream_id = 42u32;
+        let reliable = Arc::new(Mutex::new(ReliableStream::new()));
+        {
+            let mut guard = reliable.lock().unwrap();
+            let data = StreamFrame {
+                stream_id,
+                frame_seq: 0,
+                ack_seq: 0,
+                payload: b"hello".to_vec(),
+            };
+            let end = StreamFrame {
+                stream_id,
+                frame_seq: 1,
+                ack_seq: 0,
+                payload: Vec::new(),
+            };
+
+            let (deliver_data, ack_after_data, eos_after_data) = guard.process_incoming(&data);
+            assert_eq!(deliver_data, vec![b"hello".to_vec()]);
+            assert_eq!(ack_after_data, 1);
+            assert!(!eos_after_data);
+
+            let (deliver_end, ack_after_end, eos_after_end) = guard.process_incoming(&end);
+            assert!(deliver_end.is_empty());
+            assert_eq!(ack_after_end, 2);
+            assert!(eos_after_end);
+        }
+
+        let completed: CompletedResponseStreamTable = Arc::new(Mutex::new(HashMap::new()));
+        remember_completed_response_stream(
+            &completed,
+            stream_id,
+            reliable.clone(),
+            test_route(),
+            "content_length_satisfied",
+        );
+
+        let snapshot =
+            snapshot_completed_response_stream(&completed, stream_id).expect("completed stream");
+        let late_duplicate = StreamFrame {
+            stream_id,
+            frame_seq: 0,
+            ack_seq: 0,
+            payload: b"hello".to_vec(),
+        };
+        let (deliver_late, ack_after_late, eos_after_late) = {
+            let mut guard = snapshot.reliable.lock().unwrap();
+            guard.process_incoming(&late_duplicate)
+        };
+
+        assert!(
+            deliver_late.is_empty(),
+            "late duplicate must not be redelivered"
+        );
+        assert_eq!(
+            ack_after_late, 2,
+            "completed stream must retain cumulative ACK state for late duplicates"
+        );
+        assert!(!eos_after_late);
+
+        let (completed_age_ms, completion_reason, late_payload_count) =
+            note_completed_response_late_payload(&completed, stream_id)
+                .expect("late payload should update completed stream counters");
+        assert_eq!(completion_reason, "content_length_satisfied");
+        assert_eq!(late_payload_count, 1);
+        assert!(completed_age_ms <= COMPLETED_RESPONSE_STREAM_LINGER.as_millis() as u64);
+    }
 }
