@@ -1,31 +1,30 @@
-use crate::config::ExitConfigCli as ExitArgs;
+use crate::addr::NodeAddr;
+use crate::ant::{Ant, AntDedup, AntType, Observation};
 use crate::build_info::BuildInfo;
+use crate::config::ExitConfigCli as ExitArgs;
+use crate::discovery;
+use crate::discovery::{DiscoveryAdvertisePayload, DiscoveryMessage, DiscoveryQueryPayload};
 use crate::handshake::{
-    encode_plaintext, handle_handshake_init, HandshakeChallengePayload,
-    HandshakeInitPayload,
+    encode_plaintext, handle_handshake_init, HandshakeChallengePayload, HandshakeInitPayload,
 };
 use crate::handshake_cookie::{generate_cookie, verify_cookie, HandshakeRateLimiter};
-use crate::discovery;
-use crate::discovery::{DiscoveryMessage, DiscoveryAdvertisePayload, DiscoveryQueryPayload};
+use crate::node_config::NodeRole;
+use crate::ops::drain;
 use crate::protocol::{decode, MsgType, StreamFrame, TunnelMessage, PROTOCOL_VERSION};
-use crate::wire::{build_encrypted_packet, parse_routing_header, RoutingInfo};
-use crate::stream_reliable::{AckFrame, ReliableStream};
 use crate::session::SessionCrypto;
 use crate::stage_trace;
-use crate::addr::NodeAddr;
-use crate::node_config::NodeRole;
-use crate::ant::{Ant, AntDedup, AntType, Observation};
-use crate::ops::drain;
+use crate::stream_reliable::{AckFrame, ReliableStream};
 use crate::transport::{Transport, UdpTransport};
+use crate::wire::{build_encrypted_packet, parse_routing_header, RoutingInfo};
 use anyhow::Result;
 use rand_core::{OsRng, RngCore};
 use serde_json::json;
 use std::collections::{HashMap, HashSet};
+use std::net::IpAddr;
 use std::net::SocketAddr;
 use std::net::UdpSocket as StdUdpSocket;
-use std::net::IpAddr;
-use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering as AtomicOrdering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
@@ -33,8 +32,18 @@ use tokio::sync::{mpsc, oneshot};
 use tokio::time::timeout;
 use tracing::{debug, error, info, warn};
 
+const MIN_EXIT_RESPONSE_WINDOW_FRAMES: usize = 8;
+const MAX_EXIT_RESPONSE_WINDOW_FRAMES: usize = 256;
+
 struct ExitStream {
     socket: TcpStream,
+}
+
+fn clamp_response_window_frames(frames: usize) -> usize {
+    frames.clamp(
+        MIN_EXIT_RESPONSE_WINDOW_FRAMES,
+        MAX_EXIT_RESPONSE_WINDOW_FRAMES,
+    )
 }
 
 /// Minimal HTTP parser helper: try to find Content-Length and header/body split.
@@ -58,9 +67,7 @@ fn http_content_length(buf: &[u8]) -> Option<(usize, usize)> {
     // Search for "Content-Length:" (case-sensitive) in headers.
     let headers = &haystack[..hdr_end];
     let marker = b"Content-Length:";
-    let pos = headers
-        .windows(marker.len())
-        .position(|w| w == marker)?;
+    let pos = headers.windows(marker.len()).position(|w| w == marker)?;
     let rest = &headers[pos + marker.len()..];
     // Skip spaces.
     let rest = match rest.iter().position(|b| !b.is_ascii_whitespace()) {
@@ -210,8 +217,7 @@ fn extract_tls_sni_from_request<'a>(req: &'a [u8]) -> Option<&'a str> {
             }
             while n + 3 <= list_end {
                 let name_type = req[n];
-                let name_len =
-                    u16::from_be_bytes([req[n + 1], req[n + 2]]) as usize;
+                let name_len = u16::from_be_bytes([req[n + 1], req[n + 2]]) as usize;
                 n += 3;
                 if n + name_len > list_end {
                     return None;
@@ -246,9 +252,7 @@ fn strip_port_from_host_bytes<'a>(host_port: &'a [u8]) -> Option<&'a [u8]> {
 
     // If we see a trailing :<digits> segment, strip it.
     if let Some(idx) = host_port.iter().rposition(|&b| b == b':') {
-        if idx + 1 < host_port.len()
-            && host_port[idx + 1..].iter().all(|b| b.is_ascii_digit())
-        {
+        if idx + 1 < host_port.len() && host_port[idx + 1..].iter().all(|b| b.is_ascii_digit()) {
             return Some(&host_port[..idx]);
         }
     }
@@ -333,15 +337,17 @@ fn best_effort_outbound_ip() -> Option<IpAddr> {
 
 pub async fn run_exit(args: ExitArgs) -> Result<()> {
     let udp = Arc::new(UdpTransport::bind(args.listen).await?);
+    let response_window_frames = clamp_response_window_frames(args.response_window_frames);
     info!(
         listen_addr = %args.listen,
         target_addr = %args.target_addr,
+        response_window_frames,
         "exit starting, binding UDP and resolving target"
     );
     info!(role = "exit", addr = %args.listen, "node ready");
 
-    let fixed_site = fixed_site_from_target_addr(&args.target_addr)
-        .unwrap_or_else(|| "unknown".to_string());
+    let fixed_site =
+        fixed_site_from_target_addr(&args.target_addr).unwrap_or_else(|| "unknown".to_string());
 
     let mut target_addrs = tokio::net::lookup_host(&args.target_addr).await?;
     let target_addr: SocketAddr = target_addrs
@@ -364,10 +370,8 @@ pub async fn run_exit(args: ExitArgs) -> Result<()> {
     let mut session_peer: Option<NodeAddr> = None;
 
     // Stage 7: ant dedup (exit only bounces Echo ants).
-    let ant_dedup: Arc<Mutex<AntDedup>> = Arc::new(Mutex::new(AntDedup::new(
-        256,
-        Duration::from_secs(30),
-    )));
+    let ant_dedup: Arc<Mutex<AntDedup>> =
+        Arc::new(Mutex::new(AntDedup::new(256, Duration::from_secs(30))));
     let exit_ip = if args.listen.ip().is_unspecified() {
         best_effort_outbound_ip().unwrap_or(args.listen.ip())
     } else {
@@ -392,9 +396,7 @@ pub async fn run_exit(args: ExitArgs) -> Result<()> {
     let self_node = self_node_for_tcp.clone();
 
     // Stage 9.1: minimal discovery store + best-effort self advertisement (control-plane only).
-    let discovery_store = Arc::new(Mutex::new(discovery::new_store(
-        args.discovery_max_entries,
-    )));
+    let discovery_store = Arc::new(Mutex::new(discovery::new_store(args.discovery_max_entries)));
     let self_adv = {
         let bi = BuildInfo::current();
         let self_id = discovery::node_id_from_addr(&self_node_for_tcp);
@@ -441,13 +443,7 @@ pub async fn run_exit(args: ExitArgs) -> Result<()> {
             };
 
             if let Ok(payload_bytes) = bincode::serialize(&adv_payload) {
-                let msg = TunnelMessage::new(
-                    MsgType::DiscoveryAdvertise,
-                    1,
-                    0,
-                    0,
-                    payload_bytes,
-                );
+                let msg = TunnelMessage::new(MsgType::DiscoveryAdvertise, 1, 0, 0, payload_bytes);
                 if let Ok(packet) = discovery::build_plaintext_packet(&peer, &msg) {
                     if udp.send(&peer, &packet).await.is_ok() {
                         debug!(
@@ -466,13 +462,7 @@ pub async fn run_exit(args: ExitArgs) -> Result<()> {
                     protocol: Some(crate::addr::Protocol::Udp),
                 };
                 if let Ok(payload_bytes) = bincode::serialize(&query) {
-                    let qmsg = TunnelMessage::new(
-                        MsgType::DiscoveryQuery,
-                        1,
-                        0,
-                        0,
-                        payload_bytes,
-                    );
+                    let qmsg = TunnelMessage::new(MsgType::DiscoveryQuery, 1, 0, 0, payload_bytes);
                     if let Ok(packet) = discovery::build_plaintext_packet(&peer, &qmsg) {
                         if udp.send(&peer, &packet).await.is_ok() {
                             let mut store = discovery_store.lock().unwrap();
@@ -491,24 +481,18 @@ pub async fn run_exit(args: ExitArgs) -> Result<()> {
     }
 
     // For simplicity keep a map stream_id -> TCP socket handle via channels
-    let (tx_map, mut rx_ctrl) =
-        mpsc::unbounded_channel::<(u32, Vec<u8>, NodeAddr)>(); // (stream_id, data, peer_addr)
+    let (tx_map, mut rx_ctrl) = mpsc::unbounded_channel::<(u32, Vec<u8>, NodeAddr)>(); // (stream_id, data, peer_addr)
 
     // Shared session crypto for the TCP worker, populated after first data packet.
-    let shared_crypto: Arc<Mutex<Option<SessionCrypto>>> =
-        Arc::new(Mutex::new(None));
-    let shared_route: Arc<Mutex<Option<crate::route::Route>>> =
-        Arc::new(Mutex::new(None));
+    let shared_crypto: Arc<Mutex<Option<SessionCrypto>>> = Arc::new(Mutex::new(None));
+    let shared_route: Arc<Mutex<Option<crate::route::Route>>> = Arc::new(Mutex::new(None));
     // Shared peer address for reverse traffic (exit -> relay -> client).
-    let shared_peer: Arc<Mutex<Option<NodeAddr>>> =
-        Arc::new(Mutex::new(None));
+    let shared_peer: Arc<Mutex<Option<NodeAddr>>> = Arc::new(Mutex::new(None));
 
     // Stage 4: accumulate request chunks per stream until client-initiated
     // end-of-request marker, then flush exactly once to the TCP worker.
-    let request_buffer: Arc<Mutex<HashMap<u32, Vec<u8>>>> =
-        Arc::new(Mutex::new(HashMap::new()));
-    let completed_requests: Arc<Mutex<HashSet<u32>>> =
-        Arc::new(Mutex::new(HashSet::new()));
+    let request_buffer: Arc<Mutex<HashMap<u32, Vec<u8>>>> = Arc::new(Mutex::new(HashMap::new()));
+    let completed_requests: Arc<Mutex<HashSet<u32>>> = Arc::new(Mutex::new(HashSet::new()));
     // NOTE: request-side reliability is handled by `ReliableStream::process_incoming`
     // (reordering/dup handling) + ACKs, so we do not keep a separate seen set.
 
@@ -524,6 +508,7 @@ pub async fn run_exit(args: ExitArgs) -> Result<()> {
     let reliable_streams_for_task = reliable_streams.clone();
     let request_buffer_for_task = request_buffer.clone();
     let _completed_requests_for_task = completed_requests.clone();
+    let response_window_frames_for_task = response_window_frames;
 
     // Task: handle TCP request/response per stream.
     tokio::spawn(async move {
@@ -548,7 +533,10 @@ pub async fn run_exit(args: ExitArgs) -> Result<()> {
             let peer = match shared_peer_for_task.lock().unwrap().clone() {
                 Some(p) => p,
                 None => {
-                    error!(stream_id, "exit tcp worker has no session peer; dropping message");
+                    error!(
+                        stream_id,
+                        "exit tcp worker has no session peer; dropping message"
+                    );
                     continue;
                 }
             };
@@ -572,13 +560,10 @@ pub async fn run_exit(args: ExitArgs) -> Result<()> {
                         // Deterministic final artifact for validation: CloseStream (no continuation expected).
                         if !final_emitted.contains(&stream_id) {
                             if let Some(entry) = response_totals.get(&stream_id) {
-                                let dur_ms = entry
-                                    .first_response_start
-                                    .elapsed()
-                                    .as_millis() as u64;
+                                let dur_ms =
+                                    entry.first_response_start.elapsed().as_millis() as u64;
                                 let thr_bps_total = if dur_ms > 0 {
-                                    (entry.total_payload_bytes as u128 * 1000u128)
-                                        / dur_ms as u128
+                                    (entry.total_payload_bytes as u128 * 1000u128) / dur_ms as u128
                                 } else {
                                     0
                                 };
@@ -650,156 +635,153 @@ pub async fn run_exit(args: ExitArgs) -> Result<()> {
                 debug!(stream_id, "exit reusing existing tcp stream to target");
                 st
             } else {
-                    let connect_start = Instant::now();
-                    emit_exit_stage(
-                        "target_connect_started",
-                        json!({
-                            "stream_id": stream_id,
-                            "site": site.as_str(),
-                            "route_len": shared_route_for_task
-                                .lock()
-                                .unwrap()
-                                .as_ref()
-                                .map(|route| route.len())
-                                .unwrap_or(0),
-                            "peer": peer.to_string(),
-                            "target_addr": target_addr.to_string(),
-                        }),
-                    );
-                    // Bounded-time connect to target
-                    let connect_res = timeout(
-                        Duration::from_secs(1),
-                        TcpStream::connect(target_addr),
-                    )
-                    .await;
+                let connect_start = Instant::now();
+                emit_exit_stage(
+                    "target_connect_started",
+                    json!({
+                        "stream_id": stream_id,
+                        "site": site.as_str(),
+                        "route_len": shared_route_for_task
+                            .lock()
+                            .unwrap()
+                            .as_ref()
+                            .map(|route| route.len())
+                            .unwrap_or(0),
+                        "peer": peer.to_string(),
+                        "target_addr": target_addr.to_string(),
+                    }),
+                );
+                // Bounded-time connect to target
+                let connect_res =
+                    timeout(Duration::from_secs(1), TcpStream::connect(target_addr)).await;
 
-                    match connect_res {
-                        Ok(Ok(s)) => {
-                            debug!(stream_id, %target_addr, "exit connected to target");
-                            emit_exit_stage(
-                                "target_connect_completed",
-                                json!({
-                                    "stream_id": stream_id,
-                                    "site": site.as_str(),
-                                    "route_len": shared_route_for_task
-                                        .lock()
-                                        .unwrap()
-                                        .as_ref()
-                                        .map(|route| route.len())
-                                        .unwrap_or(0),
-                                    "peer": peer.to_string(),
-                                    "target_addr": target_addr.to_string(),
-                                    "target_connect_ms": connect_start.elapsed().as_millis() as u64,
-                                }),
-                            );
-                            ExitStream { socket: s }
-                        }
-                        Ok(Err(e)) => {
-                            error!(stream_id, %e, %target_addr, "exit failed to connect to target");
-                            let err_msg = TunnelMessage::new(
-                                MsgType::Error,
-                                1,
-                                stream_id,
-                                0,
-                                b"target connect failed".to_vec(),
-                            );
-                            let maybe_crypto =
-                                shared_crypto_for_task.lock().unwrap().clone();
-                            let maybe_route =
-                                shared_route_for_task.lock().unwrap().clone();
-                            if let (Some(crypto_for_task), Some(route)) = (maybe_crypto, maybe_route) {
-                                let routing = RoutingInfo {
-                                    hop_index: (route.len().saturating_sub(1)) as u8,
-                                    route,
-                                };
-                                if let Ok(ct) = build_encrypted_packet(&crypto_for_task, &routing, err_msg)
-                                {
-                                    debug!(
-                                        stream_id,
-                                        peer = %peer,
-                                        "exit sending Error (target connect failed) to client"
-                                    );
-                                    let _ = udp_for_task.send(&peer, &ct).await;
-                                }
-                            } else {
-                                error!(
+                match connect_res {
+                    Ok(Ok(s)) => {
+                        debug!(stream_id, %target_addr, "exit connected to target");
+                        emit_exit_stage(
+                            "target_connect_completed",
+                            json!({
+                                "stream_id": stream_id,
+                                "site": site.as_str(),
+                                "route_len": shared_route_for_task
+                                    .lock()
+                                    .unwrap()
+                                    .as_ref()
+                                    .map(|route| route.len())
+                                    .unwrap_or(0),
+                                "peer": peer.to_string(),
+                                "target_addr": target_addr.to_string(),
+                                "target_connect_ms": connect_start.elapsed().as_millis() as u64,
+                            }),
+                        );
+                        ExitStream { socket: s }
+                    }
+                    Ok(Err(e)) => {
+                        error!(stream_id, %e, %target_addr, "exit failed to connect to target");
+                        let err_msg = TunnelMessage::new(
+                            MsgType::Error,
+                            1,
+                            stream_id,
+                            0,
+                            b"target connect failed".to_vec(),
+                        );
+                        let maybe_crypto = shared_crypto_for_task.lock().unwrap().clone();
+                        let maybe_route = shared_route_for_task.lock().unwrap().clone();
+                        if let (Some(crypto_for_task), Some(route)) = (maybe_crypto, maybe_route) {
+                            let routing = RoutingInfo {
+                                hop_index: (route.len().saturating_sub(1)) as u8,
+                                route,
+                            };
+                            if let Ok(ct) =
+                                build_encrypted_packet(&crypto_for_task, &routing, err_msg)
+                            {
+                                debug!(
+                                    stream_id,
+                                    peer = %peer,
+                                    "exit sending Error (target connect failed) to client"
+                                );
+                                let _ = udp_for_task.send(&peer, &ct).await;
+                            }
+                        } else {
+                            error!(
                                     stream_id,
                                     "exit has no established session crypto/route for target connect error"
                                 );
-                            }
-                            continue;
                         }
-                        Err(_) => {
-                            // timeout
-                            error!(stream_id, %target_addr, "exit connect to target timed out");
-                            let err_msg = TunnelMessage::new(
-                                MsgType::Error,
-                                1,
-                                stream_id,
-                                0,
-                                b"target connect timeout".to_vec(),
-                            );
-                            let maybe_crypto =
-                                shared_crypto_for_task.lock().unwrap().clone();
-                            let maybe_route =
-                                shared_route_for_task.lock().unwrap().clone();
-                            if let (Some(crypto_for_task), Some(route)) = (maybe_crypto, maybe_route) {
-                                let routing = RoutingInfo {
-                                    hop_index: (route.len().saturating_sub(1)) as u8,
-                                    route,
-                                };
-                                if let Ok(ct) = build_encrypted_packet(&crypto_for_task, &routing, err_msg)
-                                {
-                                    debug!(
-                                        stream_id,
-                                        peer = %peer,
-                                        "exit sending Error (target connect timeout) to client"
-                                    );
-                                    let _ = udp_for_task.send(&peer, &ct).await;
-                                }
-                            } else {
-                                error!(
+                        continue;
+                    }
+                    Err(_) => {
+                        // timeout
+                        error!(stream_id, %target_addr, "exit connect to target timed out");
+                        let err_msg = TunnelMessage::new(
+                            MsgType::Error,
+                            1,
+                            stream_id,
+                            0,
+                            b"target connect timeout".to_vec(),
+                        );
+                        let maybe_crypto = shared_crypto_for_task.lock().unwrap().clone();
+                        let maybe_route = shared_route_for_task.lock().unwrap().clone();
+                        if let (Some(crypto_for_task), Some(route)) = (maybe_crypto, maybe_route) {
+                            let routing = RoutingInfo {
+                                hop_index: (route.len().saturating_sub(1)) as u8,
+                                route,
+                            };
+                            if let Ok(ct) =
+                                build_encrypted_packet(&crypto_for_task, &routing, err_msg)
+                            {
+                                debug!(
+                                    stream_id,
+                                    peer = %peer,
+                                    "exit sending Error (target connect timeout) to client"
+                                );
+                                let _ = udp_for_task.send(&peer, &ct).await;
+                            }
+                        } else {
+                            error!(
                                     stream_id,
                                     "exit has no established session crypto/route for target connect timeout"
                                 );
-                            }
-                            continue;
                         }
+                        continue;
                     }
+                }
             };
-            debug!(stream_id, bytes = full_request.len(), "exit writing request bytes to target");
+            debug!(
+                stream_id,
+                bytes = full_request.len(),
+                "exit writing request bytes to target"
+            );
             if let Err(e) = st.socket.write_all(&full_request).await {
-                    error!(stream_id, %e, "exit failed to write to target");
-                    let err_msg = TunnelMessage::new(
-                        MsgType::Error,
-                        1,
-                        stream_id,
-                        0,
-                        b"target write failed".to_vec(),
-                    );
-                    let maybe_crypto =
-                        shared_crypto_for_task.lock().unwrap().clone();
-                    let maybe_route =
-                        shared_route_for_task.lock().unwrap().clone();
-                    if let (Some(crypto_for_task), Some(route)) = (maybe_crypto, maybe_route) {
-                        let routing = RoutingInfo {
-                            hop_index: (route.len().saturating_sub(1)) as u8,
-                            route,
-                        };
-                        if let Ok(ct) = build_encrypted_packet(&crypto_for_task, &routing, err_msg) {
-                            debug!(
-                                stream_id,
-                                peer = %peer,
-                                "exit sending Error (target write failed) to client"
-                            );
-                            let _ = udp_for_task.send(&peer, &ct).await;
-                        }
-                    } else {
-                        error!(
+                error!(stream_id, %e, "exit failed to write to target");
+                let err_msg = TunnelMessage::new(
+                    MsgType::Error,
+                    1,
+                    stream_id,
+                    0,
+                    b"target write failed".to_vec(),
+                );
+                let maybe_crypto = shared_crypto_for_task.lock().unwrap().clone();
+                let maybe_route = shared_route_for_task.lock().unwrap().clone();
+                if let (Some(crypto_for_task), Some(route)) = (maybe_crypto, maybe_route) {
+                    let routing = RoutingInfo {
+                        hop_index: (route.len().saturating_sub(1)) as u8,
+                        route,
+                    };
+                    if let Ok(ct) = build_encrypted_packet(&crypto_for_task, &routing, err_msg) {
+                        debug!(
                             stream_id,
-                            "exit has no established session crypto/route for target write error"
+                            peer = %peer,
+                            "exit sending Error (target write failed) to client"
                         );
+                        let _ = udp_for_task.send(&peer, &ct).await;
                     }
+                } else {
+                    error!(
+                        stream_id,
+                        "exit has no established session crypto/route for target write error"
+                    );
+                }
                 continue;
             }
             // For plain HTTP-style request/response targets, shut down the write
@@ -819,7 +801,7 @@ pub async fn run_exit(args: ExitArgs) -> Result<()> {
             let mut tmp_buf = vec![0u8; 8192];
             // Stage 9.1b: continuous read->frame send (no full response buffering).
             const CHUNK: usize = 1000;
-            const WINDOW_FRAMES: usize = 8;
+            let window_frames = response_window_frames_for_task;
 
             // Read timing controls: we stop when the target goes quiet for a while.
             // This preserves long-lived TLS/HTTP semantics without needing full-body buffering.
@@ -839,6 +821,10 @@ pub async fn run_exit(args: ExitArgs) -> Result<()> {
             let mut sent_frames: usize = 0;
             let mut max_inflight: usize = 0;
             let mut http_code: Option<u16> = None;
+            let mut first_overlay_send_ms: Option<u64> = None;
+            let mut window_wait_events: u64 = 0;
+            let mut window_wait_total_ms: u64 = 0;
+            let mut window_wait_max_ms: u64 = 0;
 
             // Stage 9.1b observability:
             // - sample inflight every ~150ms while this stream is active
@@ -891,29 +877,24 @@ pub async fn run_exit(args: ExitArgs) -> Result<()> {
                         };
 
                         stats.sample_count = stats.sample_count.saturating_add(1);
-                        stats.inflight_sum = stats
-                            .inflight_sum
-                            .saturating_add(inflight);
+                        stats.inflight_sum = stats.inflight_sum.saturating_add(inflight);
                         if inflight > stats.max_inflight {
                             stats.max_inflight = inflight;
                         }
                         if inflight == 1 {
-                            stats.inflight1_samples =
-                                stats.inflight1_samples.saturating_add(1);
+                            stats.inflight1_samples = stats.inflight1_samples.saturating_add(1);
                         }
 
                         // Once per ~1s, log a rolling snapshot (cheap + useful).
                         if last_tp_log.elapsed() >= Duration::from_secs(1) {
                             let now = Instant::now();
-                            let bytes_now =
-                                bytes_sent_atomic.load(AtomicOrdering::Relaxed);
+                            let bytes_now = bytes_sent_atomic.load(AtomicOrdering::Relaxed);
                             let pending_bytes = pending_bytes_atomic.load(AtomicOrdering::Relaxed);
 
                             let dt_ms = now.duration_since(tp_window_start).as_millis();
                             let delta_bytes = bytes_now.saturating_sub(last_tp_bytes);
                             let throughput_bps = if dt_ms > 0 {
-                                (delta_bytes as u128 * 1000u128 / dt_ms as u128)
-                                    as u64
+                                (delta_bytes as u128 * 1000u128 / dt_ms as u128) as u64
                             } else {
                                 0
                             };
@@ -948,10 +929,8 @@ pub async fn run_exit(args: ExitArgs) -> Result<()> {
                 });
             }
 
-            let maybe_crypto =
-                shared_crypto_for_task.lock().unwrap().clone();
-            let maybe_route =
-                shared_route_for_task.lock().unwrap().clone();
+            let maybe_crypto = shared_crypto_for_task.lock().unwrap().clone();
+            let maybe_route = shared_route_for_task.lock().unwrap().clone();
             let (Some(crypto_for_task), Some(route)) = (maybe_crypto, maybe_route) else {
                 error!(
                     stream_id,
@@ -965,7 +944,7 @@ pub async fn run_exit(args: ExitArgs) -> Result<()> {
             };
 
             // Read loop: keep reading from the target socket and send tunnel frames while we
-            // still make progress (and while inflight < WINDOW_FRAMES).
+            // still make progress (and while inflight stays below the configured response window).
             let _read_timeout_res = timeout(max_wait, async {
                 loop {
                     let idle = if !seen_any { max_wait } else { idle_after_data };
@@ -1030,7 +1009,9 @@ pub async fn run_exit(args: ExitArgs) -> Result<()> {
                                 let chunk_len = chunk.len();
 
                                 // Sliding window cap: don't let in-flight response frames
-                                // grow beyond WINDOW_FRAMES.
+                                // grow beyond the configured response window.
+                                let window_wait_started = Instant::now();
+                                let mut waited_for_window = false;
                                 loop {
                                     let inflight = {
                                         let map = reliable_streams_for_task.lock().unwrap();
@@ -1041,10 +1022,19 @@ pub async fn run_exit(args: ExitArgs) -> Result<()> {
                                     if inflight > max_inflight {
                                         max_inflight = inflight;
                                     }
-                                    if inflight < WINDOW_FRAMES {
+                                    if inflight < window_frames {
                                         break;
                                     }
+                                    waited_for_window = true;
                                     tokio::time::sleep(Duration::from_millis(2)).await;
+                                }
+                                if waited_for_window {
+                                    let waited_ms =
+                                        window_wait_started.elapsed().as_millis() as u64;
+                                    window_wait_events = window_wait_events.saturating_add(1);
+                                    window_wait_total_ms =
+                                        window_wait_total_ms.saturating_add(waited_ms);
+                                    window_wait_max_ms = window_wait_max_ms.max(waited_ms);
                                 }
 
                                 let frame = {
@@ -1096,6 +1086,31 @@ pub async fn run_exit(args: ExitArgs) -> Result<()> {
                                 match udp_for_task.send(&peer, &ct2).await {
                                     Ok(_) => {
                                         ok = true;
+                                        if first_overlay_send_ms.is_none() && chunk_len > 0 {
+                                            let since_response_start =
+                                                response_start.elapsed().as_millis() as u64;
+                                            let since_first_target_byte = first_target_byte_ms
+                                                .map(|target_ms| {
+                                                    since_response_start.saturating_sub(target_ms)
+                                                })
+                                                .unwrap_or(since_response_start);
+                                            first_overlay_send_ms = Some(since_response_start);
+                                            emit_exit_stage(
+                                                "first_overlay_send",
+                                                json!({
+                                                    "stream_id": stream_id,
+                                                    "site": site.as_str(),
+                                                    "route_len": routing.route.len(),
+                                                    "peer": peer.to_string(),
+                                                    "target_addr": target_addr.to_string(),
+                                                    "since_response_start_ms": since_response_start,
+                                                    "since_first_target_byte_ms": since_first_target_byte,
+                                                    "chunk_bytes": chunk_len,
+                                                    "frame_seq": frame.frame_seq,
+                                                    "window_frames": window_frames,
+                                                }),
+                                            );
+                                        }
                                         debug!(
                                             stream_id,
                                             ct_len = ct2.len(),
@@ -1147,27 +1162,32 @@ pub async fn run_exit(args: ExitArgs) -> Result<()> {
                     pending_bytes_atomic.store(pending.len() as u64, AtomicOrdering::Relaxed);
                 }
 
+                let window_wait_started = Instant::now();
+                let mut waited_for_window = false;
                 loop {
                     let inflight = {
                         let map = reliable_streams_for_task.lock().unwrap();
-                        map.get(&stream_id)
-                            .map(|rs| rs.inflight())
-                            .unwrap_or(0)
+                        map.get(&stream_id).map(|rs| rs.inflight()).unwrap_or(0)
                     };
                     if inflight > max_inflight {
                         max_inflight = inflight;
                     }
-                    if inflight < WINDOW_FRAMES {
+                    if inflight < window_frames {
                         break;
                     }
+                    waited_for_window = true;
                     tokio::time::sleep(Duration::from_millis(2)).await;
+                }
+                if waited_for_window {
+                    let waited_ms = window_wait_started.elapsed().as_millis() as u64;
+                    window_wait_events = window_wait_events.saturating_add(1);
+                    window_wait_total_ms = window_wait_total_ms.saturating_add(waited_ms);
+                    window_wait_max_ms = window_wait_max_ms.max(waited_ms);
                 }
 
                 let frame = {
                     let mut map = reliable_streams_for_task.lock().unwrap();
-                    let rs = map
-                        .entry(stream_id)
-                        .or_insert_with(ReliableStream::new);
+                    let rs = map.entry(stream_id).or_insert_with(ReliableStream::new);
                     rs.build_outgoing_frame(stream_id, chunk)
                 };
 
@@ -1180,13 +1200,7 @@ pub async fn run_exit(args: ExitArgs) -> Result<()> {
                 };
 
                 let mut ok = false;
-                let msg2 = TunnelMessage::new(
-                    MsgType::Data,
-                    1,
-                    stream_id,
-                    0,
-                    frame_bytes.clone(),
-                );
+                let msg2 = TunnelMessage::new(MsgType::Data, 1, stream_id, 0, frame_bytes.clone());
                 let ct2 = match build_encrypted_packet(&crypto_for_task, &routing, msg2) {
                     Ok(ct) => ct,
                     Err(e) => {
@@ -1197,6 +1211,28 @@ pub async fn run_exit(args: ExitArgs) -> Result<()> {
                 match udp_for_task.send(&peer, &ct2).await {
                     Ok(_) => {
                         ok = true;
+                        if first_overlay_send_ms.is_none() && chunk_len > 0 {
+                            let since_response_start = response_start.elapsed().as_millis() as u64;
+                            let since_first_target_byte = first_target_byte_ms
+                                .map(|target_ms| since_response_start.saturating_sub(target_ms))
+                                .unwrap_or(since_response_start);
+                            first_overlay_send_ms = Some(since_response_start);
+                            emit_exit_stage(
+                                "first_overlay_send",
+                                json!({
+                                    "stream_id": stream_id,
+                                    "site": site.as_str(),
+                                    "route_len": routing.route.len(),
+                                    "peer": peer.to_string(),
+                                    "target_addr": target_addr.to_string(),
+                                    "since_response_start_ms": since_response_start,
+                                    "since_first_target_byte_ms": since_first_target_byte,
+                                    "chunk_bytes": chunk_len,
+                                    "frame_seq": frame.frame_seq,
+                                    "window_frames": window_frames,
+                                }),
+                            );
+                        }
                         debug!(
                             stream_id,
                             ct_len = ct2.len(),
@@ -1210,8 +1246,7 @@ pub async fn run_exit(args: ExitArgs) -> Result<()> {
                 }
                 if ok {
                     sent_payload_bytes += chunk_len;
-                    bytes_sent_atomic
-                        .fetch_add(chunk_len as u64, AtomicOrdering::Relaxed);
+                    bytes_sent_atomic.fetch_add(chunk_len as u64, AtomicOrdering::Relaxed);
                     sent_frames += 1;
                 }
             }
@@ -1224,16 +1259,9 @@ pub async fn run_exit(args: ExitArgs) -> Result<()> {
             };
             if let Ok(frame_bytes) = bincode::serialize(&end_frame) {
                 for _attempt in 1..=3u8 {
-                    let msg2 = TunnelMessage::new(
-                        MsgType::Data,
-                        1,
-                        stream_id,
-                        0,
-                        frame_bytes.clone(),
-                    );
-                    if let Ok(ct2) =
-                        build_encrypted_packet(&crypto_for_task, &routing, msg2)
-                    {
+                    let msg2 =
+                        TunnelMessage::new(MsgType::Data, 1, stream_id, 0, frame_bytes.clone());
+                    if let Ok(ct2) = build_encrypted_packet(&crypto_for_task, &routing, msg2) {
                         let _ = udp_for_task.send(&peer, &ct2).await;
                     }
                 }
@@ -1241,14 +1269,14 @@ pub async fn run_exit(args: ExitArgs) -> Result<()> {
 
             // Stop inflight sampling and compute rolling stats.
             done_sampling.store(true, AtomicOrdering::Relaxed);
-            let sample_stats =
-                stats_rx.await.unwrap_or_default();
+            let sample_stats = stats_rx.await.unwrap_or_default();
             let avg_inflight = if sample_stats.sample_count > 0 {
                 sample_stats.inflight_sum as f64 / sample_stats.sample_count as f64
             } else {
                 0.0
             };
-            let time_at_inflight_1_ms = sample_stats.inflight1_samples
+            let time_at_inflight_1_ms = sample_stats
+                .inflight1_samples
                 .saturating_mul(SAMPLE_INTERVAL_MS);
             max_inflight = sample_stats.max_inflight as usize;
 
@@ -1259,17 +1287,34 @@ pub async fn run_exit(args: ExitArgs) -> Result<()> {
                 0
             };
 
-            let (frames_sent_total, frames_acked_total, total_retransmits, ack_latency_avg_ms) =
-                {
-                    let map = reliable_streams_for_task.lock().unwrap();
-                    if let Some(rs) = map.get(&stream_id) {
-                        let (fs, fa, tr) = rs.counters_snapshot();
-                        let ack_lat = rs.ack_latency_avg_ms();
-                        (fs, fa, tr, ack_lat)
-                    } else {
-                        (0u64, 0u64, 0u64, None)
-                    }
-                };
+            let (
+                frames_sent_total,
+                frames_acked_total,
+                total_retransmits,
+                ack_latency_avg_ms,
+                ack_latency_min_ms,
+                ack_latency_p50_ms,
+                ack_latency_p95_ms,
+                ack_latency_max_ms,
+            ) = {
+                let map = reliable_streams_for_task.lock().unwrap();
+                if let Some(rs) = map.get(&stream_id) {
+                    let (fs, fa, tr) = rs.counters_snapshot();
+                    let ack_summary = rs.ack_latency_summary();
+                    (
+                        fs,
+                        fa,
+                        tr,
+                        ack_summary.avg_ms,
+                        ack_summary.min_ms,
+                        ack_summary.p50_ms,
+                        ack_summary.p95_ms,
+                        ack_summary.max_ms,
+                    )
+                } else {
+                    (0u64, 0u64, 0u64, None, None, None, None, None)
+                }
+            };
 
             let retransmit_rate = if frames_sent_total > 0 {
                 total_retransmits as f64 / frames_sent_total as f64
@@ -1280,16 +1325,20 @@ pub async fn run_exit(args: ExitArgs) -> Result<()> {
             // Update cumulative payload metrics for this tunnel stream_id.
             // resp_bytes/frames_sent in VALIDATION_ARTIFACT should refer to DATA payload
             // only (excluding the empty end-of-response marker frame).
-            let (sent_payload_bytes_total_u64,
+            let (
+                sent_payload_bytes_total_u64,
                 sent_frames_payload_total_u64,
                 stream_duration_ms_total,
-                effective_throughput_total) = {
-                let entry = response_totals.entry(stream_id).or_insert_with(|| ResponseTotals {
-                    first_response_start: response_start,
-                    total_payload_bytes: 0,
-                    total_payload_frames: 0,
-                    bursts_count: 0,
-                });
+                effective_throughput_total,
+            ) = {
+                let entry = response_totals
+                    .entry(stream_id)
+                    .or_insert_with(|| ResponseTotals {
+                        first_response_start: response_start,
+                        total_payload_bytes: 0,
+                        total_payload_frames: 0,
+                        bursts_count: 0,
+                    });
                 entry.total_payload_bytes = entry
                     .total_payload_bytes
                     .saturating_add(sent_payload_bytes as u64);
@@ -1298,10 +1347,7 @@ pub async fn run_exit(args: ExitArgs) -> Result<()> {
                     .saturating_add(sent_frames as u64);
                 entry.bursts_count = entry.bursts_count.saturating_add(1);
 
-                let dur_ms = entry
-                    .first_response_start
-                    .elapsed()
-                    .as_millis() as u64;
+                let dur_ms = entry.first_response_start.elapsed().as_millis() as u64;
                 let thr_bps_total = if dur_ms > 0 {
                     (entry.total_payload_bytes as u128 * 1000u128) / dur_ms as u128
                 } else {
@@ -1340,9 +1386,7 @@ pub async fn run_exit(args: ExitArgs) -> Result<()> {
                 .unwrap_or(50_000);
             let bytes_stop_wait_threshold = 200 * 1024;
 
-            if sent_payload_bytes > bytes_stop_wait_threshold
-                && avg_inflight < 1.5
-            {
+            if sent_payload_bytes > bytes_stop_wait_threshold && avg_inflight < 1.5 {
                 warn!(
                     stream_id,
                     resp_bytes = sent_payload_bytes,
@@ -1354,10 +1398,7 @@ pub async fn run_exit(args: ExitArgs) -> Result<()> {
             if frames_sent_total > 0 && retransmit_rate > 0.05 {
                 warn!(
                     stream_id,
-                    frames_sent_total,
-                    total_retransmits,
-                    retransmit_rate,
-                    "HIGH RETRANSMIT RATE"
+                    frames_sent_total, total_retransmits, retransmit_rate, "HIGH RETRANSMIT RATE"
                 );
             }
 
@@ -1390,6 +1431,11 @@ pub async fn run_exit(args: ExitArgs) -> Result<()> {
                 avg_inflight = avg_inflight,
                 max_inflight,
                 time_spent_at_inflight_1_ms = time_at_inflight_1_ms,
+                response_window_frames = window_frames,
+                first_overlay_send_ms = ?first_overlay_send_ms,
+                window_wait_events,
+                window_wait_total_ms,
+                window_wait_max_ms,
                 frames_sent_total,
                 frames_acked_total,
                 total_retransmits,
@@ -1397,6 +1443,9 @@ pub async fn run_exit(args: ExitArgs) -> Result<()> {
                 stream_duration_ms,
                 effective_throughput_bytes_per_s = effective_throughput,
                 ack_latency_ms_avg = ?ack_latency_avg_ms,
+                ack_latency_ms_p50 = ?ack_latency_p50_ms,
+                ack_latency_ms_p95 = ?ack_latency_p95_ms,
+                ack_latency_ms_max = ?ack_latency_max_ms,
                 peer = %peer,
                 "exit streamed response chunks and end-of-response to client"
             );
@@ -1412,14 +1461,24 @@ pub async fn run_exit(args: ExitArgs) -> Result<()> {
                     "peer": peer.to_string(),
                     "target_addr": target_addr.to_string(),
                     "first_target_byte_ms": first_target_byte_ms,
+                    "first_overlay_send_ms": first_overlay_send_ms,
                     "stream_duration_ms": stream_duration_ms_total,
                     "resp_bytes": sent_payload_bytes_total_u64,
                     "frames_sent": sent_frames_payload_total_u64,
                     "avg_inflight": avg_inflight,
                     "max_inflight": max_inflight,
+                    "window_frames": window_frames,
+                    "window_wait_events": window_wait_events,
+                    "window_wait_total_ms": window_wait_total_ms,
+                    "window_wait_max_ms": window_wait_max_ms,
                     "time_at_inflight_1_ms": time_at_inflight_1_ms,
+                    "total_retransmits": total_retransmits,
                     "retransmit_rate": retransmit_rate,
                     "ack_latency_ms_avg": ack_latency_ms_avg_val,
+                    "ack_latency_ms_min": ack_latency_min_ms,
+                    "ack_latency_ms_p50": ack_latency_p50_ms,
+                    "ack_latency_ms_p95": ack_latency_p95_ms,
+                    "ack_latency_ms_max": ack_latency_max_ms,
                     "http_code": http_code_val,
                     "connection_alive": connection_alive,
                 }),
@@ -1476,9 +1535,7 @@ pub async fn run_exit(args: ExitArgs) -> Result<()> {
                     loop {
                         let inflight = {
                             let map = reliable_streams_for_task.lock().unwrap();
-                            map.get(&stream_id)
-                                .map(|rs| rs.inflight())
-                                .unwrap_or(0)
+                            map.get(&stream_id).map(|rs| rs.inflight()).unwrap_or(0)
                         };
                         if inflight == 0 {
                             break;
@@ -1564,7 +1621,8 @@ pub async fn run_exit(args: ExitArgs) -> Result<()> {
                         shared_peer_retx.lock().unwrap().clone(),
                     )
                 };
-                let (Some(crypto), Some(route), Some(peer)) = (crypto_opt, route_opt, peer_opt) else {
+                let (Some(crypto), Some(route), Some(peer)) = (crypto_opt, route_opt, peer_opt)
+                else {
                     continue;
                 };
                 let routing = RoutingInfo {
@@ -1582,7 +1640,9 @@ pub async fn run_exit(args: ExitArgs) -> Result<()> {
                 let mut per_stream_retx: HashMap<u32, usize> = HashMap::new();
                 for f in frames {
                     *per_stream_retx.entry(f.stream_id).or_insert(0) += 1;
-                    let Ok(frame_bytes) = bincode::serialize(&f) else { continue };
+                    let Ok(frame_bytes) = bincode::serialize(&f) else {
+                        continue;
+                    };
                     let msg = TunnelMessage::new(MsgType::Data, 1, f.stream_id, 0, frame_bytes);
                     if let Ok(ct) = build_encrypted_packet(&crypto, &routing, msg) {
                         let _ = udp_retx.send(&peer, &ct).await;
@@ -1663,11 +1723,7 @@ pub async fn run_exit(args: ExitArgs) -> Result<()> {
                                 let mut store = discovery_store.lock().unwrap();
                                 store.on_query_received();
                                 store.purge_expired(now);
-                                discovery::build_discovery_response_payload(
-                                    &store,
-                                    &query,
-                                    now,
-                                )
+                                discovery::build_discovery_response_payload(&store, &query, now)
                             };
 
                             let payload_bytes = match bincode::serialize(&response_payload) {
@@ -1681,7 +1737,8 @@ pub async fn run_exit(args: ExitArgs) -> Result<()> {
                                 0,
                                 payload_bytes,
                             );
-                            if let Ok(packet) = discovery::build_plaintext_packet(&peer, &resp_msg) {
+                            if let Ok(packet) = discovery::build_plaintext_packet(&peer, &resp_msg)
+                            {
                                 if udp.send(&peer, &packet).await.is_ok() {
                                     let mut store = discovery_store.lock().unwrap();
                                     store.on_response_sent();
@@ -1730,9 +1787,9 @@ pub async fn run_exit(args: ExitArgs) -> Result<()> {
                             debug!(peer = %peer, "exit: handshake rate limited");
                             continue;
                         }
-                        let peer_sa = peer
-                            .as_socket_addr()
-                            .ok_or_else(|| anyhow::anyhow!("exit: cookie challenge requires UDP peer addr"))?;
+                        let peer_sa = peer.as_socket_addr().ok_or_else(|| {
+                            anyhow::anyhow!("exit: cookie challenge requires UDP peer addr")
+                        })?;
                         let cookie = match generate_cookie(
                             &cookie_secret,
                             peer_sa,
@@ -1769,9 +1826,9 @@ pub async fn run_exit(args: ExitArgs) -> Result<()> {
 
                     // Init with cookie: verify before any x25519 or session state.
                     let cookie = payload.cookie.as_ref().unwrap();
-                    let peer_sa = peer
-                        .as_socket_addr()
-                        .ok_or_else(|| anyhow::anyhow!("exit: cookie verify requires UDP peer addr"))?;
+                    let peer_sa = peer.as_socket_addr().ok_or_else(|| {
+                        anyhow::anyhow!("exit: cookie verify requires UDP peer addr")
+                    })?;
                     if !verify_cookie(
                         &cookie_secret,
                         cookie,
@@ -1884,11 +1941,7 @@ pub async fn run_exit(args: ExitArgs) -> Result<()> {
                                 let mut store = discovery_store.lock().unwrap();
                                 store.on_query_received();
                                 store.purge_expired(now);
-                                discovery::build_discovery_response_payload(
-                                    &store,
-                                    &query,
-                                    now,
-                                )
+                                discovery::build_discovery_response_payload(&store, &query, now)
                             };
 
                             let payload_bytes = match bincode::serialize(&response_payload) {
@@ -1902,7 +1955,8 @@ pub async fn run_exit(args: ExitArgs) -> Result<()> {
                                 0,
                                 payload_bytes,
                             );
-                            if let Ok(packet) = discovery::build_plaintext_packet(&peer, &resp_msg) {
+                            if let Ok(packet) = discovery::build_plaintext_packet(&peer, &resp_msg)
+                            {
                                 if udp.send(&peer, &packet).await.is_ok() {
                                     let mut store = discovery_store.lock().unwrap();
                                     store.on_response_sent();
@@ -1940,7 +1994,10 @@ pub async fn run_exit(args: ExitArgs) -> Result<()> {
             session_route = Some(routing.route.clone());
             let mut g = shared_route.lock().unwrap();
             *g = Some(routing.route.clone());
-            info!(route_len = hops.len(), "exit stored session route from first data packet");
+            info!(
+                route_len = hops.len(),
+                "exit stored session route from first data packet"
+            );
         }
         if session_peer.is_none() {
             session_peer = Some(peer.clone());
@@ -1958,7 +2015,9 @@ pub async fn run_exit(args: ExitArgs) -> Result<()> {
                     if plain_msg.header.version == PROTOCOL_VERSION
                         && plain_msg.header.msg_type == MsgType::HandshakeInit
                     {
-                        let payload: HandshakeInitPayload = match bincode::deserialize(&plain_msg.payload) {
+                        let payload: HandshakeInitPayload = match bincode::deserialize(
+                            &plain_msg.payload,
+                        ) {
                             Ok(p) => p,
                             Err(_) => {
                                 error!(%e, "exit failed to decode HandshakeInit during AEAD open fallback");
@@ -1976,7 +2035,9 @@ pub async fn run_exit(args: ExitArgs) -> Result<()> {
                             let peer_sa = match peer.as_socket_addr() {
                                 Some(sa) => sa,
                                 None => {
-                                    error!("exit: cookie challenge requires UDP peer addr (fallback)");
+                                    error!(
+                                        "exit: cookie challenge requires UDP peer addr (fallback)"
+                                    );
                                     continue;
                                 }
                             };
@@ -2009,7 +2070,9 @@ pub async fn run_exit(args: ExitArgs) -> Result<()> {
                                     hop_index: (routing.route.len().saturating_sub(1)) as u8,
                                     route: routing.route.clone(),
                                 };
-                                if let Ok(outer) = crate::wire::build_handshake_packet(&routing_info, bytes) {
+                                if let Ok(outer) =
+                                    crate::wire::build_handshake_packet(&routing_info, bytes)
+                                {
                                     let _ = udp.send(&peer, &outer).await;
                                 }
                             }
@@ -2049,7 +2112,8 @@ pub async fn run_exit(args: ExitArgs) -> Result<()> {
                             hop_index: (routing.route.len().saturating_sub(1)) as u8,
                             route: routing.route.clone(),
                         };
-                        if let Ok(outer) = crate::wire::build_handshake_packet(&routing_info, bytes) {
+                        if let Ok(outer) = crate::wire::build_handshake_packet(&routing_info, bytes)
+                        {
                             let _ = udp.send(&peer, &outer).await;
                         }
 
@@ -2084,15 +2148,24 @@ pub async fn run_exit(args: ExitArgs) -> Result<()> {
                     };
 
                     // If we've already completed a request for this stream, ignore duplicates/retransmits.
-                    if completed_requests.lock().unwrap().contains(&frame.stream_id) {
-                        debug!(stream_id = frame.stream_id, "exit: ignoring DATA for completed stream");
+                    if completed_requests
+                        .lock()
+                        .unwrap()
+                        .contains(&frame.stream_id)
+                    {
+                        debug!(
+                            stream_id = frame.stream_id,
+                            "exit: ignoring DATA for completed stream"
+                        );
                         continue;
                     }
 
                     // Reliable receive path for request stream: reorder, handle duplicates, compute ACK.
                     let (to_forward, ack_seq, end_of_stream) = {
                         let mut map = reliable_streams.lock().unwrap();
-                        let rs = map.entry(frame.stream_id).or_insert_with(ReliableStream::new);
+                        let rs = map
+                            .entry(frame.stream_id)
+                            .or_insert_with(ReliableStream::new);
                         rs.process_incoming(&frame)
                     };
 
@@ -2115,7 +2188,8 @@ pub async fn run_exit(args: ExitArgs) -> Result<()> {
                             ack_seq,
                         };
                         if let Ok(ack_bytes) = bincode::serialize(&ack) {
-                            let ack_msg = TunnelMessage::new(MsgType::Ping, 1, frame.stream_id, 0, ack_bytes);
+                            let ack_msg =
+                                TunnelMessage::new(MsgType::Ping, 1, frame.stream_id, 0, ack_bytes);
                             if let Ok(ct) = build_encrypted_packet(&crypto, &routing, ack_msg) {
                                 let _ = udp.send(&peer_for_session, &ct).await;
                             }
@@ -2125,9 +2199,7 @@ pub async fn run_exit(args: ExitArgs) -> Result<()> {
                     // Accumulate chunks per stream_id until end-of-request marker.
                     for chunk in &to_forward {
                         let mut buf_map = request_buffer.lock().unwrap();
-                        let entry = buf_map
-                            .entry(frame.stream_id)
-                            .or_default();
+                        let entry = buf_map.entry(frame.stream_id).or_default();
                         entry.extend_from_slice(chunk);
                         info!(
                             stream_id = frame.stream_id,
@@ -2147,7 +2219,11 @@ pub async fn run_exit(args: ExitArgs) -> Result<()> {
                                     need,
                                     "exit: buffered full HTTP request by content-length, triggering flush"
                                 );
-                                let _ = tx_map.send((frame.stream_id, Vec::new(), peer_for_session.clone()));
+                                let _ = tx_map.send((
+                                    frame.stream_id,
+                                    Vec::new(),
+                                    peer_for_session.clone(),
+                                ));
                             }
                         }
                     }
@@ -2159,7 +2235,8 @@ pub async fn run_exit(args: ExitArgs) -> Result<()> {
                         );
                         // Signal TCP worker that stream is complete; it will
                         // take the buffered request and forward it once.
-                        let _ = tx_map.send((frame.stream_id, Vec::new(), peer_for_session.clone()));
+                        let _ =
+                            tx_map.send((frame.stream_id, Vec::new(), peer_for_session.clone()));
                     }
 
                     // For now, we rely on local UDP reliability and do not send
@@ -2255,4 +2332,3 @@ pub async fn run_exit(args: ExitArgs) -> Result<()> {
         }
     }
 }
-

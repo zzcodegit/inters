@@ -44,9 +44,12 @@ The breakdown focuses on:
 - first hop send
 - target connect
 - first byte from target
+- first overlay response send from exit
 - first byte delivered to client
 - final byte delivered
 - retransmit / ACK context
+- response window stall and configured window size
+- ACK latency min/p50/p95/max
 
 ## Artifacts
 
@@ -77,8 +80,11 @@ The current RCA result is in `docs/artifacts/remote_perf_stage_matrix_2026-03-21
 
 In the current public topology, the dominant steady-state cost is not target connect and not target first-byte generation. The main loss sits in overlay delivery itself:
 
-- large pre-first-byte overlay gap
-- large exit/body delivery tail
+- large overlay first-send to client first-byte gap
+- large window/backpressure stall on the exit response path
 - strong coupling between total time, retransmit rate, and ACK latency
 
-That makes retransmit / ACK tuning the first optimization target. Warm tunnel reuse and route/session warmup matter for cold start, but they are not the main reason the steady-state request path remains slow.
+The latest response-window RCA and follow-up are:
+
+- `docs/overlay_response_window_rca.md`
+- `docs/overlay_response_window_optimization_note.md`

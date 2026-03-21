@@ -1,12 +1,12 @@
-use vpnnode::config;
 use vpnnode::build_info::BuildInfo;
+use vpnnode::config;
 use vpnnode::node_config::{NodeConfig, NodeRole};
 use vpnnode::ops;
 use vpnnode::roles;
 
 use clap::{Parser, Subcommand};
-use tracing_subscriber::EnvFilter;
 use std::path::PathBuf;
+use tracing_subscriber::EnvFilter;
 
 #[derive(Parser, Debug)]
 #[command(name = "vpnnode")]
@@ -67,22 +67,20 @@ async fn main() -> anyhow::Result<()> {
         Commands::Target(args) => roles::target::run_target(args).await?,
         Commands::Run { config, drain } => run_from_config(&config, drain).await?,
         Commands::Check { config } => check_config(&config).await?,
-        Commands::Health { config } => {
-            match ops::health::health_check(&config).await {
-                Ok((role, addr)) => {
-                    let role = match role {
-                        NodeRole::Client => "client",
-                        NodeRole::Relay => "relay",
-                        NodeRole::Exit => "exit",
-                    };
-                    println!("HEALTH OK role={} addr={}", role, addr);
-                }
-                Err(e) => {
-                    println!("HEALTH FAIL reason={}", e);
-                    std::process::exit(1);
-                }
+        Commands::Health { config } => match ops::health::health_check(&config).await {
+            Ok((role, addr)) => {
+                let role = match role {
+                    NodeRole::Client => "client",
+                    NodeRole::Relay => "relay",
+                    NodeRole::Exit => "exit",
+                };
+                println!("HEALTH OK role={} addr={}", role, addr);
             }
-        }
+            Err(e) => {
+                println!("HEALTH FAIL reason={}", e);
+                std::process::exit(1);
+            }
+        },
     }
 
     Ok(())
@@ -114,10 +112,18 @@ async fn run_from_config(path: &PathBuf, drain: bool) -> anyhow::Result<()> {
             let args = config::ClientConfigCli {
                 local_listen: cfg.client_local_listen,
                 mode: "tcp".to_string(),
-                relay_addr: relay.map(|a| a.to_string()).unwrap_or_else(|| "127.0.0.1:30000".to_string()),
-                exit_addr: exit.map(|a| a.to_string()).unwrap_or_else(|| "127.0.0.1:30001".to_string()),
+                relay_addr: relay
+                    .map(|a| a.to_string())
+                    .unwrap_or_else(|| "127.0.0.1:30000".to_string()),
+                exit_addr: exit
+                    .map(|a| a.to_string())
+                    .unwrap_or_else(|| "127.0.0.1:30001".to_string()),
                 route_length: cfg.route_length,
-                relay2_addr: cfg.peers.get(1).and_then(|n| n.as_socket_addr()).map(|a| a.to_string()),
+                relay2_addr: cfg
+                    .peers
+                    .get(1)
+                    .and_then(|n| n.as_socket_addr())
+                    .map(|a| a.to_string()),
                 exact_route_only: false,
                 client_key_path: "client.key".to_string(),
                 relay_pubkey_path: "relay.pub".to_string(),
@@ -178,6 +184,7 @@ async fn run_from_config(path: &PathBuf, drain: bool) -> anyhow::Result<()> {
                 listen: cfg.bind_addr(),
                 target_addr: cfg.exit_target_addr,
                 exit_key_path: "exit.key".to_string(),
+                response_window_frames: cfg.exit_response_window_frames,
 
                 discovery_enabled: cfg.discovery_enabled,
                 discovery_query_on_start: cfg.discovery_query_on_start,
@@ -209,4 +216,3 @@ async fn check_config(path: &PathBuf) -> anyhow::Result<()> {
     tracing::info!(role = ?cfg.role, bind = %cfg.bind_addr(), "node ready (self-check ok)");
     Ok(())
 }
-

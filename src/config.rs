@@ -121,6 +121,9 @@ pub struct ExitConfigCli {
     /// Exit static private key path
     #[arg(long, default_value = "exit.key")]
     pub exit_key_path: String,
+    /// Max in-flight response DATA frames per stream before exit applies backpressure.
+    #[arg(long, default_value_t = 64)]
+    pub response_window_frames: usize,
 
     /// Stage 9.1: enable minimal discovery (control-plane only).
     #[arg(long, default_value_t = false)]
@@ -185,6 +188,7 @@ impl Default for ExitConfigCli {
             listen: "0.0.0.0:30001".parse().expect("default exit listen"),
             target_addr: "127.0.0.1:8080".to_string(),
             exit_key_path: "exit.key".to_string(),
+            response_window_frames: 64,
             discovery_enabled: false,
             discovery_query_on_start: false,
             discovery_max_entries: 256,
@@ -200,4 +204,3 @@ pub struct TargetConfigCli {
     #[arg(long, default_value = "127.0.0.1:8080")]
     pub listen: SocketAddr,
 }
-

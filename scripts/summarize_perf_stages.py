@@ -193,25 +193,52 @@ for measurement in measurements:
             "first_target_byte_after_connect_ms"
         )
         joined_row["exit_stream_complete_ms"] = direct_complete.get("total_ms")
+        joined_row["first_overlay_send_ms"] = None
+        joined_row["first_overlay_send_after_target_ms"] = None
         joined_row["retransmit_rate"] = None
+        joined_row["total_retransmits"] = None
         joined_row["ack_latency_ms_avg"] = None
+        joined_row["ack_latency_ms_min"] = None
+        joined_row["ack_latency_ms_p50"] = None
+        joined_row["ack_latency_ms_p95"] = None
+        joined_row["ack_latency_ms_max"] = None
         joined_row["avg_inflight"] = None
         joined_row["max_inflight"] = None
+        joined_row["window_frames"] = None
+        joined_row["window_wait_events"] = None
+        joined_row["window_wait_total_ms"] = None
+        joined_row["window_wait_max_ms"] = None
         joined_row["time_at_inflight_1_ms"] = None
     else:
         exit_stages = first_by_stage(exit_by_site.get(request_host, []))
         target_connect_completed = exit_stages.get("target_connect_completed", {})
         first_target_byte = exit_stages.get("first_target_byte", {})
+        first_overlay_send = exit_stages.get("first_overlay_send", {})
         stream_complete = exit_stages.get("stream_complete", {})
         joined_row["target_connect_ms"] = target_connect_completed.get("target_connect_ms")
         joined_row["first_target_byte_wait_ms"] = first_target_byte.get(
             "since_response_start_ms"
         )
+        joined_row["first_overlay_send_ms"] = first_overlay_send.get(
+            "since_response_start_ms"
+        )
+        joined_row["first_overlay_send_after_target_ms"] = first_overlay_send.get(
+            "since_first_target_byte_ms"
+        )
         joined_row["exit_stream_complete_ms"] = stream_complete.get("stream_duration_ms")
         joined_row["retransmit_rate"] = stream_complete.get("retransmit_rate")
+        joined_row["total_retransmits"] = stream_complete.get("total_retransmits")
         joined_row["ack_latency_ms_avg"] = stream_complete.get("ack_latency_ms_avg")
+        joined_row["ack_latency_ms_min"] = stream_complete.get("ack_latency_ms_min")
+        joined_row["ack_latency_ms_p50"] = stream_complete.get("ack_latency_ms_p50")
+        joined_row["ack_latency_ms_p95"] = stream_complete.get("ack_latency_ms_p95")
+        joined_row["ack_latency_ms_max"] = stream_complete.get("ack_latency_ms_max")
         joined_row["avg_inflight"] = stream_complete.get("avg_inflight")
         joined_row["max_inflight"] = stream_complete.get("max_inflight")
+        joined_row["window_frames"] = stream_complete.get("window_frames")
+        joined_row["window_wait_events"] = stream_complete.get("window_wait_events")
+        joined_row["window_wait_total_ms"] = stream_complete.get("window_wait_total_ms")
+        joined_row["window_wait_max_ms"] = stream_complete.get("window_wait_max_ms")
         joined_row["time_at_inflight_1_ms"] = stream_complete.get("time_at_inflight_1_ms")
 
     joined_row["client_body_tail_ms"] = None
@@ -239,6 +266,17 @@ for measurement in measurements:
             joined_row["ttfb_ms"]
             - joined_row["target_connect_ms"]
             - joined_row["first_target_byte_wait_ms"]
+        )
+
+    joined_row["overlay_first_send_to_client_ms"] = None
+    if (
+        joined_row.get("overlay_pre_first_byte_gap_ms") is not None
+        and joined_row.get("first_overlay_send_after_target_ms") is not None
+    ):
+        joined_row["overlay_first_send_to_client_ms"] = max(
+            0.0,
+            joined_row["overlay_pre_first_byte_gap_ms"]
+            - joined_row["first_overlay_send_after_target_ms"],
         )
 
     joined.append(joined_row)
@@ -276,16 +314,26 @@ for scenario_name in ["direct", "remote-1hop", "remote-2hop", "remote-3hop"]:
             "first_target_byte_wait_ms": mean(
                 [row.get("first_target_byte_wait_ms") for row in rows]
             ),
+            "first_overlay_send_after_target_ms": mean(
+                [row.get("first_overlay_send_after_target_ms") for row in rows]
+            ),
             "overlay_pre_first_byte_gap_ms": mean(
                 [row.get("overlay_pre_first_byte_gap_ms") for row in rows]
+            ),
+            "overlay_first_send_to_client_ms": mean(
+                [row.get("overlay_first_send_to_client_ms") for row in rows]
             ),
             "client_body_tail_ms": mean([row.get("client_body_tail_ms") for row in rows]),
             "exit_body_tail_ms": mean([row.get("exit_body_tail_ms") for row in rows]),
             "exit_stream_complete_ms": mean(
                 [row.get("exit_stream_complete_ms") for row in rows]
             ),
+            "window_frames": mean([row.get("window_frames") for row in rows]),
+            "window_wait_total_ms": mean([row.get("window_wait_total_ms") for row in rows]),
+            "window_wait_events": mean([row.get("window_wait_events") for row in rows]),
             "retransmit_rate": mean([row.get("retransmit_rate") for row in rows]),
             "ack_latency_ms_avg": mean([row.get("ack_latency_ms_avg") for row in rows]),
+            "ack_latency_ms_p95": mean([row.get("ack_latency_ms_p95") for row in rows]),
             "avg_inflight": mean([row.get("avg_inflight") for row in rows]),
         }
     )
@@ -314,8 +362,17 @@ rank_candidates = {
     "Target first-byte wait": mean(
         [row.get("first_target_byte_wait_ms") for row in stage_rank_rows]
     ),
+    "Exit first overlay send delay": mean(
+        [row.get("first_overlay_send_after_target_ms") for row in stage_rank_rows]
+    ),
     "Overlay pre-first-byte gap": mean(
         [row.get("overlay_pre_first_byte_gap_ms") for row in stage_rank_rows]
+    ),
+    "Overlay first-send -> client first-byte gap": mean(
+        [row.get("overlay_first_send_to_client_ms") for row in stage_rank_rows]
+    ),
+    "Window/backpressure stall": mean(
+        [row.get("window_wait_total_ms") for row in stage_rank_rows]
     ),
     "Exit/body delivery tail": mean([row.get("exit_body_tail_ms") for row in stage_rank_rows]),
     "Client body completion tail": mean(
@@ -347,25 +404,28 @@ lines.append("")
 lines.append("## Scenario Averages")
 lines.append("")
 lines.append(
-    "| scenario | route | route ready ms | handshake ms | target connect ms | first target byte wait ms | overlay pre-first-byte gap ms | exit/body tail ms | client total ms | retransmit rate | ack latency ms |"
+    "| scenario | route | route ready ms | handshake ms | target connect ms | first target byte wait ms | exit first send delay ms | overlay first-send -> client ms | window stall ms | exit/body tail ms | client total ms | retransmit rate | ack p95 ms | window frames |"
 )
 lines.append(
-    "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |"
+    "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |"
 )
 for row in scenarios:
     lines.append(
-        "| {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} |".format(
+        "| {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} |".format(
             row["scenario"],
             row["route_length"],
             fmt_ms(row.get("route_ready_ms")),
             fmt_ms(row.get("handshake_ms")),
             fmt_ms(row.get("target_connect_ms")),
             fmt_ms(row.get("first_target_byte_wait_ms")),
-            fmt_ms(row.get("overlay_pre_first_byte_gap_ms")),
+            fmt_ms(row.get("first_overlay_send_after_target_ms")),
+            fmt_ms(row.get("overlay_first_send_to_client_ms")),
+            fmt_ms(row.get("window_wait_total_ms")),
             fmt_ms(row.get("exit_body_tail_ms")),
             fmt_ms(row.get("total_avg_ms")),
             fmt_num(row.get("retransmit_rate"), 4),
-            fmt_ms(row.get("ack_latency_ms_avg")),
+            fmt_ms(row.get("ack_latency_ms_p95")),
+            fmt_num(row.get("window_frames"), 0),
         )
     )
 
@@ -395,7 +455,7 @@ lines.append(
     "- `target_connect_ms` and target first-byte wait stay small relative to overlay totals, so the public target itself is not the main bottleneck."
 )
 lines.append(
-    "- The biggest per-request cost sits after the target is already reachable: overlay pre-first-byte gap plus exit/body delivery tail dominate the remote paths."
+    "- The biggest per-request cost sits after the target is already reachable: overlay first-send -> client first-byte gap, window/backpressure stall, and the remaining exit/body delivery tail dominate the remote paths."
 )
 lines.append(
     "- One-time costs (`route_ready_ms`, `handshake_ms`) matter for cold start, but they are not the reason the steady-state per-request `TTFB` stays in the multi-second range."

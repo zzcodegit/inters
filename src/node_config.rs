@@ -47,6 +47,9 @@ pub struct NodeConfig {
     /// Exit-only: target service address (TCP).
     #[serde(default = "default_exit_target_addr")]
     pub exit_target_addr: String,
+    /// Exit-only: max in-flight response DATA frames per stream.
+    #[serde(default = "default_exit_response_window_frames")]
+    pub exit_response_window_frames: usize,
     /// Exit-only: allowlist for target hosts (foundation only; not enforced yet).
     #[serde(default)]
     pub exit_target_allowlist: Option<Vec<String>>,
@@ -76,6 +79,9 @@ fn default_route_length() -> u8 {
 }
 fn default_exit_target_addr() -> String {
     "127.0.0.1:8080".to_string()
+}
+fn default_exit_response_window_frames() -> usize {
+    64
 }
 fn default_drain_timeout_sec() -> u64 {
     20
@@ -132,6 +138,9 @@ impl NodeConfig {
                 if self.exit_target_addr.trim().is_empty() {
                     anyhow::bail!("exit_target_addr must be non-empty");
                 }
+                if !(8..=256).contains(&self.exit_response_window_frames) {
+                    anyhow::bail!("exit_response_window_frames must be in 8..=256");
+                }
             }
             NodeRole::Client => {
                 if self.route_length >= 2 && self.peers.is_empty() {
@@ -180,6 +189,7 @@ bind_port = 0
             client_local_listen: default_client_local_listen(),
             route_length: 2,
             exit_target_addr: default_exit_target_addr(),
+            exit_response_window_frames: default_exit_response_window_frames(),
             exit_target_allowlist: None,
             discovery_enabled: false,
             discovery_query_on_start: false,
@@ -224,5 +234,19 @@ discovery_advertise_ttl_sec = 0
         cfg.discovery_advertise_ttl_sec = 4000;
         assert!(cfg.validate().is_err());
     }
-}
 
+    #[test]
+    fn invalid_exit_response_window_fails_validation() {
+        let cfg: NodeConfig = toml::from_str(
+            r#"
+role = "exit"
+bind_ip = "127.0.0.1"
+bind_port = 30001
+exit_target_addr = "127.0.0.1:8080"
+exit_response_window_frames = 4
+"#,
+        )
+        .unwrap();
+        assert!(cfg.validate().is_err());
+    }
+}

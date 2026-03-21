@@ -5,6 +5,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::protocol::StreamFrame;
 
+const ACK_LATENCY_SAMPLE_CAP: usize = 4096;
+
 /// ACK-only control message payload (carried inside `TunnelMessage`).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AckFrame {
@@ -27,6 +29,16 @@ pub struct ReliableStream {
     pub total_retransmits: u64,
     pub total_ack_latency_ms_sum: u128,
     pub total_ack_latency_samples: u64,
+    pub ack_latency_samples_ms: Vec<u64>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct AckLatencySummary {
+    pub avg_ms: Option<u64>,
+    pub min_ms: Option<u64>,
+    pub p50_ms: Option<u64>,
+    pub p95_ms: Option<u64>,
+    pub max_ms: Option<u64>,
 }
 
 pub struct UnackedEntry {
@@ -53,6 +65,7 @@ impl ReliableStream {
             total_retransmits: 0,
             total_ack_latency_ms_sum: 0,
             total_ack_latency_samples: 0,
+            ack_latency_samples_ms: Vec::new(),
         }
     }
 
@@ -60,11 +73,7 @@ impl ReliableStream {
     ///
     /// The frame carries the next send sequence number and the latest contiguous
     /// receive sequence (for ACK piggy-backing).
-    pub fn build_outgoing_frame(
-        &mut self,
-        stream_id: u32,
-        payload: Vec<u8>,
-    ) -> StreamFrame {
+    pub fn build_outgoing_frame(&mut self, stream_id: u32, payload: Vec<u8>) -> StreamFrame {
         let seq = self.send_next;
         self.send_next = self.send_next.wrapping_add(1);
         let is_end = payload.is_empty();
@@ -118,13 +127,14 @@ impl ReliableStream {
         let now = Instant::now();
         let mut acked = 0usize;
         let mut sum_latency_ms: u128 = 0;
+        let mut observed_latencies_ms = Vec::new();
         {
             let removed_iter = self.unacked.range(..ack_seq);
             for (_seq, entry) in removed_iter {
                 acked += 1;
-                sum_latency_ms += now
-                    .duration_since(entry.first_sent)
-                    .as_millis() as u128;
+                let latency_ms = now.duration_since(entry.first_sent).as_millis() as u64;
+                sum_latency_ms += latency_ms as u128;
+                observed_latencies_ms.push(latency_ms);
             }
         }
 
@@ -138,6 +148,10 @@ impl ReliableStream {
                 self.total_ack_latency_ms_sum.saturating_add(sum_latency_ms);
             self.total_ack_latency_samples =
                 self.total_ack_latency_samples.saturating_add(acked as u64);
+            let remaining_capacity =
+                ACK_LATENCY_SAMPLE_CAP.saturating_sub(self.ack_latency_samples_ms.len());
+            self.ack_latency_samples_ms
+                .extend(observed_latencies_ms.into_iter().take(remaining_capacity));
             let avg = (sum_latency_ms / acked as u128) as u64;
             (acked, Some(avg))
         }
@@ -169,7 +183,9 @@ impl ReliableStream {
                     self.recv_next = self.recv_next.wrapping_add(1);
                 }
             } else if s > self.recv_next {
-                self.recv_buffer.entry(s).or_insert_with(|| frame.payload.clone());
+                self.recv_buffer
+                    .entry(s)
+                    .or_insert_with(|| frame.payload.clone());
             }
         } else {
             // Empty payload: end-of-stream marker. Store if out-of-order.
@@ -207,10 +223,27 @@ impl ReliableStream {
         if self.total_ack_latency_samples == 0 {
             return None;
         }
-        Some(
-            (self.total_ack_latency_ms_sum
-                / self.total_ack_latency_samples as u128) as u64,
-        )
+        Some((self.total_ack_latency_ms_sum / self.total_ack_latency_samples as u128) as u64)
+    }
+
+    pub fn ack_latency_summary(&self) -> AckLatencySummary {
+        let avg_ms = self.ack_latency_avg_ms();
+        if self.ack_latency_samples_ms.is_empty() {
+            return AckLatencySummary {
+                avg_ms,
+                ..AckLatencySummary::default()
+            };
+        }
+
+        let mut samples = self.ack_latency_samples_ms.clone();
+        samples.sort_unstable();
+        AckLatencySummary {
+            avg_ms,
+            min_ms: samples.first().copied(),
+            p50_ms: quantile_from_sorted_samples(&samples, 0.50),
+            p95_ms: quantile_from_sorted_samples(&samples, 0.95),
+            max_ms: samples.last().copied(),
+        }
     }
 
     pub fn counters_snapshot(&self) -> (u64, u64, u64) {
@@ -271,6 +304,15 @@ impl ReliableStream {
             })
             .collect()
     }
+}
+
+fn quantile_from_sorted_samples(samples: &[u64], quantile: f64) -> Option<u64> {
+    if samples.is_empty() {
+        return None;
+    }
+    let clamped = quantile.clamp(0.0, 1.0);
+    let index = ((samples.len().saturating_sub(1)) as f64 * clamped).round() as usize;
+    samples.get(index).copied()
 }
 
 #[cfg(test)]
@@ -347,5 +389,34 @@ mod tests {
         assert_eq!(d2, vec![b"hello".to_vec(), vec![]]);
         assert!(eos2, "after draining buffered empty, should signal end");
     }
-}
 
+    #[test]
+    fn ack_latency_summary_reports_ordered_quantiles() {
+        let mut stream = ReliableStream::new();
+        let base = Instant::now();
+
+        let f0 = stream.build_outgoing_frame(7, b"a".to_vec());
+        let f1 = stream.build_outgoing_frame(7, b"b".to_vec());
+        let f2 = stream.build_outgoing_frame(7, b"c".to_vec());
+        let f3 = stream.build_outgoing_frame(7, b"d".to_vec());
+
+        stream.unacked.get_mut(&f0.frame_seq).unwrap().first_sent =
+            base - Duration::from_millis(40);
+        stream.unacked.get_mut(&f1.frame_seq).unwrap().first_sent =
+            base - Duration::from_millis(80);
+        stream.unacked.get_mut(&f2.frame_seq).unwrap().first_sent =
+            base - Duration::from_millis(120);
+        stream.unacked.get_mut(&f3.frame_seq).unwrap().first_sent =
+            base - Duration::from_millis(160);
+
+        let (acked, avg_ms) = stream.apply_ack_with_latency(4);
+        assert_eq!(acked, 4);
+        assert!(avg_ms.unwrap() >= 40);
+
+        let summary = stream.ack_latency_summary();
+        assert!(summary.min_ms.unwrap() >= 40);
+        assert!(summary.p50_ms.unwrap() >= summary.min_ms.unwrap());
+        assert!(summary.p95_ms.unwrap() >= summary.p50_ms.unwrap());
+        assert!(summary.max_ms.unwrap() >= summary.p95_ms.unwrap());
+    }
+}
