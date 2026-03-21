@@ -76,6 +76,32 @@ export VPNNODE_BASELINE_REMOTE_RESET_CMD='powershell.exe -ExecutionPolicy Bypass
 
 That command is run before every scenario. It is not test fakery; it is an operational mitigation for the current remote runtime limitation described in `docs/wan_200_followup.md`.
 
+## Adaptive route-quality runner
+
+The branch also now includes an explicit adaptive WAN route-selection run:
+
+```bash
+bash scripts/run_route_quality_remote.sh
+```
+
+This runner is intentionally separate from the accepted exact-route matrix:
+
+- exact-route matrix keeps `VPNNODE_BASELINE_REMOTE_EXACT_ROUTE_ONLY=true`
+- adaptive runner forces `exact_route_only=false`
+- adaptive runner uses a larger payload (`/perf-262144.bin`) for the initial per-route probes so response-path quality is visible
+
+The adaptive runner writes:
+
+- raw measurements
+- client stage trace with candidate scoreboards
+- a markdown report showing which route won and why
+
+See:
+
+- `docs/route_quality_scoring.md`
+- `docs/route_quality_scoring_followup.md`
+- `docs/artifacts/route_quality_remote_2026-03-21.md`
+
 ## Remote target requirement
 
 The remote matrix now uses option `A`: a plain-HTTP target that is expected to return `200 OK`.

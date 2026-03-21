@@ -10,7 +10,9 @@ use crate::handshake::{
 use crate::handshake_cookie::{generate_cookie, verify_cookie, HandshakeRateLimiter};
 use crate::node_config::NodeRole;
 use crate::ops::drain;
-use crate::protocol::{decode, MsgType, StreamFrame, TunnelMessage, PROTOCOL_VERSION};
+use crate::protocol::{
+    decode, MsgType, ResponseQualityFeedback, StreamFrame, TunnelMessage, PROTOCOL_VERSION,
+};
 use crate::session::SessionCrypto;
 use crate::stage_trace;
 use crate::stream_reliable::{AckFrame, ReliableStream};
@@ -49,14 +51,19 @@ fn clamp_response_window_frames(frames: usize) -> usize {
     )
 }
 
-fn adaptive_response_retransmit_interval(summary: crate::stream_reliable::AckLatencySummary) -> Duration {
+fn adaptive_response_retransmit_interval(
+    summary: crate::stream_reliable::AckLatencySummary,
+) -> Duration {
     let mut interval_ms = EXIT_RESPONSE_RETRANSMIT_BASE_MS;
     if let Some(p95_ms) = summary.p95_ms {
-        interval_ms = interval_ms.max(p95_ms.saturating_add(EXIT_RESPONSE_RETRANSMIT_SAFETY_MARGIN_MS));
+        interval_ms =
+            interval_ms.max(p95_ms.saturating_add(EXIT_RESPONSE_RETRANSMIT_SAFETY_MARGIN_MS));
     } else if let Some(avg_ms) = summary.avg_ms {
-        interval_ms = interval_ms.max(avg_ms.saturating_add(EXIT_RESPONSE_RETRANSMIT_SAFETY_MARGIN_MS));
+        interval_ms =
+            interval_ms.max(avg_ms.saturating_add(EXIT_RESPONSE_RETRANSMIT_SAFETY_MARGIN_MS));
     } else if let Some(p50_ms) = summary.p50_ms {
-        interval_ms = interval_ms.max(p50_ms.saturating_add(EXIT_RESPONSE_RETRANSMIT_SAFETY_MARGIN_MS));
+        interval_ms =
+            interval_ms.max(p50_ms.saturating_add(EXIT_RESPONSE_RETRANSMIT_SAFETY_MARGIN_MS));
     }
 
     Duration::from_millis(interval_ms.min(EXIT_RESPONSE_RETRANSMIT_MAX_MS))
@@ -1530,6 +1537,26 @@ pub async fn run_exit(args: ExitArgs) -> Result<()> {
                 http_code_val
             );
 
+            let response_quality_feedback = ResponseQualityFeedback {
+                stream_id,
+                route_len: route_hops.min(u8::MAX as usize) as u8,
+                resp_bytes: sent_payload_bytes_total_u64,
+                frames_sent: sent_frames_payload_total_u64,
+                stream_duration_ms: stream_duration_ms_total,
+                first_target_byte_ms,
+                first_overlay_send_ms,
+                ack_latency_ms_avg: ack_latency_avg_ms,
+                ack_latency_ms_p50: ack_latency_p50_ms,
+                ack_latency_ms_p95: ack_latency_p95_ms,
+                ack_latency_ms_max: ack_latency_max_ms,
+                total_retransmits,
+                retransmit_rate_ppm: (retransmit_rate.clamp(0.0, 1.0) * 1_000_000.0).round() as u32,
+                window_wait_events,
+                window_wait_total_ms,
+                window_wait_max_ms,
+                http_code,
+            };
+
             // Only send CloseStream if the target TCP connection closed.
             // If the connection is still alive (streaming/TLS), keep it open
             // for follow-up data (TLS Finished, subsequent HTTP requests).
@@ -1568,9 +1595,16 @@ pub async fn run_exit(args: ExitArgs) -> Result<()> {
                 debug!(stream_id, "exit keeping tcp connection open for streaming");
             } else {
                 // Target closed: signal client that stream is done.
+                let close_payload =
+                    bincode::serialize(&response_quality_feedback).unwrap_or_default();
                 for attempt in 1..=3u8 {
-                    let msg2 =
-                        TunnelMessage::new(MsgType::CloseStream, 1, stream_id, 0, Vec::new());
+                    let msg2 = TunnelMessage::new(
+                        MsgType::CloseStream,
+                        1,
+                        stream_id,
+                        0,
+                        close_payload.clone(),
+                    );
                     if let Ok(ct2) = build_encrypted_packet(&crypto_for_task, &routing, msg2) {
                         let _ = udp_for_task.send(&peer, &ct2).await;
                         debug!(stream_id, attempt, peer = %peer, "exit sent CloseStream (target closed)");
@@ -1648,7 +1682,8 @@ pub async fn run_exit(args: ExitArgs) -> Result<()> {
                     let mut map = reliable_streams_retx.lock().unwrap();
                     let mut out = Vec::new();
                     for (&sid, rs) in map.iter_mut() {
-                        let interval = adaptive_response_retransmit_interval(rs.ack_latency_summary());
+                        let interval =
+                            adaptive_response_retransmit_interval(rs.ack_latency_summary());
                         out.extend(rs.frames_for_retransmit(sid, now, interval, 16));
                     }
                     out
@@ -2357,7 +2392,10 @@ mod tests {
     #[test]
     fn adaptive_retransmit_interval_uses_base_without_ack_samples() {
         let interval = adaptive_response_retransmit_interval(AckLatencySummary::default());
-        assert_eq!(interval, Duration::from_millis(EXIT_RESPONSE_RETRANSMIT_BASE_MS));
+        assert_eq!(
+            interval,
+            Duration::from_millis(EXIT_RESPONSE_RETRANSMIT_BASE_MS)
+        );
     }
 
     #[test]

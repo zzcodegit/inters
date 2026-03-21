@@ -45,6 +45,29 @@ pub struct StreamFrame {
     pub payload: Vec<u8>,
 }
 
+/// Exit-side response-path quality summary delivered to the client when a
+/// buffered HTTP stream closes. Used only for route scoring/diagnostics.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ResponseQualityFeedback {
+    pub stream_id: u32,
+    pub route_len: u8,
+    pub resp_bytes: u64,
+    pub frames_sent: u64,
+    pub stream_duration_ms: u64,
+    pub first_target_byte_ms: Option<u64>,
+    pub first_overlay_send_ms: Option<u64>,
+    pub ack_latency_ms_avg: Option<u64>,
+    pub ack_latency_ms_p50: Option<u64>,
+    pub ack_latency_ms_p95: Option<u64>,
+    pub ack_latency_ms_max: Option<u64>,
+    pub total_retransmits: u64,
+    pub retransmit_rate_ppm: u32,
+    pub window_wait_events: u64,
+    pub window_wait_total_ms: u64,
+    pub window_wait_max_ms: u64,
+    pub http_code: Option<u16>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct TunnelMessage {
     pub header: Header,
@@ -54,7 +77,13 @@ pub struct TunnelMessage {
 pub const PROTOCOL_VERSION: u8 = 1;
 
 impl TunnelMessage {
-    pub fn new(msg_type: MsgType, session_id: u32, stream_id: u32, seq: u64, payload: Vec<u8>) -> Self {
+    pub fn new(
+        msg_type: MsgType,
+        session_id: u32,
+        stream_id: u32,
+        seq: u64,
+        payload: Vec<u8>,
+    ) -> Self {
         Self::with_hop(msg_type, session_id, stream_id, seq, 0, payload)
     }
 
@@ -94,13 +123,7 @@ mod tests {
 
     #[test]
     fn encode_decode_roundtrip() {
-        let msg = TunnelMessage::new(
-            MsgType::Data,
-            1,
-            2,
-            3,
-            b"hello".to_vec(),
-        );
+        let msg = TunnelMessage::new(MsgType::Data, 1, 2, 3, b"hello".to_vec());
         let enc = encode(&msg).unwrap();
         let dec = decode(&enc).unwrap();
         assert_eq!(msg, dec);
@@ -127,5 +150,30 @@ mod tests {
         let dec: StreamFrame = bincode::deserialize(&enc).unwrap();
         assert_eq!(frame, dec);
     }
-}
 
+    #[test]
+    fn response_quality_feedback_roundtrip() {
+        let feedback = ResponseQualityFeedback {
+            stream_id: 17,
+            route_len: 3,
+            resp_bytes: 262_144,
+            frames_sent: 256,
+            stream_duration_ms: 1_234,
+            first_target_byte_ms: Some(2),
+            first_overlay_send_ms: Some(4),
+            ack_latency_ms_avg: Some(120),
+            ack_latency_ms_p50: Some(100),
+            ack_latency_ms_p95: Some(240),
+            ack_latency_ms_max: Some(300),
+            total_retransmits: 3,
+            retransmit_rate_ppm: 12_000,
+            window_wait_events: 5,
+            window_wait_total_ms: 180,
+            window_wait_max_ms: 70,
+            http_code: Some(200),
+        };
+        let enc = bincode::serialize(&feedback).unwrap();
+        let dec: ResponseQualityFeedback = bincode::deserialize(&enc).unwrap();
+        assert_eq!(feedback, dec);
+    }
+}

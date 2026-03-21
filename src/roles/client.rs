@@ -12,10 +12,12 @@ use crate::handshake::{
 use crate::node_config::NodeRole;
 use crate::ops::drain;
 use crate::packet::{parse_tcp_ports, FlowKey, Ipv4Header};
-use crate::protocol::{decode, MsgType, StreamFrame, TunnelMessage, PROTOCOL_VERSION};
+use crate::protocol::{
+    decode, MsgType, ResponseQualityFeedback, StreamFrame, TunnelMessage, PROTOCOL_VERSION,
+};
 use crate::route::Route;
 use crate::route_memory::RouteCache;
-use crate::route_store::{RouteFailureKind, RouteStore};
+use crate::route_store::{LocalRouteObservation, RouteFailureKind, RouteStore};
 use crate::session::SessionCrypto;
 use crate::stage_trace;
 use crate::stream_reliable::{AckFrame, ReliableStream};
@@ -321,7 +323,18 @@ fn note_completed_response_close(
 }
 
 fn build_probe_request() -> Vec<u8> {
-    b"GET / HTTP/1.1\r\nHost: probe\r\nConnection: close\r\n\r\n".to_vec()
+    let path = std::env::var("VPNNODE_CLIENT_PROBE_PATH").unwrap_or_else(|_| "/".to_string());
+    let host = std::env::var("VPNNODE_CLIENT_PROBE_HOST").unwrap_or_else(|_| "probe".to_string());
+    format!("GET {path} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n").into_bytes()
+}
+
+#[derive(Debug, Clone)]
+struct HttpRoundtripOutcome {
+    response: Vec<u8>,
+    first_client_byte_ms: Option<u64>,
+    total_ms: u64,
+    completion_reason: &'static str,
+    status_code: Option<u16>,
 }
 
 fn classify_anyhow_failure(e: &anyhow::Error) -> RouteFailureKind {
@@ -656,6 +669,7 @@ See README: Stage 2 support matrix."
         let completed_response_streams_recv = completed_response_streams.clone();
         let default_route_for_ack = primary_route.clone();
         let route_store_for_ants = route_store.clone();
+        let route_store_for_quality = route_store.clone();
         let ant_dedup_recv = ant_dedup.clone();
         tokio::spawn(async move {
             loop {
@@ -1013,6 +1027,58 @@ See README: Stage 2 support matrix."
                 } else if msg_type == MsgType::CloseStream {
                     // Treat CloseStream as end-of-response as well. This makes the TCP-mode
                     // client robust even if the empty DATA end marker is lost.
+                    let active_route = {
+                        let map = stream_routes_for_ack.lock().unwrap();
+                        map.get(&sid).cloned()
+                    };
+                    let completed_entry =
+                        snapshot_completed_response_stream(&completed_response_streams_recv, sid);
+                    let route_for_quality = active_route
+                        .clone()
+                        .or_else(|| completed_entry.as_ref().map(|entry| entry.route.clone()));
+                    let quality_feedback = if msg.payload.is_empty() {
+                        None
+                    } else {
+                        match bincode::deserialize::<ResponseQualityFeedback>(&msg.payload) {
+                            Ok(feedback) => Some(feedback),
+                            Err(e) => {
+                                error!(
+                                    stream_id = sid,
+                                    payload_len = msg.payload.len(),
+                                    %e,
+                                    "client: failed to decode ResponseQualityFeedback"
+                                );
+                                None
+                            }
+                        }
+                    };
+                    if let (Some(route_for_quality), Some(feedback)) =
+                        (route_for_quality.as_ref(), quality_feedback.as_ref())
+                    {
+                        let applied = {
+                            let mut store = route_store_for_quality.lock().await;
+                            store.record_response_quality_for_route(route_for_quality, feedback)
+                        };
+                        emit_client_stage(
+                            "route_quality_feedback_received",
+                            json!({
+                                "stream_id": sid,
+                                "route_len": route_for_quality.len(),
+                                "route_chain": route_for_quality
+                                    .hops
+                                    .iter()
+                                    .map(|hop| hop.to_string())
+                                    .collect::<Vec<_>>()
+                                    .join(" -> "),
+                                "feedback_applied": applied,
+                                "ack_latency_ms_p95": feedback.ack_latency_ms_p95,
+                                "retransmit_rate_ppm": feedback.retransmit_rate_ppm,
+                                "window_wait_total_ms": feedback.window_wait_total_ms,
+                                "stream_duration_ms": feedback.stream_duration_ms,
+                                "http_code": feedback.http_code,
+                            }),
+                        );
+                    }
                     let maybe_tx = {
                         let map = response_senders_recv.lock().unwrap();
                         map.get(&sid).cloned()
@@ -1272,7 +1338,6 @@ async fn run_client_tcp_mode(
             };
             for (idx, r) in routes_snapshot.into_iter().enumerate() {
                 let sid = next_sid_probe.fetch_add(1, Ordering::Relaxed);
-                let start = Instant::now();
                 let res = tunnel_http_roundtrip(
                     &udp_probe,
                     &crypto_probe,
@@ -1290,15 +1355,41 @@ async fn run_client_tcp_mode(
                     false,
                 )
                 .await;
-                let rtt_ms = start.elapsed().as_millis() as u64;
+                let rtt_ms = res
+                    .as_ref()
+                    .map(|outcome| outcome.total_ms)
+                    .unwrap_or_else(|_| 0);
                 let ok = res
                     .as_ref()
                     .ok()
-                    .and_then(|b| http_status_code(b))
-                    .map(|c| c >= 200 && c < 500)
+                    .and_then(|outcome| outcome.status_code)
+                    .map(|code| code >= 200 && code < 500)
                     .unwrap_or(false);
                 let mut store = route_store_probe.lock().await;
                 store.update_metrics(idx, Some(rtt_ms), ok);
+                if let Ok(outcome) = &res {
+                    store.record_local_observation(
+                        idx,
+                        &LocalRouteObservation {
+                            success: ok,
+                            status_code: outcome.status_code,
+                            ttfb_ms: outcome.first_client_byte_ms,
+                            total_ms: outcome.total_ms,
+                            response_bytes: outcome.response.len(),
+                        },
+                    );
+                } else {
+                    store.record_local_observation(
+                        idx,
+                        &LocalRouteObservation {
+                            success: false,
+                            status_code: None,
+                            ttfb_ms: None,
+                            total_ms: 0,
+                            response_bytes: 0,
+                        },
+                    );
+                }
             }
         });
     }
@@ -1475,39 +1566,89 @@ async fn run_client_tcp_mode(
 
             for attempt in 0..3 {
                 let now = Instant::now();
-                let pick = {
+                let (pick, candidate_snapshot) = {
                     let mut store = route_store.lock().await;
-                    store.get_best_route(now, &excluded)
+                    let scored = store.scored_candidates(now, &excluded);
+                    let candidate_snapshot = scored
+                        .iter()
+                        .map(|(candidate_idx, details)| {
+                            let route = &store.routes()[*candidate_idx].route;
+                            json!({
+                                "candidate_idx": candidate_idx,
+                                "route_len": route.len(),
+                                "route_chain": route
+                                    .hops
+                                    .iter()
+                                    .map(|hop| hop.to_string())
+                                    .collect::<Vec<_>>()
+                                    .join(" -> "),
+                                "final_score": details.final_score,
+                                "base": details.base,
+                                "transport_agg": details.transport_agg,
+                                "quality_agg": details.quality_agg,
+                                "hop_factor": details.hop_factor,
+                                "recent_ttfb_ms": details.recent_ttfb_ms,
+                                "recent_total_ms": details.recent_total_ms,
+                                "recent_ack_p95_ms": details.recent_ack_p95_ms,
+                                "recent_retransmit_rate_ppm": details.recent_retransmit_rate_ppm,
+                                "recent_window_wait_ratio_ppm": details.recent_window_wait_ratio_ppm,
+                                "recent_success_count": details.recent_success_count,
+                                "recent_failure_count": details.recent_failure_count,
+                            })
+                        })
+                        .collect::<Vec<_>>();
+                    let pick = scored.first().cloned();
+                    if let Some((idx, details)) = &pick {
+                        store.note_route_selection(*idx, details.final_score);
+                    }
+                    (pick, candidate_snapshot)
                 };
-                let Some((idx, score)) = pick else {
+                emit_client_stage(
+                    "route_candidates_scored",
+                    json!({
+                        "stream_id": sid0,
+                        "site": request_site.as_str(),
+                        "attempt": attempt,
+                        "excluded_routes": excluded
+                            .iter()
+                            .map(|route| route
+                                .hops
+                                .iter()
+                                .map(|hop| hop.to_string())
+                                .collect::<Vec<_>>()
+                                .join(" -> "))
+                            .collect::<Vec<_>>(),
+                        "candidates": candidate_snapshot,
+                    }),
+                );
+                let Some((idx, details)) = pick else {
                     break;
                 };
+                let score = details.final_score;
                 let route = {
                     let store = route_store.lock().await;
                     store.routes().get(idx).map(|c| c.route.clone())
                 };
                 let Some(route) = route else { break };
                 let hops = route.len();
-                let details = {
-                    let store = route_store.lock().await;
-                    store.score_details(idx, now)
-                };
-                if let Some(d) = details {
-                    info!(
-                        stream_id = sid0,
-                        attempt,
-                        hops,
-                        score = d.final_score,
-                        base = d.base,
-                        transport_agg = d.transport_agg,
-                        "route selected: hops=N score=X"
-                    );
-                } else {
-                    info!(
-                        stream_id = sid0,
-                        attempt, hops, score, "route selected: hops=N score=X"
-                    );
-                }
+                info!(
+                    stream_id = sid0,
+                    attempt,
+                    hops,
+                    score = details.final_score,
+                    base = details.base,
+                    transport_agg = details.transport_agg,
+                    quality_agg = details.quality_agg,
+                    hop_factor = details.hop_factor,
+                    recent_ttfb_ms = ?details.recent_ttfb_ms,
+                    recent_total_ms = ?details.recent_total_ms,
+                    recent_ack_p95_ms = ?details.recent_ack_p95_ms,
+                    recent_retransmit_rate_ppm = ?details.recent_retransmit_rate_ppm,
+                    recent_window_wait_ratio_ppm = ?details.recent_window_wait_ratio_ppm,
+                    recent_success_count = details.recent_success_count,
+                    recent_failure_count = details.recent_failure_count,
+                    "route selected: quality-aware candidate won"
+                );
                 let sid = if attempt == 0 {
                     sid0
                 } else {
@@ -1527,6 +1668,17 @@ async fn run_client_tcp_mode(
                             .collect::<Vec<_>>()
                             .join(" -> "),
                         "score": score,
+                        "base": details.base,
+                        "transport_agg": details.transport_agg,
+                        "quality_agg": details.quality_agg,
+                        "hop_factor": details.hop_factor,
+                        "recent_ttfb_ms": details.recent_ttfb_ms,
+                        "recent_total_ms": details.recent_total_ms,
+                        "recent_ack_p95_ms": details.recent_ack_p95_ms,
+                        "recent_retransmit_rate_ppm": details.recent_retransmit_rate_ppm,
+                        "recent_window_wait_ratio_ppm": details.recent_window_wait_ratio_ppm,
+                        "recent_success_count": details.recent_success_count,
+                        "recent_failure_count": details.recent_failure_count,
                         "since_request_buffered_ms": accept_start.elapsed().as_millis() as u64,
                     }),
                 );
@@ -1549,55 +1701,89 @@ async fn run_client_tcp_mode(
                 )
                 .await
                 {
-                    Ok(resp) => {
-                        let elapsed = start_rtt.elapsed().as_millis() as u64;
-                        let code = http_status_code(&resp);
+                    Ok(outcome) => {
+                        let code = outcome.status_code;
                         // Stage 6 failure rules: treat route-level timeouts (504) as route failure.
                         // Do NOT treat upstream target errors (502) as route failure.
                         let is_fail = matches!(code, Some(504));
+                        {
+                            let mut store = route_store.lock().await;
+                            store.record_local_observation(
+                                idx,
+                                &LocalRouteObservation {
+                                    success: !is_fail,
+                                    status_code: code,
+                                    ttfb_ms: outcome.first_client_byte_ms,
+                                    total_ms: outcome.total_ms,
+                                    response_bytes: outcome.response.len(),
+                                },
+                            );
+                            if is_fail {
+                                store.record_failure(idx, RouteFailureKind::Timeout);
+                            } else {
+                                store.record_success(idx, Some(outcome.total_ms));
+                            }
+                        }
                         if is_fail {
                             excluded.push(route.clone());
-                            {
-                                let mut store = route_store.lock().await;
-                                store.record_failure(idx, RouteFailureKind::Timeout);
-                            }
-                            info!(stream_id = sid0, attempt, hops, score, code = ?code, "route failed, switching");
+                            info!(
+                                stream_id = sid0,
+                                attempt,
+                                hops,
+                                score,
+                                code = ?code,
+                                total_ms = outcome.total_ms,
+                                completion_reason = outcome.completion_reason,
+                                "route failed, switching"
+                            );
                             continue;
                         }
-                        final_resp = Some(resp);
+                        final_resp = Some(outcome.response);
                         used_idx = Some(idx);
                         used_score = score;
                         used_hops = hops;
-                        rtt_ms = Some(elapsed);
+                        rtt_ms = Some(outcome.total_ms);
                         break;
                     }
                     Err(e) => {
                         excluded.push(route.clone());
+                        let elapsed = start_rtt.elapsed().as_millis() as u64;
                         {
                             let mut store = route_store.lock().await;
+                            store.record_local_observation(
+                                idx,
+                                &LocalRouteObservation {
+                                    success: false,
+                                    status_code: None,
+                                    ttfb_ms: None,
+                                    total_ms: elapsed,
+                                    response_bytes: 0,
+                                },
+                            );
                             store.record_failure(idx, classify_anyhow_failure(&e));
                         }
-                        info!(stream_id = sid0, attempt, hops, score, %e, "route failed, switching");
+                        info!(
+                            stream_id = sid0,
+                            attempt,
+                            hops,
+                            score,
+                            total_ms = elapsed,
+                            %e,
+                            "route failed, switching"
+                        );
                     }
                 }
             }
 
-            if let (Some(idx), Some(resp)) = (used_idx, final_resp.as_ref()) {
+            if let (Some(_idx), Some(resp)) = (used_idx, final_resp.as_ref()) {
                 info!(
                     stream_id = sid0,
                     hops = used_hops,
                     score = used_score,
                     rtt_ms = rtt_ms.unwrap_or(0),
-                    "route success, updating metrics"
+                    status_code = ?http_status_code(resp),
+                    "route success recorded"
                 );
-                let mut store = route_store.lock().await;
-                store.record_success(idx, rtt_ms);
-                if let Some(code) = http_status_code(resp) {
-                    if code == 504 {
-                        // Defensive: if we got a synthesized 504, treat as failure.
-                        store.record_failure(idx, RouteFailureKind::Timeout);
-                    }
-                }
             }
 
             if let Some(resp) = final_resp {
@@ -1666,11 +1852,11 @@ async fn run_client_tcp_mode(
                     )
                     .await
                     {
-                        Ok(resp) => {
-                            if resp.is_empty() {
+                        Ok(outcome) => {
+                            if outcome.response.is_empty() {
                                 continue; // empty response is OK for TLS ACKs
                             }
-                            if tcp.write_all(&resp).await.is_err() {
+                            if tcp.write_all(&outcome.response).await.is_err() {
                                 break;
                             }
                         }
@@ -1707,7 +1893,7 @@ async fn tunnel_http_roundtrip(
     completed_response_streams: &CompletedResponseStreamTable,
     mut local_tcp: Option<&mut tokio::net::TcpStream>,
     write_response_to_tcp: bool,
-) -> Result<Vec<u8>> {
+) -> Result<HttpRoundtripOutcome> {
     let stream_start = Instant::now();
     let first_hop = route
         .first_hop()
@@ -2087,9 +2273,21 @@ async fn tunnel_http_roundtrip(
             stream_duration_ms = stream_start.elapsed().as_millis(),
             "client: finished streamed response"
         );
-        Ok(Vec::new())
+        Ok(HttpRoundtripOutcome {
+            response: Vec::new(),
+            first_client_byte_ms,
+            total_ms: stream_start.elapsed().as_millis() as u64,
+            completion_reason,
+            status_code: None,
+        })
     } else {
-        Ok(full)
+        Ok(HttpRoundtripOutcome {
+            status_code: http_status_code(&full),
+            response: full,
+            first_client_byte_ms,
+            total_ms: stream_start.elapsed().as_millis() as u64,
+            completion_reason,
+        })
     }
 }
 
