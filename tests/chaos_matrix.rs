@@ -611,6 +611,96 @@ async fn combined_chaos_terminal_close_duplicates_are_suppressed_after_first_sig
     Ok(())
 }
 
+#[tokio::test]
+async fn combined_chaos_terminal_payload_tail_is_absorbed_before_completed_tombstone(
+) -> anyhow::Result<()> {
+    support::prepare_baseline(BaselineMode::Local);
+
+    let config =
+        ChaosRunConfig::combined_regression("terminal-payload-tail-regression-test", 21_000, 5);
+    prepare_chaos_run(&config)?;
+
+    let exact_ports = ports_from_base(config.base_port);
+    let adaptive_ports = ports_from_base(config.base_port.saturating_add(100));
+
+    run_mode_scenario(
+        &config,
+        RunMode::Exact3Hop,
+        exact_ports,
+        true,
+        &config.exact_route_cache_path,
+    )
+    .await?;
+    run_mode_scenario(
+        &config,
+        RunMode::Adaptive,
+        adaptive_ports,
+        false,
+        &config.adaptive_route_cache_path,
+    )
+    .await?;
+
+    let measurements = read_measurements(&config.raw_path())?;
+    assert_eq!(
+        measurements.len(),
+        config.profile.runs * 2,
+        "terminal-payload regression must produce successful exact and adaptive measurements"
+    );
+    assert!(
+        measurements.iter().all(|record| record.status_code == 200),
+        "terminal-payload regression must keep HTTP 200"
+    );
+
+    let stage_analysis = analyze_stage_trace(&config.stage_trace_path)?;
+    assert_eq!(
+        stage_analysis
+            .client_terminal_events
+            .get("terminal_payload_after_local_completion")
+            .copied()
+            .unwrap_or(0),
+        0,
+        "terminal-payload regression must not route any post-completion empty frame into terminal_payload_after_local_completion"
+    );
+    assert_eq!(
+        stage_analysis
+            .client_terminal_events
+            .get("duplicate_terminal_payload_after_local_completion")
+            .copied()
+            .unwrap_or(0),
+        0,
+        "terminal-payload regression must not route duplicate post-completion empty frames into duplicate_terminal_payload_after_local_completion"
+    );
+    assert!(
+        stage_analysis
+            .client_terminal_events
+            .get("response_transport_terminal_payload_observed")
+            .copied()
+            .unwrap_or(0)
+            > 0,
+        "terminal-payload regression must still observe terminal payload markers during active settlement"
+    );
+    assert!(
+        stage_analysis
+            .client_terminal_events
+            .get("response_transport_terminal_close_observed")
+            .copied()
+            .unwrap_or(0)
+            > 0,
+        "terminal-payload regression must still observe terminal CloseStream during active settlement"
+    );
+    assert_eq!(
+        stage_analysis
+            .client_late_events
+            .get("payload_after_local_completion_during_settlement")
+            .copied()
+            .unwrap_or(0),
+        0,
+        "terminal-payload regression must not deliver additional body bytes after local completion"
+    );
+
+    Ok(())
+}
+
 async fn run_mode_scenario(
     config: &ChaosRunConfig,
     mode: RunMode,

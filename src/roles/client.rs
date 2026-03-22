@@ -1542,7 +1542,8 @@ See README: Stage 2 support matrix."
                         let terminal_after_local_completion =
                             completion_reason_uses_terminal_settlement(completion_reason)
                                 && frame.payload.is_empty()
-                                && late_bytes == 0;
+                                && late_bytes == 0
+                                && end_of_stream;
                         let duplicate_payload_after_local_completion =
                             completion_reason_uses_terminal_settlement(completion_reason)
                                 && late_bytes == 0
