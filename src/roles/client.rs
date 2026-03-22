@@ -167,18 +167,28 @@ fn emit_client_stage(stage: &str, payload: serde_json::Value) {
     stage_trace::emit(serde_json::Value::Object(object));
 }
 
-type ResponseTx = mpsc::UnboundedSender<Option<Vec<u8>>>;
+type ResponseTx = mpsc::UnboundedSender<ResponseEvent>;
 type ResponseSenderTable = Arc<Mutex<HashMap<u32, ResponseTx>>>;
 type ReliableStreamTable = Arc<Mutex<HashMap<u32, Arc<Mutex<ReliableStream>>>>>;
 type StreamRouteTable = Arc<Mutex<HashMap<u32, Route>>>;
 type ResponseStartedTable = Arc<Mutex<HashMap<u32, bool>>>;
 type CompletedResponseStreamTable = Arc<Mutex<HashMap<u32, CompletedResponseStream>>>;
+type CloseFeedbackSeenTable = Arc<Mutex<HashMap<u32, Instant>>>;
 
 const COMPLETED_RESPONSE_STREAM_LINGER: Duration = Duration::from_secs(30);
 const MAX_COMPLETED_RESPONSE_STREAMS: usize = 2048;
+const CLOSE_FEEDBACK_LINGER: Duration = Duration::from_secs(30);
+const MAX_CLOSE_FEEDBACK_STREAMS: usize = 2048;
 const BUFFERED_HTTP_RESPONSE_SOFT_CAP_SLACK: usize = 256 * 1024;
 const BUFFERED_HTTP_RESPONSE_CONTENT_LENGTH_SLACK: usize = 4 * 1024;
 const BUFFERED_HTTP_RESPONSE_HARD_CAP: usize = 16 * 1024 * 1024;
+
+#[derive(Debug, Clone)]
+enum ResponseEvent {
+    Payload(Vec<u8>),
+    EndOfStream,
+    CloseStream,
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct BufferedHttpResponseInspection {
@@ -320,6 +330,39 @@ fn note_completed_response_close(
         entry.completion_reason,
         entry.late_close_signals,
     ))
+}
+
+fn purge_close_feedback_seen(map: &mut HashMap<u32, Instant>, now: Instant) {
+    map.retain(|_, seen_at| now.duration_since(*seen_at) <= CLOSE_FEEDBACK_LINGER);
+    if map.len() <= MAX_CLOSE_FEEDBACK_STREAMS {
+        return;
+    }
+    let mut by_age = map
+        .iter()
+        .map(|(&stream_id, seen_at)| (stream_id, *seen_at))
+        .collect::<Vec<_>>();
+    by_age.sort_by_key(|(_, seen_at)| *seen_at);
+    let remove_count = map.len().saturating_sub(MAX_CLOSE_FEEDBACK_STREAMS);
+    for (stream_id, _) in by_age.into_iter().take(remove_count) {
+        map.remove(&stream_id);
+    }
+}
+
+fn mark_close_feedback_seen(close_feedback_seen: &CloseFeedbackSeenTable, stream_id: u32) -> bool {
+    let mut map = close_feedback_seen.lock().unwrap();
+    let now = Instant::now();
+    purge_close_feedback_seen(&mut map, now);
+    if map.contains_key(&stream_id) {
+        return false;
+    }
+    map.insert(stream_id, now);
+    true
+}
+
+fn buffered_close_requires_wait(expected_total: Option<usize>, response_len: usize) -> bool {
+    expected_total
+        .map(|expected_total| response_len < expected_total)
+        .unwrap_or(false)
 }
 
 fn build_probe_request() -> Vec<u8> {
@@ -625,7 +668,7 @@ See README: Stage 2 support matrix."
     }
 
     if args.mode == "tcp" {
-        // Channel: Some(chunk) = response data, None = end-of-response.
+        // Channel carries response payloads and stream-finish control signals.
         let response_senders: ResponseSenderTable = Arc::new(Mutex::new(HashMap::new()));
         // Per-stream reliable state.
         let reliable_streams: ReliableStreamTable = Arc::new(Mutex::new(HashMap::new()));
@@ -635,6 +678,7 @@ See README: Stage 2 support matrix."
         let stream_routes_for_io: StreamRouteTable = Arc::new(Mutex::new(HashMap::new()));
         let completed_response_streams: CompletedResponseStreamTable =
             Arc::new(Mutex::new(HashMap::new()));
+        let close_feedback_seen: CloseFeedbackSeenTable = Arc::new(Mutex::new(HashMap::new()));
 
         // Stage 7: ant dedup + optional measurement agents.
         let ants_enabled = std::env::var("VPNNODE_ANTS")
@@ -667,6 +711,7 @@ See README: Stage 2 support matrix."
         let crypto_send_for_ack = crypto.clone();
         let stream_routes_for_ack = stream_routes_for_io.clone();
         let completed_response_streams_recv = completed_response_streams.clone();
+        let close_feedback_seen_recv = close_feedback_seen.clone();
         let default_route_for_ack = primary_route.clone();
         let route_store_for_ants = route_store.clone();
         let route_store_for_quality = route_store.clone();
@@ -926,12 +971,12 @@ See README: Stage 2 support matrix."
                                         }),
                                     );
                                 }
-                                let _ = tx.send(Some(chunk));
+                                let _ = tx.send(ResponseEvent::Payload(chunk));
                             }
                         }
                         if end_of_stream {
                             debug!(stream_id = sid, "client: end-of-stream from reliable layer");
-                            let _ = tx.send(None);
+                            let _ = tx.send(ResponseEvent::EndOfStream);
                         }
                     } else if let Some(completion_reason) = completion_reason {
                         let late_bytes: usize = deliver.iter().map(|chunk| chunk.len()).sum();
@@ -1028,8 +1073,8 @@ See README: Stage 2 support matrix."
                         );
                         let mut full = resp.into_bytes();
                         full.extend_from_slice(&body);
-                        let _ = tx.send(Some(full));
-                        let _ = tx.send(None);
+                        let _ = tx.send(ResponseEvent::Payload(full));
+                        let _ = tx.send(ResponseEvent::CloseStream);
                     }
                 } else if msg_type == MsgType::CloseStream {
                     // Treat CloseStream as end-of-response as well. This makes the TCP-mode
@@ -1062,9 +1107,11 @@ See README: Stage 2 support matrix."
                     if let (Some(route_for_quality), Some(feedback)) =
                         (route_for_quality.as_ref(), quality_feedback.as_ref())
                     {
-                        let applied = {
+                        let applied = if mark_close_feedback_seen(&close_feedback_seen_recv, sid) {
                             let mut store = route_store_for_quality.lock().await;
                             store.record_response_quality_for_route(route_for_quality, feedback)
+                        } else {
+                            false
                         };
                         emit_client_stage(
                             "route_quality_feedback_received",
@@ -1095,7 +1142,7 @@ See README: Stage 2 support matrix."
                             stream_id = sid,
                             "client: received CloseStream, ending response"
                         );
-                        let _ = tx.send(None);
+                        let _ = tx.send(ResponseEvent::CloseStream);
                     } else if let Some((completed_age_ms, completion_reason, late_close_count)) =
                         note_completed_response_close(&completed_response_streams_recv, sid)
                     {
@@ -2026,7 +2073,7 @@ async fn tunnel_http_roundtrip(
         map.insert(stream_id, route.clone());
     }
 
-    let (tx_from_udp, mut rx_from_udp_stream) = mpsc::unbounded_channel::<Option<Vec<u8>>>();
+    let (tx_from_udp, mut rx_from_udp_stream) = mpsc::unbounded_channel::<ResponseEvent>();
     {
         let mut map = response_senders.lock().unwrap();
         map.insert(stream_id, tx_from_udp);
@@ -2195,7 +2242,7 @@ async fn tunnel_http_roundtrip(
             break "response_channel_closed";
         };
         match msg {
-            Some(chunk) => {
+            ResponseEvent::Payload(chunk) => {
                 if first_client_byte_ms.is_none() && !chunk.is_empty() {
                     let since_start = stream_start.elapsed().as_millis() as u64;
                     first_client_byte_ms = Some(since_start);
@@ -2280,7 +2327,30 @@ async fn tunnel_http_roundtrip(
                     }
                 }
             }
-            None => {
+            ResponseEvent::EndOfStream => {
+                if !write_response_to_tcp {
+                    buffered_completion_reason_hint = Some("peer_closed");
+                }
+                break "peer_closed";
+            }
+            ResponseEvent::CloseStream => {
+                if !write_response_to_tcp
+                    && buffered_close_requires_wait(buffered_expected_total, full.len())
+                {
+                    emit_client_stage(
+                        "close_before_content_length",
+                        json!({
+                            "stream_id": stream_id,
+                            "site": request_site.as_str(),
+                            "route_len": route.len(),
+                            "route_chain": route_chain.as_str(),
+                            "response_bytes_total": full.len(),
+                            "content_length": buffered_content_length,
+                            "expected_total": buffered_expected_total,
+                        }),
+                    );
+                    continue;
+                }
                 if !write_response_to_tcp {
                     buffered_completion_reason_hint = Some("peer_closed");
                 }
@@ -3007,5 +3077,30 @@ mod tests {
         assert!(inspection.content_length_exceeds_cap);
         assert_eq!(inspection.completion_reason, Some("buffer_cap_reached"));
         assert_eq!(inspection.active_cap, inspection.hard_cap);
+    }
+
+    #[test]
+    fn buffered_close_waits_for_remaining_content_length_bytes() {
+        assert!(buffered_close_requires_wait(Some(1024), 1000));
+        assert!(buffered_close_requires_wait(Some(1024), 0));
+        assert!(!buffered_close_requires_wait(Some(1024), 1024));
+        assert!(!buffered_close_requires_wait(Some(1024), 1400));
+    }
+
+    #[test]
+    fn buffered_close_without_content_length_finishes_immediately() {
+        assert!(!buffered_close_requires_wait(None, 0));
+        assert!(!buffered_close_requires_wait(None, 512));
+    }
+
+    #[test]
+    fn close_feedback_is_applied_once_per_stream() {
+        let seen: CloseFeedbackSeenTable = Arc::new(Mutex::new(HashMap::new()));
+        assert!(mark_close_feedback_seen(&seen, 7));
+        assert!(
+            !mark_close_feedback_seen(&seen, 7),
+            "duplicate CloseStream feedback must not be applied twice"
+        );
+        assert!(mark_close_feedback_seen(&seen, 8));
     }
 }

@@ -1,0 +1,19 @@
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+   Compiling vpnnode v0.1.0 (C:\neinternet\vpnnode)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 7.53s
+     Running unittests src\lib.rs (target\debug\deps\vpnnode-a32e04d484554ec4.exe)
+
+running 8 tests
+test roles::client::tests::buffered_close_waits_for_remaining_content_length_bytes ... ok
+test roles::client::tests::buffered_close_without_content_length_finishes_immediately ... ok
+test roles::client::tests::buffered_completion_can_use_cap_as_safety_fallback_for_oversized_response ... ok
+test roles::client::tests::buffered_completion_does_not_stop_at_old_soft_cap_before_content_length_total ... ok
+test roles::client::tests::buffered_completion_uses_content_length_for_medium_response ... ok
+test roles::client::tests::buffered_completion_uses_content_length_for_small_response ... ok
+test roles::client::tests::close_feedback_is_applied_once_per_stream ... ok
+test roles::client::tests::completed_response_stream_retains_ack_state_for_late_duplicates ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 61 filtered out; finished in 0.37s
+

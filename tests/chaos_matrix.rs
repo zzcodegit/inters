@@ -136,23 +136,7 @@ async fn chaos_profile_collects_transport_and_selection_artifacts() -> anyhow::R
     support::prepare_baseline(BaselineMode::Local);
 
     let config = ChaosRunConfig::from_env()?;
-    prepare_output_path(&config.artifact_prefix)?;
-    prepare_output_path(&config.stage_trace_path)?;
-    fs::write(config.raw_path(), b"").context("truncate chaos raw output")?;
-    fs::write(config.stage_trace_path.clone(), b"").context("truncate chaos stage trace")?;
-    fs::write(config.decision_trace_path(), b"").context("truncate chaos decision trace")?;
-    let _ = fs::remove_file(&config.exact_route_cache_path);
-    let _ = fs::remove_file(&config.adaptive_route_cache_path);
-    fs::write(
-        config.profile_json_path(),
-        serde_json::to_vec_pretty(&config.profile).context("serialize chaos profile")?,
-    )
-    .context("write chaos profile json")?;
-
-    std::env::set_var(
-        "VPNNODE_STAGE_TRACE_PATH",
-        config.stage_trace_path.as_os_str(),
-    );
+    prepare_chaos_run(&config)?;
 
     let exact_ports = ports_from_base(config.base_port);
     let adaptive_ports = ports_from_base(config.base_port.saturating_add(100));
@@ -185,6 +169,43 @@ async fn chaos_profile_collects_transport_and_selection_artifacts() -> anyhow::R
     if stage_analysis.exact_streams.is_empty() {
         bail!("chaos exact run did not emit exit stream summaries");
     }
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn combined_chaos_preserves_full_body_against_content_length() -> anyhow::Result<()> {
+    support::prepare_baseline(BaselineMode::Local);
+
+    let config = ChaosRunConfig::combined_regression("combined-regression-test", 19_900, 3);
+    prepare_chaos_run(&config)?;
+
+    let exact_ports = ports_from_base(config.base_port);
+    run_mode_scenario(
+        &config,
+        RunMode::Exact3Hop,
+        exact_ports,
+        true,
+        &config.exact_route_cache_path,
+    )
+    .await?;
+
+    let measurements = read_measurements(&config.raw_path())?;
+    assert_eq!(
+        measurements.len(),
+        config.profile.runs,
+        "combined chaos regression must produce one successful full-body measurement per run"
+    );
+    assert!(
+        measurements.iter().all(|record| record.status_code == 200),
+        "combined chaos regression must keep HTTP 200"
+    );
+    assert!(
+        measurements
+            .iter()
+            .all(|record| record.response_bytes > record.body_bytes && record.body_bytes > 0),
+        "combined chaos regression must preserve a complete response body"
+    );
 
     Ok(())
 }
@@ -390,6 +411,67 @@ async fn do_measure_http_request(
         body_bytes,
         effective_throughput_bps,
     })
+}
+
+fn prepare_chaos_run(config: &ChaosRunConfig) -> anyhow::Result<()> {
+    prepare_output_path(&config.artifact_prefix)?;
+    prepare_output_path(&config.stage_trace_path)?;
+    fs::write(config.raw_path(), b"").context("truncate chaos raw output")?;
+    fs::write(config.stage_trace_path.clone(), b"").context("truncate chaos stage trace")?;
+    fs::write(config.decision_trace_path(), b"").context("truncate chaos decision trace")?;
+    let _ = fs::remove_file(&config.exact_route_cache_path);
+    let _ = fs::remove_file(&config.adaptive_route_cache_path);
+    fs::write(
+        config.profile_json_path(),
+        serde_json::to_vec_pretty(&config.profile).context("serialize chaos profile")?,
+    )
+    .context("write chaos profile json")?;
+
+    std::env::set_var(
+        "VPNNODE_STAGE_TRACE_PATH",
+        config.stage_trace_path.as_os_str(),
+    );
+    std::env::set_var(
+        "VPNNODE_TRANSPORT_CHAOS_LABEL",
+        config.profile.profile_name.as_str(),
+    );
+    std::env::set_var(
+        "VPNNODE_TRANSPORT_CHAOS_SEED",
+        config.profile.seed.to_string(),
+    );
+    std::env::set_var(
+        "VPNNODE_TRANSPORT_CHAOS_SKIP_PACKETS",
+        config.profile.skip_packets.to_string(),
+    );
+    std::env::set_var(
+        "VPNNODE_TRANSPORT_CHAOS_LOSS_PPM",
+        config.profile.loss_ppm.to_string(),
+    );
+    std::env::set_var(
+        "VPNNODE_TRANSPORT_CHAOS_DUPLICATE_PPM",
+        config.profile.duplicate_ppm.to_string(),
+    );
+    std::env::set_var(
+        "VPNNODE_TRANSPORT_CHAOS_REORDER_PPM",
+        config.profile.reorder_ppm.to_string(),
+    );
+    std::env::set_var(
+        "VPNNODE_TRANSPORT_CHAOS_BASE_DELAY_MS",
+        config.profile.base_delay_ms.to_string(),
+    );
+    std::env::set_var(
+        "VPNNODE_TRANSPORT_CHAOS_JITTER_MS",
+        config.profile.jitter_ms.to_string(),
+    );
+    std::env::set_var(
+        "VPNNODE_TRANSPORT_CHAOS_REORDER_EXTRA_DELAY_MS",
+        config.profile.reorder_extra_delay_ms.to_string(),
+    );
+    std::env::set_var(
+        "VPNNODE_TRANSPORT_CHAOS_DUPLICATE_DELAY_MS",
+        config.profile.duplicate_delay_ms.to_string(),
+    );
+    Ok(())
 }
 
 fn parse_content_length(header_bytes: &[u8]) -> anyhow::Result<usize> {
@@ -828,6 +910,44 @@ impl ChaosRunConfig {
                 45_u64,
             )?),
         })
+    }
+
+    fn combined_regression(profile_name: &str, base_port: u16, runs: usize) -> Self {
+        let temp_dir = std::env::temp_dir();
+        let artifact_prefix =
+            temp_dir.join(format!("vpnnode-chaos-{}-artifacts", profile_name));
+        let stage_trace_path =
+            PathBuf::from(format!("{}.stage.jsonl", artifact_prefix.display()));
+        Self {
+            exact_route_cache_path: temp_dir.join(format!(
+                "vpnnode-chaos-{}-exact-route-cache.json",
+                profile_name
+            )),
+            adaptive_route_cache_path: temp_dir.join(format!(
+                "vpnnode-chaos-{}-adaptive-route-cache.json",
+                profile_name
+            )),
+            artifact_prefix,
+            stage_trace_path,
+            profile: ChaosProfileArtifact {
+                profile_name: profile_name.to_string(),
+                seed: 31,
+                skip_packets: 24,
+                loss_ppm: 1000,
+                duplicate_ppm: 2000,
+                reorder_ppm: 15000,
+                base_delay_ms: 8,
+                jitter_ms: 6,
+                reorder_extra_delay_ms: 30,
+                duplicate_delay_ms: 3,
+                runs,
+                request_body_bytes: 32_768,
+            },
+            base_port,
+            connect_timeout: Duration::from_secs(5),
+            write_timeout: Duration::from_secs(10),
+            read_timeout: Duration::from_secs(45),
+        }
     }
 
     fn raw_path(&self) -> PathBuf {
