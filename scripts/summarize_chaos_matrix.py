@@ -65,6 +65,7 @@ def summarize_profile(prefix: Path):
     chaos_counts = Counter()
     client_open_failures = Counter()
     client_late_events = Counter()
+    client_terminal_events = Counter()
     exit_open_failures = Counter()
     exit_exact = []
     exit_adaptive = []
@@ -84,9 +85,26 @@ def summarize_profile(prefix: Path):
         elif component == "client" and stage_name in {
             "late_payload_after_completion",
             "late_close_after_completion",
+            "payload_after_local_completion_during_settlement",
             "response_timeout",
         }:
             client_late_events[stage_name] += 1
+        elif component == "client" and stage_name in {
+            "terminal_payload_after_local_completion",
+            "duplicate_terminal_payload_after_local_completion",
+            "terminal_close_after_local_completion",
+            "duplicate_terminal_close_after_local_completion",
+            "duplicate_payload_after_local_completion",
+            "duplicate_payload_after_local_completion_repeat",
+            "response_transport_local_completion",
+            "response_transport_settlement_started",
+            "response_transport_terminal_payload_observed",
+            "response_transport_terminal_payload_duplicate",
+            "response_transport_terminal_close_observed",
+            "response_transport_terminal_close_duplicate",
+            "response_transport_settlement_completed",
+        }:
+            client_terminal_events[stage_name] += 1
         elif component == "exit" and stage_name == "open_message_failed":
             exit_open_failures[
                 normalize_open_message_error(item.get("error", "<missing>"))
@@ -153,6 +171,7 @@ def summarize_profile(prefix: Path):
         "chaos_counts": dict(chaos_counts),
         "client_open_failures": dict(client_open_failures),
         "client_late_events": dict(client_late_events),
+        "client_terminal_events": dict(client_terminal_events),
         "exit_open_failures": dict(exit_open_failures),
         "decision_reasons": dict(decision_reasons),
         "selected_routes": dict(selected_routes),
@@ -226,9 +245,9 @@ def main():
     out.append("## Adaptive Selector")
     out.append("")
     out.append(
-        "| profile | decision events | route changes | decision reasons | selected routes | client late events | client open failures | exit open failures |"
+        "| profile | decision events | route changes | decision reasons | selected routes | client late events | client terminal events | client open failures | exit open failures |"
     )
-    out.append("| --- | ---: | ---: | --- | --- | --- | --- | --- |")
+    out.append("| --- | ---: | ---: | --- | --- | --- | --- | --- | --- |")
     for profile_name in args.profiles:
         summary = summaries[profile_name]
         decision_reasons = ", ".join(
@@ -240,6 +259,10 @@ def main():
         client_late = ", ".join(
             f"{key}x{value}" for key, value in sorted(summary["client_late_events"].items())
         ) or "n/a"
+        client_terminal = ", ".join(
+            f"{key}x{value}"
+            for key, value in sorted(summary["client_terminal_events"].items())
+        ) or "n/a"
         client_open = ", ".join(
             f"{key}x{value}"
             for key, value in sorted(summary["client_open_failures"].items())
@@ -248,7 +271,7 @@ def main():
             f"{key}x{value}" for key, value in sorted(summary["exit_open_failures"].items())
         ) or "n/a"
         out.append(
-            f"| {profile_name} | {summary['decision_events']} | {summary['route_changes']} | {decision_reasons} | {selected_routes} | {client_late} | {client_open} | {exit_open} |"
+            f"| {profile_name} | {summary['decision_events']} | {summary['route_changes']} | {decision_reasons} | {selected_routes} | {client_late} | {client_terminal} | {client_open} | {exit_open} |"
         )
     out.append("")
     out.append("## Chaos Actions")

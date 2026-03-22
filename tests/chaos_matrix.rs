@@ -97,6 +97,7 @@ struct StageAnalysis {
     client_open_message_failures: BTreeMap<String, usize>,
     client_late_events: BTreeMap<String, usize>,
     client_lifecycle_events: BTreeMap<String, usize>,
+    client_terminal_events: BTreeMap<String, usize>,
     exact_streams: Vec<ExitStreamSummary>,
     adaptive_streams: Vec<ExitStreamSummary>,
     adaptive_decisions: Vec<Value>,
@@ -160,9 +161,15 @@ async fn chaos_profile_collects_transport_and_selection_artifacts() -> anyhow::R
     .await?;
 
     let stage_analysis = analyze_stage_trace(&config.stage_trace_path)?;
-    write_decision_trace(&config.decision_trace_path(), &stage_analysis.adaptive_decisions)?;
-    fs::write(config.report_path(), render_report(&config, &stage_analysis)?)
-        .context("write chaos profile report")?;
+    write_decision_trace(
+        &config.decision_trace_path(),
+        &stage_analysis.adaptive_decisions,
+    )?;
+    fs::write(
+        config.report_path(),
+        render_report(&config, &stage_analysis)?,
+    )
+    .context("write chaos profile report")?;
 
     if stage_analysis.adaptive_decisions.is_empty() {
         bail!("chaos adaptive run did not emit any multi-candidate route decisions");
@@ -235,7 +242,8 @@ async fn combined_chaos_preserves_full_body_against_content_length() -> anyhow::
 async fn reorder_chaos_does_not_reject_packets_inside_replay_window() -> anyhow::Result<()> {
     support::prepare_baseline(BaselineMode::Local);
 
-    let config = ChaosRunConfig::mild_reorder_regression("replay-window-regression-test", 20_200, 5);
+    let config =
+        ChaosRunConfig::mild_reorder_regression("replay-window-regression-test", 20_200, 5);
     prepare_chaos_run(&config)?;
 
     let exact_ports = ports_from_base(config.base_port);
@@ -292,6 +300,112 @@ async fn reorder_chaos_does_not_reject_packets_inside_replay_window() -> anyhow:
     Ok(())
 }
 
+#[tokio::test]
+async fn mild_delay_content_length_completion_settles_terminal_signals_cleanly(
+) -> anyhow::Result<()> {
+    support::prepare_baseline(BaselineMode::Local);
+
+    let config = ChaosRunConfig::mild_delay_regression("delay-tail-regression-test", 20_500, 5);
+    prepare_chaos_run(&config)?;
+
+    let exact_ports = ports_from_base(config.base_port);
+    run_mode_scenario(
+        &config,
+        RunMode::Exact3Hop,
+        exact_ports,
+        true,
+        &config.exact_route_cache_path,
+    )
+    .await?;
+
+    let measurements = read_measurements(&config.raw_path())?;
+    assert_eq!(
+        measurements.len(),
+        config.profile.runs,
+        "delay-tail regression must produce one successful exact-route measurement per run"
+    );
+    assert!(
+        measurements.iter().all(|record| record.status_code == 200),
+        "delay-tail regression must keep HTTP 200"
+    );
+
+    let stage_analysis = analyze_stage_trace(&config.stage_trace_path)?;
+    assert_eq!(
+        stage_analysis
+            .client_late_events
+            .get("late_payload_after_completion")
+            .copied()
+            .unwrap_or(0),
+        0,
+        "mild delay regression must not classify delayed terminal payload markers as late payload after completion"
+    );
+    assert_eq!(
+        stage_analysis
+            .client_late_events
+            .get("late_close_after_completion")
+            .copied()
+            .unwrap_or(0),
+        0,
+        "mild delay regression must not classify delayed CloseStream markers as late close after completion"
+    );
+    assert!(
+        stage_analysis
+            .client_terminal_events
+            .get("response_transport_settlement_started")
+            .copied()
+            .unwrap_or(0)
+            > 0,
+        "mild delay regression must enter transport-settlement after local content-length completion"
+    );
+    assert!(
+        stage_analysis
+            .client_terminal_events
+            .get("response_transport_terminal_payload_observed")
+            .copied()
+            .unwrap_or(0)
+            > 0,
+        "mild delay regression must prove terminal payload markers were still observed during settlement"
+    );
+    assert!(
+        stage_analysis
+            .client_terminal_events
+            .get("response_transport_terminal_close_observed")
+            .copied()
+            .unwrap_or(0)
+            > 0,
+        "mild delay regression must prove CloseStream markers were still observed during settlement"
+    );
+    assert!(
+        stage_analysis
+            .client_terminal_events
+            .get("response_transport_settlement_completed")
+            .copied()
+            .unwrap_or(0)
+            > 0,
+        "mild delay regression must complete transport settlement before cleanup"
+    );
+    assert!(
+        stage_analysis
+            .client_terminal_events
+            .get("duplicate_payload_after_local_completion")
+            .copied()
+            .unwrap_or(0)
+            > 0,
+        "mild delay regression must still observe delayed duplicate payload frames, but no longer misclassify them as late payload"
+    );
+    assert_eq!(
+        stage_analysis
+            .client_late_events
+            .get("payload_after_local_completion_during_settlement")
+            .copied()
+            .unwrap_or(0),
+        0,
+        "mild delay regression must not deliver extra body bytes after local content-length completion"
+    );
+
+    Ok(())
+}
+
 async fn run_mode_scenario(
     config: &ChaosRunConfig,
     mode: RunMode,
@@ -299,7 +413,12 @@ async fn run_mode_scenario(
     exact_route_only: bool,
     route_cache_path: &Path,
 ) -> anyhow::Result<()> {
-    spawn_local_stack(ports, mode.route_length(), exact_route_only, route_cache_path);
+    spawn_local_stack(
+        ports,
+        mode.route_length(),
+        exact_route_only,
+        route_cache_path,
+    );
 
     helpers::wait_http_ready(ports.client_tcp)
         .await
@@ -390,7 +509,11 @@ fn spawn_local_stack(
             route_cache_path,
             tun_name: format!(
                 "tun-chaos-{}-{}",
-                if exact_route_only { "exact" } else { "adaptive" },
+                if exact_route_only {
+                    "exact"
+                } else {
+                    "adaptive"
+                },
                 ports.client_tcp.port()
             ),
             tun_address: "10.10.0.1".to_string(),
@@ -570,8 +693,8 @@ fn parse_content_length(header_bytes: &[u8]) -> anyhow::Result<usize> {
 }
 
 fn analyze_stage_trace(path: &Path) -> anyhow::Result<StageAnalysis> {
-    let raw = fs::read_to_string(path)
-        .with_context(|| format!("read stage trace {}", path.display()))?;
+    let raw =
+        fs::read_to_string(path).with_context(|| format!("read stage trace {}", path.display()))?;
     let mut analysis = StageAnalysis::default();
     for line in raw.lines().filter(|line| !line.trim().is_empty()) {
         let value: Value = serde_json::from_str(line).context("parse stage trace line")?;
@@ -608,6 +731,7 @@ fn analyze_stage_trace(path: &Path) -> anyhow::Result<StageAnalysis> {
             }
             ("client", "late_payload_after_completion")
             | ("client", "late_close_after_completion")
+            | ("client", "payload_after_local_completion_during_settlement")
             | ("client", "response_timeout") => {
                 *analysis
                     .client_late_events
@@ -621,6 +745,24 @@ fn analyze_stage_trace(path: &Path) -> anyhow::Result<StageAnalysis> {
             | ("client", "response_payload_unknown_stream") => {
                 *analysis
                     .client_lifecycle_events
+                    .entry(stage.to_string())
+                    .or_insert(0usize) += 1;
+            }
+            ("client", "terminal_payload_after_local_completion")
+            | ("client", "duplicate_terminal_payload_after_local_completion")
+            | ("client", "terminal_close_after_local_completion")
+            | ("client", "duplicate_terminal_close_after_local_completion")
+            | ("client", "duplicate_payload_after_local_completion")
+            | ("client", "duplicate_payload_after_local_completion_repeat")
+            | ("client", "response_transport_local_completion")
+            | ("client", "response_transport_settlement_started")
+            | ("client", "response_transport_terminal_payload_observed")
+            | ("client", "response_transport_terminal_payload_duplicate")
+            | ("client", "response_transport_terminal_close_observed")
+            | ("client", "response_transport_terminal_close_duplicate")
+            | ("client", "response_transport_settlement_completed") => {
+                *analysis
+                    .client_terminal_events
                     .entry(stage.to_string())
                     .or_insert(0usize) += 1;
             }
@@ -641,12 +783,8 @@ fn analyze_stage_trace(path: &Path) -> anyhow::Result<StageAnalysis> {
                     ack_latency_ms_p95: value.get("ack_latency_ms_p95").and_then(Value::as_u64),
                     total_retransmits: value.get("total_retransmits").and_then(Value::as_u64),
                     retransmit_rate: value.get("retransmit_rate").and_then(Value::as_f64),
-                    retransmit_rate_ppm: value
-                        .get("retransmit_rate_ppm")
-                        .and_then(Value::as_u64),
-                    window_wait_total_ms: value
-                        .get("window_wait_total_ms")
-                        .and_then(Value::as_u64),
+                    retransmit_rate_ppm: value.get("retransmit_rate_ppm").and_then(Value::as_u64),
+                    window_wait_total_ms: value.get("window_wait_total_ms").and_then(Value::as_u64),
                     http_code: value.get("http_code").and_then(Value::as_u64),
                 };
                 if site.starts_with("chaos-exact-3hop-run") {
@@ -778,6 +916,12 @@ fn render_report(config: &ChaosRunConfig, analysis: &StageAnalysis) -> anyhow::R
     if !analysis.client_lifecycle_events.is_empty() {
         out.push_str("\n## Client Lifecycle Events\n\n");
         for (stage, count) in &analysis.client_lifecycle_events {
+            out.push_str(&format!("- {stage}: {count}\n"));
+        }
+    }
+    if !analysis.client_terminal_events.is_empty() {
+        out.push_str("\n## Client Settlement Events\n\n");
+        for (stage, count) in &analysis.client_terminal_events {
             out.push_str(&format!("- {stage}: {count}\n"));
         }
     }
@@ -1022,10 +1166,8 @@ impl ChaosRunConfig {
 
     fn combined_regression(profile_name: &str, base_port: u16, runs: usize) -> Self {
         let temp_dir = std::env::temp_dir();
-        let artifact_prefix =
-            temp_dir.join(format!("vpnnode-chaos-{}-artifacts", profile_name));
-        let stage_trace_path =
-            PathBuf::from(format!("{}.stage.jsonl", artifact_prefix.display()));
+        let artifact_prefix = temp_dir.join(format!("vpnnode-chaos-{}-artifacts", profile_name));
+        let stage_trace_path = PathBuf::from(format!("{}.stage.jsonl", artifact_prefix.display()));
         Self {
             exact_route_cache_path: temp_dir.join(format!(
                 "vpnnode-chaos-{}-exact-route-cache.json",
@@ -1060,10 +1202,8 @@ impl ChaosRunConfig {
 
     fn mild_reorder_regression(profile_name: &str, base_port: u16, runs: usize) -> Self {
         let temp_dir = std::env::temp_dir();
-        let artifact_prefix =
-            temp_dir.join(format!("vpnnode-chaos-{}-artifacts", profile_name));
-        let stage_trace_path =
-            PathBuf::from(format!("{}.stage.jsonl", artifact_prefix.display()));
+        let artifact_prefix = temp_dir.join(format!("vpnnode-chaos-{}-artifacts", profile_name));
+        let stage_trace_path = PathBuf::from(format!("{}.stage.jsonl", artifact_prefix.display()));
         Self {
             exact_route_cache_path: temp_dir.join(format!(
                 "vpnnode-chaos-{}-exact-route-cache.json",
@@ -1096,12 +1236,51 @@ impl ChaosRunConfig {
         }
     }
 
+    fn mild_delay_regression(profile_name: &str, base_port: u16, runs: usize) -> Self {
+        let temp_dir = std::env::temp_dir();
+        let artifact_prefix = temp_dir.join(format!("vpnnode-chaos-{}-artifacts", profile_name));
+        let stage_trace_path = PathBuf::from(format!("{}.stage.jsonl", artifact_prefix.display()));
+        Self {
+            exact_route_cache_path: temp_dir.join(format!(
+                "vpnnode-chaos-{}-exact-route-cache.json",
+                profile_name
+            )),
+            adaptive_route_cache_path: temp_dir.join(format!(
+                "vpnnode-chaos-{}-adaptive-route-cache.json",
+                profile_name
+            )),
+            artifact_prefix,
+            stage_trace_path,
+            profile: ChaosProfileArtifact {
+                profile_name: profile_name.to_string(),
+                seed: 29,
+                skip_packets: 24,
+                loss_ppm: 0,
+                duplicate_ppm: 0,
+                reorder_ppm: 0,
+                base_delay_ms: 4,
+                jitter_ms: 2,
+                reorder_extra_delay_ms: 0,
+                duplicate_delay_ms: 2,
+                runs,
+                request_body_bytes: 32_768,
+            },
+            base_port,
+            connect_timeout: Duration::from_secs(5),
+            write_timeout: Duration::from_secs(10),
+            read_timeout: Duration::from_secs(45),
+        }
+    }
+
     fn raw_path(&self) -> PathBuf {
         PathBuf::from(format!("{}.jsonl", self.artifact_prefix.display()))
     }
 
     fn decision_trace_path(&self) -> PathBuf {
-        PathBuf::from(format!("{}.decisions.jsonl", self.artifact_prefix.display()))
+        PathBuf::from(format!(
+            "{}.decisions.jsonl",
+            self.artifact_prefix.display()
+        ))
     }
 
     fn report_path(&self) -> PathBuf {

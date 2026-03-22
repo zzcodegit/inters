@@ -179,6 +179,8 @@ const COMPLETED_RESPONSE_STREAM_LINGER: Duration = Duration::from_secs(30);
 const MAX_COMPLETED_RESPONSE_STREAMS: usize = 2048;
 const CLOSE_FEEDBACK_LINGER: Duration = Duration::from_secs(30);
 const MAX_CLOSE_FEEDBACK_STREAMS: usize = 2048;
+const BUFFERED_RESPONSE_TRANSPORT_SETTLEMENT_QUIET_PERIOD: Duration = Duration::from_millis(250);
+const BUFFERED_RESPONSE_TRANSPORT_SETTLEMENT_MAX: Duration = Duration::from_secs(2);
 const BUFFERED_HTTP_RESPONSE_SOFT_CAP_SLACK: usize = 256 * 1024;
 const BUFFERED_HTTP_RESPONSE_CONTENT_LENGTH_SLACK: usize = 4 * 1024;
 const BUFFERED_HTTP_RESPONSE_HARD_CAP: usize = 16 * 1024 * 1024;
@@ -282,7 +284,10 @@ struct CompletedResponseStream {
     completed_at: Instant,
     completion_reason: &'static str,
     late_payloads: u64,
+    duplicate_payload_signals: u64,
     late_close_signals: u64,
+    terminal_payload_signals: u64,
+    terminal_close_signals: u64,
 }
 
 fn purge_completed_response_streams(map: &mut HashMap<u32, CompletedResponseStream>, now: Instant) {
@@ -320,7 +325,10 @@ fn remember_completed_response_stream(
             completed_at: Instant::now(),
             completion_reason,
             late_payloads: 0,
+            duplicate_payload_signals: 0,
             late_close_signals: 0,
+            terminal_payload_signals: 0,
+            terminal_close_signals: 0,
         },
     );
 }
@@ -361,6 +369,61 @@ fn note_completed_response_close(
         entry.completed_at.elapsed().as_millis() as u64,
         entry.completion_reason,
         entry.late_close_signals,
+    ))
+}
+
+fn completion_reason_uses_terminal_settlement(completion_reason: &'static str) -> bool {
+    completion_reason == "content_length_reached"
+}
+
+fn note_completed_response_terminal_payload(
+    completed_streams: &CompletedResponseStreamTable,
+    stream_id: u32,
+) -> Option<(u64, &'static str, bool, u64)> {
+    let mut map = completed_streams.lock().unwrap();
+    purge_completed_response_streams(&mut map, Instant::now());
+    let entry = map.get_mut(&stream_id)?;
+    let first_signal = entry.terminal_payload_signals == 0;
+    entry.terminal_payload_signals = entry.terminal_payload_signals.saturating_add(1);
+    Some((
+        entry.completed_at.elapsed().as_millis() as u64,
+        entry.completion_reason,
+        first_signal,
+        entry.terminal_payload_signals,
+    ))
+}
+
+fn note_completed_response_duplicate_payload(
+    completed_streams: &CompletedResponseStreamTable,
+    stream_id: u32,
+) -> Option<(u64, &'static str, bool, u64)> {
+    let mut map = completed_streams.lock().unwrap();
+    purge_completed_response_streams(&mut map, Instant::now());
+    let entry = map.get_mut(&stream_id)?;
+    let first_signal = entry.duplicate_payload_signals == 0;
+    entry.duplicate_payload_signals = entry.duplicate_payload_signals.saturating_add(1);
+    Some((
+        entry.completed_at.elapsed().as_millis() as u64,
+        entry.completion_reason,
+        first_signal,
+        entry.duplicate_payload_signals,
+    ))
+}
+
+fn note_completed_response_terminal_close(
+    completed_streams: &CompletedResponseStreamTable,
+    stream_id: u32,
+) -> Option<(u64, &'static str, bool, u64)> {
+    let mut map = completed_streams.lock().unwrap();
+    purge_completed_response_streams(&mut map, Instant::now());
+    let entry = map.get_mut(&stream_id)?;
+    let first_signal = entry.terminal_close_signals == 0;
+    entry.terminal_close_signals = entry.terminal_close_signals.saturating_add(1);
+    Some((
+        entry.completed_at.elapsed().as_millis() as u64,
+        entry.completion_reason,
+        first_signal,
+        entry.terminal_close_signals,
     ))
 }
 
@@ -416,6 +479,246 @@ fn prune_active_response_stream_state(
         map.remove(&stream_id).is_some()
     };
     removed_reliable || removed_started || removed_route
+}
+
+fn finalize_response_stream_cleanup(
+    response_senders: &ResponseSenderTable,
+    reliable_streams: &ReliableStreamTable,
+    response_started: &ResponseStartedTable,
+    stream_routes: &StreamRouteTable,
+    completed_response_streams: &CompletedResponseStreamTable,
+    stream_id: u32,
+    reliable: Arc<Mutex<ReliableStream>>,
+    route: Route,
+    completion_reason: &'static str,
+) {
+    remember_completed_response_stream(
+        completed_response_streams,
+        stream_id,
+        reliable,
+        route,
+        completion_reason,
+    );
+    {
+        let mut map = reliable_streams.lock().unwrap();
+        map.remove(&stream_id);
+    }
+    {
+        let mut map = response_senders.lock().unwrap();
+        map.remove(&stream_id);
+    }
+    {
+        let mut map = response_started.lock().unwrap();
+        map.remove(&stream_id);
+    }
+    {
+        let mut map = stream_routes.lock().unwrap();
+        map.remove(&stream_id);
+    }
+}
+
+async fn settle_buffered_response_transport(
+    stream_id: u32,
+    request_site: String,
+    route: Route,
+    completion_reason: &'static str,
+    response_bytes_total: usize,
+    reliable: Arc<Mutex<ReliableStream>>,
+    mut rx_from_udp_stream: mpsc::UnboundedReceiver<ResponseEvent>,
+    response_senders: ResponseSenderTable,
+    reliable_streams: ReliableStreamTable,
+    response_started: ResponseStartedTable,
+    stream_routes: StreamRouteTable,
+    completed_response_streams: CompletedResponseStreamTable,
+) {
+    let route_chain = route
+        .hops
+        .iter()
+        .map(|hop| hop.to_string())
+        .collect::<Vec<_>>()
+        .join(" -> ");
+    let settlement_start = Instant::now();
+    let mut terminal_payload_signals = 0u64;
+    let mut terminal_close_signals = 0u64;
+    let mut payload_after_local_completion_events = 0u64;
+    let mut payload_after_local_completion_bytes = 0usize;
+    emit_client_stage(
+        "response_transport_settlement_started",
+        json!({
+            "stream_id": stream_id,
+            "site": request_site.as_str(),
+            "route_len": route.len(),
+            "route_chain": route_chain.as_str(),
+            "completion_reason": completion_reason,
+            "response_bytes_total": response_bytes_total,
+            "quiet_period_ms": BUFFERED_RESPONSE_TRANSPORT_SETTLEMENT_QUIET_PERIOD.as_millis() as u64,
+            "max_settlement_ms": BUFFERED_RESPONSE_TRANSPORT_SETTLEMENT_MAX.as_millis() as u64,
+        }),
+    );
+
+    let settlement_max_deadline = settlement_start + BUFFERED_RESPONSE_TRANSPORT_SETTLEMENT_MAX;
+    let mut last_transport_event_at = settlement_start;
+    let settlement_reason = loop {
+        let elapsed = settlement_start.elapsed();
+        if terminal_payload_signals > 0
+            && terminal_close_signals > 0
+            && last_transport_event_at.elapsed()
+                >= BUFFERED_RESPONSE_TRANSPORT_SETTLEMENT_QUIET_PERIOD
+        {
+            break "terminal_quiet_period_elapsed";
+        }
+        if Instant::now() >= settlement_max_deadline {
+            break "settlement_max_elapsed";
+        }
+        let until_max = settlement_max_deadline
+            .checked_duration_since(Instant::now())
+            .unwrap_or_default();
+        let wait_budget = if terminal_payload_signals > 0 && terminal_close_signals > 0 {
+            until_max.min(
+                BUFFERED_RESPONSE_TRANSPORT_SETTLEMENT_QUIET_PERIOD
+                    .checked_sub(last_transport_event_at.elapsed())
+                    .unwrap_or_default(),
+            )
+        } else {
+            until_max
+        };
+        let next = match timeout(wait_budget, rx_from_udp_stream.recv()).await {
+            Ok(value) => value,
+            Err(_) => {
+                if terminal_payload_signals > 0
+                    && terminal_close_signals > 0
+                    && last_transport_event_at.elapsed()
+                        >= BUFFERED_RESPONSE_TRANSPORT_SETTLEMENT_QUIET_PERIOD
+                {
+                    break "terminal_quiet_period_elapsed";
+                }
+                if Instant::now() >= settlement_max_deadline {
+                    break "settlement_max_elapsed";
+                }
+                continue;
+            }
+        };
+        let Some(event) = next else {
+            break "response_channel_closed";
+        };
+        last_transport_event_at = Instant::now();
+        match event {
+            ResponseEvent::Payload(chunk) => {
+                if chunk.is_empty() {
+                    continue;
+                }
+                payload_after_local_completion_events =
+                    payload_after_local_completion_events.saturating_add(1);
+                payload_after_local_completion_bytes =
+                    payload_after_local_completion_bytes.saturating_add(chunk.len());
+                emit_client_stage(
+                    "payload_after_local_completion_during_settlement",
+                    json!({
+                        "stream_id": stream_id,
+                        "site": request_site.as_str(),
+                        "route_len": route.len(),
+                        "route_chain": route_chain.as_str(),
+                        "completion_reason": completion_reason,
+                        "chunk_bytes": chunk.len(),
+                        "payload_after_local_completion_events": payload_after_local_completion_events,
+                        "payload_after_local_completion_bytes": payload_after_local_completion_bytes,
+                        "settlement_elapsed_ms": elapsed.as_millis() as u64,
+                    }),
+                );
+                debug!(
+                    stream_id,
+                    chunk_bytes = chunk.len(),
+                    payload_after_local_completion_events,
+                    payload_after_local_completion_bytes,
+                    "client: payload arrived after local buffered completion during transport settlement"
+                );
+            }
+            ResponseEvent::EndOfStream => {
+                terminal_payload_signals = terminal_payload_signals.saturating_add(1);
+                let stage = if terminal_payload_signals == 1 {
+                    "response_transport_terminal_payload_observed"
+                } else {
+                    "response_transport_terminal_payload_duplicate"
+                };
+                emit_client_stage(
+                    stage,
+                    json!({
+                        "stream_id": stream_id,
+                        "site": request_site.as_str(),
+                        "route_len": route.len(),
+                        "route_chain": route_chain.as_str(),
+                        "completion_reason": completion_reason,
+                        "terminal_payload_signals": terminal_payload_signals,
+                        "settlement_elapsed_ms": elapsed.as_millis() as u64,
+                    }),
+                );
+            }
+            ResponseEvent::CloseStream => {
+                terminal_close_signals = terminal_close_signals.saturating_add(1);
+                let stage = if terminal_close_signals == 1 {
+                    "response_transport_terminal_close_observed"
+                } else {
+                    "response_transport_terminal_close_duplicate"
+                };
+                emit_client_stage(
+                    stage,
+                    json!({
+                        "stream_id": stream_id,
+                        "site": request_site.as_str(),
+                        "route_len": route.len(),
+                        "route_chain": route_chain.as_str(),
+                        "completion_reason": completion_reason,
+                        "terminal_close_signals": terminal_close_signals,
+                        "settlement_elapsed_ms": elapsed.as_millis() as u64,
+                    }),
+                );
+            }
+        }
+    };
+
+    finalize_response_stream_cleanup(
+        &response_senders,
+        &reliable_streams,
+        &response_started,
+        &stream_routes,
+        &completed_response_streams,
+        stream_id,
+        reliable,
+        route.clone(),
+        completion_reason,
+    );
+    emit_client_stage(
+        "response_channel_removed",
+        json!({
+            "stream_id": stream_id,
+            "site": request_site.as_str(),
+            "route_len": route.len(),
+            "route_chain": route_chain.as_str(),
+            "completion_reason": completion_reason,
+            "write_response_to_tcp": false,
+            "transport_settled": true,
+            "settlement_reason": settlement_reason,
+        }),
+    );
+    emit_client_stage(
+        "response_transport_settlement_completed",
+        json!({
+            "stream_id": stream_id,
+            "site": request_site.as_str(),
+            "route_len": route.len(),
+            "route_chain": route_chain.as_str(),
+            "completion_reason": completion_reason,
+            "response_bytes_total": response_bytes_total,
+            "settlement_reason": settlement_reason,
+            "settlement_duration_ms": settlement_start.elapsed().as_millis() as u64,
+            "quiet_period_ms": BUFFERED_RESPONSE_TRANSPORT_SETTLEMENT_QUIET_PERIOD.as_millis() as u64,
+            "max_settlement_ms": BUFFERED_RESPONSE_TRANSPORT_SETTLEMENT_MAX.as_millis() as u64,
+            "terminal_payload_signals": terminal_payload_signals,
+            "terminal_close_signals": terminal_close_signals,
+            "payload_after_local_completion_events": payload_after_local_completion_events,
+            "payload_after_local_completion_bytes": payload_after_local_completion_bytes,
+        }),
+    );
 }
 
 fn resolve_response_data_dispatch(
@@ -1095,14 +1398,7 @@ See README: Stage 2 support matrix."
                             reliable,
                             route,
                             pruned_stale_active_state,
-                        } => (
-                            reliable,
-                            route,
-                            None,
-                            None,
-                            true,
-                            pruned_stale_active_state,
-                        ),
+                        } => (reliable, route, None, None, true, pruned_stale_active_state),
                         ResponseDataDispatch::Unknown => {
                             emit_client_stage(
                                 "response_payload_unknown_stream",
@@ -1204,45 +1500,151 @@ See README: Stage 2 support matrix."
                         }
                     } else if let Some(completion_reason) = completion_reason {
                         let late_bytes: usize = deliver.iter().map(|chunk| chunk.len()).sum();
-                        let (completed_age_ms, _, late_count) =
-                            note_completed_response_late_payload(
+                        let terminal_after_local_completion =
+                            completion_reason_uses_terminal_settlement(completion_reason)
+                                && frame.payload.is_empty()
+                                && late_bytes == 0;
+                        let duplicate_payload_after_local_completion =
+                            completion_reason_uses_terminal_settlement(completion_reason)
+                                && late_bytes == 0
+                                && !end_of_stream
+                                && frame.frame_seq < ack_seq;
+                        if terminal_after_local_completion {
+                            if let Some((
+                                completed_age_ms,
+                                _,
+                                first_signal,
+                                terminal_signal_count,
+                            )) = note_completed_response_terminal_payload(
                                 &completed_response_streams_recv,
                                 sid,
-                            )
-                            .unwrap_or((0, completion_reason, 0));
-                        emit_client_stage(
-                            "late_payload_after_completion",
-                            json!({
-                                "stream_id": sid,
-                                "route_len": route_for_this_stream.len(),
-                                "route_chain": route_for_this_stream
-                                    .hops
-                                    .iter()
-                                    .map(|hop| hop.to_string())
-                                    .collect::<Vec<_>>()
-                                    .join(" -> "),
-                                "frame_seq": frame.frame_seq,
-                                "ack_seq": ack_seq,
-                                "delivered_chunks": deliver.len(),
-                                "delivered_bytes": late_bytes,
-                                "end_of_stream": end_of_stream,
-                                "completed_age_ms": completed_age_ms,
-                                "completion_reason": completion_reason,
-                                "late_payload_count": late_count,
-                                "duplicate_like": late_bytes == 0 && !end_of_stream,
-                            }),
-                        );
-                        debug!(
-                            stream_id = sid,
-                            frame_seq = frame.frame_seq,
-                            ack_seq,
-                            delivered_bytes = late_bytes,
-                            end_of_stream,
-                            completion_reason,
-                            completed_age_ms,
-                            late_payload_count = late_count,
-                            "client: late response payload after completion"
-                        );
+                            ) {
+                                let stage = if first_signal {
+                                    "terminal_payload_after_local_completion"
+                                } else {
+                                    "duplicate_terminal_payload_after_local_completion"
+                                };
+                                emit_client_stage(
+                                    stage,
+                                    json!({
+                                        "stream_id": sid,
+                                        "route_len": route_for_this_stream.len(),
+                                        "route_chain": route_for_this_stream
+                                            .hops
+                                            .iter()
+                                            .map(|hop| hop.to_string())
+                                            .collect::<Vec<_>>()
+                                            .join(" -> "),
+                                        "frame_seq": frame.frame_seq,
+                                        "ack_seq": ack_seq,
+                                        "completed_age_ms": completed_age_ms,
+                                        "completion_reason": completion_reason,
+                                        "end_of_stream": end_of_stream,
+                                        "terminal_signal_count": terminal_signal_count,
+                                        "duplicate_like": !first_signal || !end_of_stream,
+                                    }),
+                                );
+                                debug!(
+                                    stream_id = sid,
+                                    frame_seq = frame.frame_seq,
+                                    ack_seq,
+                                    end_of_stream,
+                                    completion_reason,
+                                    completed_age_ms,
+                                    terminal_signal_count,
+                                    first_signal,
+                                    "client: terminal payload signal after local completion"
+                                );
+                            }
+                        } else if duplicate_payload_after_local_completion {
+                            if let Some((
+                                completed_age_ms,
+                                _,
+                                first_signal,
+                                duplicate_payload_count,
+                            )) = note_completed_response_duplicate_payload(
+                                &completed_response_streams_recv,
+                                sid,
+                            ) {
+                                let stage = if first_signal {
+                                    "duplicate_payload_after_local_completion"
+                                } else {
+                                    "duplicate_payload_after_local_completion_repeat"
+                                };
+                                emit_client_stage(
+                                    stage,
+                                    json!({
+                                        "stream_id": sid,
+                                        "route_len": route_for_this_stream.len(),
+                                        "route_chain": route_for_this_stream
+                                            .hops
+                                            .iter()
+                                            .map(|hop| hop.to_string())
+                                            .collect::<Vec<_>>()
+                                            .join(" -> "),
+                                        "frame_seq": frame.frame_seq,
+                                        "ack_seq": ack_seq,
+                                        "completed_age_ms": completed_age_ms,
+                                        "completion_reason": completion_reason,
+                                        "duplicate_payload_count": duplicate_payload_count,
+                                    }),
+                                );
+                                debug!(
+                                    stream_id = sid,
+                                    frame_seq = frame.frame_seq,
+                                    ack_seq,
+                                    completion_reason,
+                                    completed_age_ms,
+                                    duplicate_payload_count,
+                                    first_signal,
+                                    "client: duplicate payload signal after local completion"
+                                );
+                            }
+                        } else {
+                            let (completed_age_ms, _, late_count) =
+                                note_completed_response_late_payload(
+                                    &completed_response_streams_recv,
+                                    sid,
+                                )
+                                .unwrap_or((
+                                    0,
+                                    completion_reason,
+                                    0,
+                                ));
+                            emit_client_stage(
+                                "late_payload_after_completion",
+                                json!({
+                                    "stream_id": sid,
+                                    "route_len": route_for_this_stream.len(),
+                                    "route_chain": route_for_this_stream
+                                        .hops
+                                        .iter()
+                                        .map(|hop| hop.to_string())
+                                        .collect::<Vec<_>>()
+                                        .join(" -> "),
+                                    "frame_seq": frame.frame_seq,
+                                    "ack_seq": ack_seq,
+                                    "delivered_chunks": deliver.len(),
+                                    "delivered_bytes": late_bytes,
+                                    "end_of_stream": end_of_stream,
+                                    "completed_age_ms": completed_age_ms,
+                                    "completion_reason": completion_reason,
+                                    "late_payload_count": late_count,
+                                    "duplicate_like": late_bytes == 0 && !end_of_stream,
+                                }),
+                            );
+                            debug!(
+                                stream_id = sid,
+                                frame_seq = frame.frame_seq,
+                                ack_seq,
+                                delivered_bytes = late_bytes,
+                                end_of_stream,
+                                completion_reason,
+                                completed_age_ms,
+                                late_payload_count = late_count,
+                                "client: late response payload after completion"
+                            );
+                        }
                     } else if orphaned_without_consumer {
                         let late_bytes: usize = deliver.iter().map(|chunk| chunk.len()).sum();
                         emit_client_stage(
@@ -1458,25 +1860,73 @@ See README: Stage 2 support matrix."
                             "client: received CloseStream, ending response"
                         );
                         let _ = tx.send(ResponseEvent::CloseStream);
-                    } else if let Some((completed_age_ms, completion_reason, late_close_count)) =
-                        note_completed_response_close(&completed_response_streams_recv, sid)
+                    } else if let Some(completed_entry) =
+                        snapshot_completed_response_stream(&completed_response_streams_recv, sid)
                     {
-                        emit_client_stage(
-                            "late_close_after_completion",
-                            json!({
-                                "stream_id": sid,
-                                "completed_age_ms": completed_age_ms,
-                                "completion_reason": completion_reason,
-                                "late_close_count": late_close_count,
-                            }),
-                        );
-                        debug!(
-                            stream_id = sid,
+                        if completion_reason_uses_terminal_settlement(
+                            completed_entry.completion_reason,
+                        ) {
+                            let (
+                                completed_age_ms,
+                                completion_reason,
+                                first_signal,
+                                terminal_close_count,
+                            ) = note_completed_response_terminal_close(
+                                &completed_response_streams_recv,
+                                sid,
+                            )
+                            .unwrap_or((
+                                0,
+                                completed_entry.completion_reason,
+                                true,
+                                0,
+                            ));
+                            let stage = if first_signal {
+                                "terminal_close_after_local_completion"
+                            } else {
+                                "duplicate_terminal_close_after_local_completion"
+                            };
+                            emit_client_stage(
+                                stage,
+                                json!({
+                                    "stream_id": sid,
+                                    "completed_age_ms": completed_age_ms,
+                                    "completion_reason": completion_reason,
+                                    "terminal_close_count": terminal_close_count,
+                                }),
+                            );
+                            debug!(
+                                stream_id = sid,
+                                completed_age_ms,
+                                completion_reason,
+                                terminal_close_count,
+                                first_signal,
+                                "client: terminal CloseStream after local completion"
+                            );
+                        } else if let Some((
                             completed_age_ms,
                             completion_reason,
                             late_close_count,
-                            "client: late CloseStream after completion"
-                        );
+                        )) =
+                            note_completed_response_close(&completed_response_streams_recv, sid)
+                        {
+                            emit_client_stage(
+                                "late_close_after_completion",
+                                json!({
+                                    "stream_id": sid,
+                                    "completed_age_ms": completed_age_ms,
+                                    "completion_reason": completion_reason,
+                                    "late_close_count": late_close_count,
+                                }),
+                            );
+                            debug!(
+                                stream_id = sid,
+                                completed_age_ms,
+                                completion_reason,
+                                late_close_count,
+                                "client: late CloseStream after completion"
+                            );
+                        }
                     }
                 } else if msg_type == MsgType::Ant {
                     // Stage 7: measurement-only ants. Optional and bounded.
@@ -2674,41 +3124,71 @@ async fn tunnel_http_roundtrip(
         }
     };
 
-    // Cleanup.
-    remember_completed_response_stream(
-        completed_response_streams,
-        stream_id,
-        rs_arc.clone(),
-        route.clone(),
-        completion_reason,
-    );
-    {
-        let mut map = reliable_streams.lock().unwrap();
-        map.remove(&stream_id);
+    let transport_settlement_handed_off =
+        !write_response_to_tcp && completion_reason_uses_terminal_settlement(completion_reason);
+    if transport_settlement_handed_off {
+        emit_client_stage(
+            "response_transport_local_completion",
+            json!({
+                "stream_id": stream_id,
+                "site": request_site.as_str(),
+                "route_len": route.len(),
+                "route_chain": route_chain.as_str(),
+                "completion_reason": completion_reason,
+                "response_bytes_total": full.len(),
+            }),
+        );
+        let response_senders = response_senders.clone();
+        let reliable_streams = reliable_streams.clone();
+        let response_started = response_started.clone();
+        let stream_routes = stream_routes.clone();
+        let completed_response_streams = completed_response_streams.clone();
+        let route_for_settlement = route.clone();
+        let request_site_for_settlement = request_site.clone();
+        let rs_arc_for_settlement = rs_arc.clone();
+        let response_bytes_total = full.len();
+        tokio::spawn(async move {
+            settle_buffered_response_transport(
+                stream_id,
+                request_site_for_settlement,
+                route_for_settlement,
+                completion_reason,
+                response_bytes_total,
+                rs_arc_for_settlement,
+                rx_from_udp_stream,
+                response_senders,
+                reliable_streams,
+                response_started,
+                stream_routes,
+                completed_response_streams,
+            )
+            .await;
+        });
+    } else {
+        finalize_response_stream_cleanup(
+            response_senders,
+            reliable_streams,
+            response_started,
+            stream_routes,
+            completed_response_streams,
+            stream_id,
+            rs_arc.clone(),
+            route.clone(),
+            completion_reason,
+        );
+        emit_client_stage(
+            "response_channel_removed",
+            json!({
+                "stream_id": stream_id,
+                "site": request_site.as_str(),
+                "route_len": route.len(),
+                "route_chain": route_chain.as_str(),
+                "completion_reason": completion_reason,
+                "write_response_to_tcp": write_response_to_tcp,
+                "transport_settled": false,
+            }),
+        );
     }
-    {
-        let mut map = response_senders.lock().unwrap();
-        map.remove(&stream_id);
-    }
-    {
-        let mut map = response_started.lock().unwrap();
-        map.remove(&stream_id);
-    }
-    {
-        let mut map = stream_routes.lock().unwrap();
-        map.remove(&stream_id);
-    }
-    emit_client_stage(
-        "response_channel_removed",
-        json!({
-            "stream_id": stream_id,
-            "site": request_site.as_str(),
-            "route_len": route.len(),
-            "route_chain": route_chain.as_str(),
-            "completion_reason": completion_reason,
-            "write_response_to_tcp": write_response_to_tcp,
-        }),
-    );
     if !write_response_to_tcp {
         emit_client_stage(
             "buffered_completion_decision",
