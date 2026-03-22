@@ -15,6 +15,27 @@ pub struct AckFrame {
     pub ack_seq: u64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AckDisposition {
+    Advanced,
+    Stale,
+    Regression,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AckApplyDetails {
+    pub disposition: AckDisposition,
+    pub previous_ack_seq: u64,
+    pub ack_seq: u64,
+    pub acked_frames: usize,
+    pub avg_latency_ms: Option<u64>,
+    pub inflight_before: usize,
+    pub inflight_after: usize,
+    pub first_acked_seq: Option<u64>,
+    pub last_acked_seq_exclusive: Option<u64>,
+    pub gap_detected: bool,
+}
+
 /// Stage 4/5: per-stream reliable delivery state.
 pub struct ReliableStream {
     pub send_next: u64,
@@ -30,6 +51,7 @@ pub struct ReliableStream {
     pub total_ack_latency_ms_sum: u128,
     pub total_ack_latency_samples: u64,
     pub ack_latency_samples_ms: Vec<u64>,
+    pub highest_ack_seq_seen: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -66,6 +88,7 @@ impl ReliableStream {
             total_ack_latency_ms_sum: 0,
             total_ack_latency_samples: 0,
             ack_latency_samples_ms: Vec::new(),
+            highest_ack_seq_seen: 0,
         }
     }
 
@@ -107,21 +130,47 @@ impl ReliableStream {
     /// Apply cumulative ACK information (next expected in-order sequence number from peer).
     /// Returns how many frames were removed from `unacked`.
     pub fn apply_ack(&mut self, ack_seq: u64) -> usize {
-        if ack_seq == 0 {
-            return 0;
-        }
-        let acked = self.unacked.range(..ack_seq).count();
-        self.total_frames_acked = self.total_frames_acked.saturating_add(acked as u64);
-        self.unacked.retain(|&seq, _| seq >= ack_seq);
-        acked
+        self.apply_ack_with_latency_details(ack_seq).acked_frames
     }
 
     /// Apply cumulative ACK information and also return an approximate ACK latency.
     ///
     /// The latency is computed as `now - first_sent` averaged over frames removed by this ACK.
     pub fn apply_ack_with_latency(&mut self, ack_seq: u64) -> (usize, Option<u64>) {
+        let details = self.apply_ack_with_latency_details(ack_seq);
+        (details.acked_frames, details.avg_latency_ms)
+    }
+
+    pub fn apply_ack_with_latency_details(&mut self, ack_seq: u64) -> AckApplyDetails {
+        let previous_ack_seq = self.highest_ack_seq_seen;
+        let inflight_before = self.unacked.len();
+        let first_acked_seq = self
+            .unacked
+            .keys()
+            .next()
+            .copied()
+            .filter(|seq| *seq < ack_seq);
+
+        let disposition = if ack_seq > previous_ack_seq {
+            self.highest_ack_seq_seen = ack_seq;
+            AckDisposition::Advanced
+        } else {
+            AckDisposition::Stale
+        };
+
         if ack_seq == 0 {
-            return (0, None);
+            return AckApplyDetails {
+                disposition,
+                previous_ack_seq,
+                ack_seq,
+                acked_frames: 0,
+                avg_latency_ms: None,
+                inflight_before,
+                inflight_after: inflight_before,
+                first_acked_seq: None,
+                last_acked_seq_exclusive: None,
+                gap_detected: false,
+            };
         }
 
         let now = Instant::now();
@@ -139,9 +188,9 @@ impl ReliableStream {
         }
 
         self.unacked.retain(|&seq, _| seq >= ack_seq);
-
-        if acked == 0 {
-            (0, None)
+        let inflight_after = self.unacked.len();
+        let avg_latency_ms = if acked == 0 {
+            None
         } else {
             self.total_frames_acked = self.total_frames_acked.saturating_add(acked as u64);
             self.total_ack_latency_ms_sum =
@@ -152,8 +201,23 @@ impl ReliableStream {
                 ACK_LATENCY_SAMPLE_CAP.saturating_sub(self.ack_latency_samples_ms.len());
             self.ack_latency_samples_ms
                 .extend(observed_latencies_ms.into_iter().take(remaining_capacity));
-            let avg = (sum_latency_ms / acked as u128) as u64;
-            (acked, Some(avg))
+            Some((sum_latency_ms / acked as u128) as u64)
+        };
+        let gap_detected = first_acked_seq
+            .map(|first| first.saturating_add(acked as u64) != ack_seq)
+            .unwrap_or(false);
+
+        AckApplyDetails {
+            disposition,
+            previous_ack_seq,
+            ack_seq,
+            acked_frames: acked,
+            avg_latency_ms,
+            inflight_before,
+            inflight_after,
+            first_acked_seq,
+            last_acked_seq_exclusive: if acked > 0 { Some(ack_seq) } else { None },
+            gap_detected,
         }
     }
 
@@ -418,5 +482,29 @@ mod tests {
         assert!(summary.p50_ms.unwrap() >= summary.min_ms.unwrap());
         assert!(summary.p95_ms.unwrap() >= summary.p50_ms.unwrap());
         assert!(summary.max_ms.unwrap() >= summary.p95_ms.unwrap());
+    }
+
+    #[test]
+    fn ack_details_classify_advance_and_treat_older_acks_as_stale() {
+        let mut stream = ReliableStream::new();
+        let _ = stream.build_outgoing_frame(7, b"a".to_vec());
+        let _ = stream.build_outgoing_frame(7, b"b".to_vec());
+
+        let advanced = stream.apply_ack_with_latency_details(1);
+        assert_eq!(advanced.disposition, AckDisposition::Advanced);
+        assert_eq!(advanced.previous_ack_seq, 0);
+        assert_eq!(advanced.ack_seq, 1);
+        assert_eq!(advanced.acked_frames, 1);
+        assert_eq!(advanced.first_acked_seq, Some(0));
+        assert_eq!(advanced.last_acked_seq_exclusive, Some(1));
+        assert!(!advanced.gap_detected);
+
+        let stale = stream.apply_ack_with_latency_details(1);
+        assert_eq!(stale.disposition, AckDisposition::Stale);
+        assert_eq!(stale.acked_frames, 0);
+
+        let older_ack = stream.apply_ack_with_latency_details(0);
+        assert_eq!(older_ack.disposition, AckDisposition::Stale);
+        assert_eq!(older_ack.acked_frames, 0);
     }
 }

@@ -173,7 +173,7 @@ type ReliableStreamTable = Arc<Mutex<HashMap<u32, Arc<Mutex<ReliableStream>>>>>;
 type StreamRouteTable = Arc<Mutex<HashMap<u32, Route>>>;
 type ResponseStartedTable = Arc<Mutex<HashMap<u32, bool>>>;
 type CompletedResponseStreamTable = Arc<Mutex<HashMap<u32, CompletedResponseStream>>>;
-type CloseFeedbackSeenTable = Arc<Mutex<HashMap<u32, Instant>>>;
+type CloseSignalSeenTable = Arc<Mutex<HashMap<u32, Instant>>>;
 
 const COMPLETED_RESPONSE_STREAM_LINGER: Duration = Duration::from_secs(30);
 const MAX_COMPLETED_RESPONSE_STREAMS: usize = 2048;
@@ -427,7 +427,7 @@ fn note_completed_response_terminal_close(
     ))
 }
 
-fn purge_close_feedback_seen(map: &mut HashMap<u32, Instant>, now: Instant) {
+fn purge_close_signal_seen(map: &mut HashMap<u32, Instant>, now: Instant) {
     map.retain(|_, seen_at| now.duration_since(*seen_at) <= CLOSE_FEEDBACK_LINGER);
     if map.len() <= MAX_CLOSE_FEEDBACK_STREAMS {
         return;
@@ -443,10 +443,10 @@ fn purge_close_feedback_seen(map: &mut HashMap<u32, Instant>, now: Instant) {
     }
 }
 
-fn mark_close_feedback_seen(close_feedback_seen: &CloseFeedbackSeenTable, stream_id: u32) -> bool {
-    let mut map = close_feedback_seen.lock().unwrap();
+fn mark_close_signal_seen(close_signal_seen: &CloseSignalSeenTable, stream_id: u32) -> bool {
+    let mut map = close_signal_seen.lock().unwrap();
     let now = Instant::now();
-    purge_close_feedback_seen(&mut map, now);
+    purge_close_signal_seen(&mut map, now);
     if map.contains_key(&stream_id) {
         return false;
     }
@@ -523,6 +523,7 @@ async fn settle_buffered_response_transport(
     route: Route,
     completion_reason: &'static str,
     response_bytes_total: usize,
+    initial_terminal_close_signal: bool,
     reliable: Arc<Mutex<ReliableStream>>,
     mut rx_from_udp_stream: mpsc::UnboundedReceiver<ResponseEvent>,
     response_senders: ResponseSenderTable,
@@ -539,7 +540,7 @@ async fn settle_buffered_response_transport(
         .join(" -> ");
     let settlement_start = Instant::now();
     let mut terminal_payload_signals = 0u64;
-    let mut terminal_close_signals = 0u64;
+    let mut terminal_close_signals: u64 = if initial_terminal_close_signal { 1 } else { 0 };
     let mut payload_after_local_completion_events = 0u64;
     let mut payload_after_local_completion_bytes = 0usize;
     emit_client_stage(
@@ -553,8 +554,24 @@ async fn settle_buffered_response_transport(
             "response_bytes_total": response_bytes_total,
             "quiet_period_ms": BUFFERED_RESPONSE_TRANSPORT_SETTLEMENT_QUIET_PERIOD.as_millis() as u64,
             "max_settlement_ms": BUFFERED_RESPONSE_TRANSPORT_SETTLEMENT_MAX.as_millis() as u64,
+            "initial_terminal_close_signal": initial_terminal_close_signal,
         }),
     );
+    if initial_terminal_close_signal {
+        emit_client_stage(
+            "response_transport_terminal_close_observed",
+            json!({
+                "stream_id": stream_id,
+                "site": request_site.as_str(),
+                "route_len": route.len(),
+                "route_chain": route_chain.as_str(),
+                "completion_reason": completion_reason,
+                "terminal_close_signals": terminal_close_signals,
+                "settlement_elapsed_ms": 0,
+                "source": "queued_pre_local_completion",
+            }),
+        );
+    }
 
     let settlement_max_deadline = settlement_start + BUFFERED_RESPONSE_TRANSPORT_SETTLEMENT_MAX;
     let mut last_transport_event_at = settlement_start;
@@ -1177,7 +1194,7 @@ See README: Stage 2 support matrix."
         let stream_routes_for_io: StreamRouteTable = Arc::new(Mutex::new(HashMap::new()));
         let completed_response_streams: CompletedResponseStreamTable =
             Arc::new(Mutex::new(HashMap::new()));
-        let close_feedback_seen: CloseFeedbackSeenTable = Arc::new(Mutex::new(HashMap::new()));
+        let close_signal_seen: CloseSignalSeenTable = Arc::new(Mutex::new(HashMap::new()));
 
         // Stage 7: ant dedup + optional measurement agents.
         let ants_enabled = std::env::var("VPNNODE_ANTS")
@@ -1210,7 +1227,7 @@ See README: Stage 2 support matrix."
         let crypto_send_for_ack = crypto.clone();
         let stream_routes_for_ack = stream_routes_for_io.clone();
         let completed_response_streams_recv = completed_response_streams.clone();
-        let close_feedback_seen_recv = close_feedback_seen.clone();
+        let close_signal_seen_recv = close_signal_seen.clone();
         let default_route_for_ack = primary_route.clone();
         let route_store_for_ants = route_store.clone();
         let route_store_for_quality = route_store.clone();
@@ -1843,10 +1860,11 @@ See README: Stage 2 support matrix."
                             }
                         }
                     };
+                    let first_close_signal = mark_close_signal_seen(&close_signal_seen_recv, sid);
                     if let (Some(route_for_quality), Some(feedback)) =
                         (route_for_quality.as_ref(), quality_feedback.as_ref())
                     {
-                        let applied = if mark_close_feedback_seen(&close_feedback_seen_recv, sid) {
+                        let applied = if first_close_signal {
                             let mut store = route_store_for_quality.lock().await;
                             store.record_response_quality_for_route(route_for_quality, feedback)
                         } else {
@@ -1864,6 +1882,7 @@ See README: Stage 2 support matrix."
                                     .collect::<Vec<_>>()
                                     .join(" -> "),
                                 "feedback_applied": applied,
+                                "duplicate_close_signal": !first_close_signal,
                                 "ack_latency_ms_p95": feedback.ack_latency_ms_p95,
                                 "retransmit_rate_ppm": feedback.retransmit_rate_ppm,
                                 "window_wait_total_ms": feedback.window_wait_total_ms,
@@ -1876,7 +1895,32 @@ See README: Stage 2 support matrix."
                         let map = response_senders_recv.lock().unwrap();
                         map.get(&sid).cloned()
                     };
-                    if let Some(tx) = maybe_tx {
+                    if !first_close_signal {
+                        emit_client_stage(
+                            "duplicate_close_stream_suppressed",
+                            json!({
+                                "stream_id": sid,
+                                "has_active_consumer": maybe_tx.is_some(),
+                                "completed_state_present": completed_entry.is_some(),
+                                "route_len": route_for_quality.as_ref().map(|route| route.len()),
+                                "route_chain": route_for_quality.as_ref().map(|route| route
+                                    .hops
+                                    .iter()
+                                    .map(|hop| hop.to_string())
+                                    .collect::<Vec<_>>()
+                                    .join(" -> ")),
+                                "completion_reason": completed_entry
+                                    .as_ref()
+                                    .map(|entry| entry.completion_reason),
+                            }),
+                        );
+                        debug!(
+                            stream_id = sid,
+                            has_active_consumer = maybe_tx.is_some(),
+                            completed_state_present = completed_entry.is_some(),
+                            "client: duplicate CloseStream suppressed before lifecycle handling"
+                        );
+                    } else if let Some(tx) = maybe_tx {
                         debug!(
                             stream_id = sid,
                             "client: received CloseStream, ending response"
@@ -3000,6 +3044,7 @@ async fn tunnel_http_roundtrip(
     let mut buffered_hard_cap = buffered_fallback_cap.max(BUFFERED_HTTP_RESPONSE_HARD_CAP);
     let mut buffered_content_length_exceeds_cap = false;
     let mut buffered_completion_reason_hint: Option<&'static str> = None;
+    let mut buffered_pending_terminal_close = false;
     let idle_timeout = if write_response_to_tcp {
         Duration::from_secs(120)
     } else {
@@ -3121,24 +3166,43 @@ async fn tunnel_http_roundtrip(
                 break "peer_closed";
             }
             ResponseEvent::CloseStream => {
-                if !write_response_to_tcp
-                    && buffered_close_requires_wait(buffered_expected_total, full.len())
-                {
-                    emit_client_stage(
-                        "close_before_content_length",
-                        json!({
-                            "stream_id": stream_id,
-                            "site": request_site.as_str(),
-                            "route_len": route.len(),
-                            "route_chain": route_chain.as_str(),
-                            "response_bytes_total": full.len(),
-                            "content_length": buffered_content_length,
-                            "expected_total": buffered_expected_total,
-                        }),
-                    );
-                    continue;
-                }
                 if !write_response_to_tcp {
+                    if full.is_empty() {
+                        let duplicate_queue = buffered_pending_terminal_close;
+                        buffered_pending_terminal_close = true;
+                        emit_client_stage(
+                            "terminal_close_before_response_start_queued",
+                            json!({
+                                "stream_id": stream_id,
+                                "site": request_site.as_str(),
+                                "route_len": route.len(),
+                                "route_chain": route_chain.as_str(),
+                                "response_bytes_total": full.len(),
+                                "content_length": buffered_content_length,
+                                "expected_total": buffered_expected_total,
+                                "duplicate_queue": duplicate_queue,
+                            }),
+                        );
+                        continue;
+                    }
+                    if buffered_close_requires_wait(buffered_expected_total, full.len()) {
+                        let duplicate_queue = buffered_pending_terminal_close;
+                        buffered_pending_terminal_close = true;
+                        emit_client_stage(
+                            "terminal_close_before_local_completion_queued",
+                            json!({
+                                "stream_id": stream_id,
+                                "site": request_site.as_str(),
+                                "route_len": route.len(),
+                                "route_chain": route_chain.as_str(),
+                                "response_bytes_total": full.len(),
+                                "content_length": buffered_content_length,
+                                "expected_total": buffered_expected_total,
+                                "duplicate_queue": duplicate_queue,
+                            }),
+                        );
+                        continue;
+                    }
                     buffered_completion_reason_hint = Some("peer_closed");
                 }
                 break "peer_closed";
@@ -3176,6 +3240,7 @@ async fn tunnel_http_roundtrip(
                 route_for_settlement,
                 completion_reason,
                 response_bytes_total,
+                buffered_pending_terminal_close,
                 rs_arc_for_settlement,
                 rx_from_udp_stream,
                 response_senders,
@@ -3922,14 +3987,14 @@ mod tests {
     }
 
     #[test]
-    fn close_feedback_is_applied_once_per_stream() {
-        let seen: CloseFeedbackSeenTable = Arc::new(Mutex::new(HashMap::new()));
-        assert!(mark_close_feedback_seen(&seen, 7));
+    fn close_signal_is_seen_once_per_stream() {
+        let seen: CloseSignalSeenTable = Arc::new(Mutex::new(HashMap::new()));
+        assert!(mark_close_signal_seen(&seen, 7));
         assert!(
-            !mark_close_feedback_seen(&seen, 7),
-            "duplicate CloseStream feedback must not be applied twice"
+            !mark_close_signal_seen(&seen, 7),
+            "duplicate CloseStream must not re-enter lifecycle handling"
         );
-        assert!(mark_close_feedback_seen(&seen, 8));
+        assert!(mark_close_signal_seen(&seen, 8));
     }
 
     #[test]

@@ -1,0 +1,27 @@
+   Compiling vpnnode v0.1.0 (C:\neinternet\vpnnode)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 6.30s
+     Running tests\chaos_matrix.rs (target\debug\deps\chaos_matrix-3eab1b6ea173bdb9.exe)
+
+running 1 test
+test combined_chaos_terminal_close_duplicates_are_suppressed_after_first_signal ... [2m2026-03-22T13:15:30.076180Z[0m [33m WARN[0m [2mvpnnode::roles::exit[0m[2m:[0m SUSPICIOUSLY SMALL RESPONSE: possible accounting or streaming issue [3mstream_id[0m[2m=[0m1000000000 [3msite[0m[2m=[0mprobe [3mresp_bytes_total[0m[2m=[0m108 [3mframes_sent_total[0m[2m=[0m1
+[2m2026-03-22T13:15:30.518013Z[0m [33m WARN[0m [2mvpnnode::roles::exit[0m[2m:[0m SUSPICIOUSLY SMALL RESPONSE: possible accounting or streaming issue [3mstream_id[0m[2m=[0m1 [3msite[0m[2m=[0mexample [3mresp_bytes_total[0m[2m=[0m110 [3mframes_sent_total[0m[2m=[0m1
+[2m2026-03-22T13:15:36.815034Z[0m [33m WARN[0m [2mvpnnode::roles::exit[0m[2m:[0m SUSPICIOUSLY SMALL RESPONSE: possible accounting or streaming issue [3mstream_id[0m[2m=[0m1000000000 [3msite[0m[2m=[0mprobe [3mresp_bytes_total[0m[2m=[0m108 [3mframes_sent_total[0m[2m=[0m1
+[2m2026-03-22T13:15:36.987439Z[0m [33m WARN[0m [2mvpnnode::roles::exit[0m[2m:[0m SUSPICIOUSLY SMALL RESPONSE: possible accounting or streaming issue [3mstream_id[0m[2m=[0m1000000001 [3msite[0m[2m=[0mprobe [3mresp_bytes_total[0m[2m=[0m108 [3mframes_sent_total[0m[2m=[0m1
+[2m2026-03-22T13:15:37.159602Z[0m [33m WARN[0m [2mvpnnode::roles::exit[0m[2m:[0m SUSPICIOUSLY SMALL RESPONSE: possible accounting or streaming issue [3mstream_id[0m[2m=[0m1000000002 [3msite[0m[2m=[0mprobe [3mresp_bytes_total[0m[2m=[0m108 [3mframes_sent_total[0m[2m=[0m1
+[2m2026-03-22T13:15:37.335738Z[0m [33m WARN[0m [2mvpnnode::roles::exit[0m[2m:[0m SUSPICIOUSLY SMALL RESPONSE: possible accounting or streaming issue [3mstream_id[0m[2m=[0m1 [3msite[0m[2m=[0mexample [3mresp_bytes_total[0m[2m=[0m110 [3mframes_sent_total[0m[2m=[0m1
+
+thread 'combined_chaos_terminal_close_duplicates_are_suppressed_after_first_signal' (15212) panicked at tests\chaos_matrix.rs:592:5:
+assertion `left == right` failed: terminal-tail regression must collapse older cumulative ACKs into harmless stale duplicates
+  left: 233
+ right: 0
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+FAILED
+
+failures:
+
+failures:
+    combined_chaos_terminal_close_duplicates_are_suppressed_after_first_signal
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 5 filtered out; finished in 11.22s
+
+error: test failed, to rerun pass `--test chaos_matrix`

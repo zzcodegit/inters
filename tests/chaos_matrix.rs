@@ -97,6 +97,7 @@ struct StageAnalysis {
     client_open_message_failures: BTreeMap<String, usize>,
     duplicate_drop_events: BTreeMap<String, usize>,
     client_duplicate_drop_events: BTreeMap<String, usize>,
+    exit_ack_events: BTreeMap<String, usize>,
     client_late_events: BTreeMap<String, usize>,
     client_lifecycle_events: BTreeMap<String, usize>,
     client_terminal_events: BTreeMap<String, usize>,
@@ -511,6 +512,105 @@ async fn combined_chaos_duplicate_packets_are_classified_without_open_failure() 
     Ok(())
 }
 
+#[tokio::test]
+async fn combined_chaos_terminal_close_duplicates_are_suppressed_after_first_signal(
+) -> anyhow::Result<()> {
+    support::prepare_baseline(BaselineMode::Local);
+
+    let config =
+        ChaosRunConfig::combined_regression("terminal-tail-ack-gap-regression-test", 20_900, 5);
+    prepare_chaos_run(&config)?;
+
+    let exact_ports = ports_from_base(config.base_port);
+    let adaptive_ports = ports_from_base(config.base_port.saturating_add(100));
+
+    run_mode_scenario(
+        &config,
+        RunMode::Exact3Hop,
+        exact_ports,
+        true,
+        &config.exact_route_cache_path,
+    )
+    .await?;
+    run_mode_scenario(
+        &config,
+        RunMode::Adaptive,
+        adaptive_ports,
+        false,
+        &config.adaptive_route_cache_path,
+    )
+    .await?;
+
+    let measurements = read_measurements(&config.raw_path())?;
+    assert_eq!(
+        measurements.len(),
+        config.profile.runs * 2,
+        "terminal-tail regression must produce successful exact and adaptive measurements"
+    );
+    assert!(
+        measurements.iter().all(|record| record.status_code == 200),
+        "terminal-tail regression must keep HTTP 200"
+    );
+
+    let stage_analysis = analyze_stage_trace(&config.stage_trace_path)?;
+    assert_eq!(
+        stage_analysis
+            .client_terminal_events
+            .get("response_transport_terminal_close_duplicate")
+            .copied()
+            .unwrap_or(0),
+        0,
+        "terminal-tail regression must stop forwarding duplicate CloseStream markers into settlement lifecycle"
+    );
+    assert!(
+        stage_analysis
+            .client_terminal_events
+            .get("duplicate_close_stream_suppressed")
+            .copied()
+            .unwrap_or(0)
+            > 0,
+        "terminal-tail regression must still observe duplicate CloseStream traffic and suppress it explicitly"
+    );
+    assert!(
+        stage_analysis
+            .exit_ack_events
+            .get("cumulative_ack_advanced")
+            .copied()
+            .unwrap_or(0)
+            > 0,
+        "terminal-tail regression must prove response ACKs still advance cumulatively"
+    );
+    assert_eq!(
+        stage_analysis
+            .exit_ack_events
+            .get("ack_gap_detected")
+            .copied()
+            .unwrap_or(0),
+        0,
+        "terminal-tail regression must not surface ACK gaps once terminal close duplicates are suppressed"
+    );
+    assert_eq!(
+        stage_analysis
+            .exit_ack_events
+            .get("ack_regression_ignored")
+            .copied()
+            .unwrap_or(0),
+        0,
+        "terminal-tail regression must collapse older cumulative ACKs into harmless stale duplicates"
+    );
+    assert!(
+        stage_analysis
+            .exit_ack_events
+            .get("stale_ack_ignored")
+            .copied()
+            .unwrap_or(0)
+            > 0,
+        "terminal-tail regression must still observe reordered older ACKs and classify them as stale"
+    );
+
+    Ok(())
+}
+
 async fn run_mode_scenario(
     config: &ChaosRunConfig,
     mode: RunMode,
@@ -830,6 +930,16 @@ fn analyze_stage_trace(path: &Path) -> anyhow::Result<StageAnalysis> {
                     .entry(stage.to_string())
                     .or_insert(0usize) += 1;
             }
+            ("exit", "cumulative_ack_advanced")
+            | ("exit", "ack_gap_detected")
+            | ("exit", "stale_ack_ignored")
+            | ("exit", "ack_regression_ignored")
+            | ("exit", "inflight_cleanup_by_ack_range") => {
+                *analysis
+                    .exit_ack_events
+                    .entry(stage.to_string())
+                    .or_insert(0usize) += 1;
+            }
             ("client", "open_message_failed") => {
                 let error = value
                     .get("error")
@@ -869,6 +979,9 @@ fn analyze_stage_trace(path: &Path) -> anyhow::Result<StageAnalysis> {
             | ("client", "duplicate_terminal_payload_after_local_completion")
             | ("client", "terminal_close_after_local_completion")
             | ("client", "duplicate_terminal_close_after_local_completion")
+            | ("client", "terminal_close_before_response_start_queued")
+            | ("client", "terminal_close_before_local_completion_queued")
+            | ("client", "duplicate_close_stream_suppressed")
             | ("client", "duplicate_payload_after_local_completion")
             | ("client", "duplicate_payload_after_local_completion_repeat")
             | ("client", "response_transport_local_completion")
@@ -1045,6 +1158,12 @@ fn render_report(config: &ChaosRunConfig, analysis: &StageAnalysis) -> anyhow::R
     if !analysis.client_lifecycle_events.is_empty() {
         out.push_str("\n## Client Lifecycle Events\n\n");
         for (stage, count) in &analysis.client_lifecycle_events {
+            out.push_str(&format!("- {stage}: {count}\n"));
+        }
+    }
+    if !analysis.exit_ack_events.is_empty() {
+        out.push_str("\n## Exit ACK Events\n\n");
+        for (stage, count) in &analysis.exit_ack_events {
             out.push_str(&format!("- {stage}: {count}\n"));
         }
     }

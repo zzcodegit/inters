@@ -15,7 +15,7 @@ use crate::protocol::{
 };
 use crate::session::{classify_open_message_error, SessionCrypto, SessionOpenRejectKind};
 use crate::stage_trace;
-use crate::stream_reliable::{AckFrame, ReliableStream};
+use crate::stream_reliable::{AckDisposition, AckFrame, ReliableStream};
 use crate::transport::{Transport, UdpTransport};
 use crate::wire::{build_encrypted_packet, parse_routing_header, RoutingInfo};
 use anyhow::Result;
@@ -2340,13 +2340,82 @@ pub async fn run_exit(args: ExitArgs) -> Result<()> {
                 };
                 let mut map = reliable_streams.lock().unwrap();
                 let rs = map.entry(ack.stream_id).or_insert_with(ReliableStream::new);
-                let (acked, avg_latency_ms) = rs.apply_ack_with_latency(ack.ack_seq);
-                if acked > 0 {
+                let details = rs.apply_ack_with_latency_details(ack.ack_seq);
+                match details.disposition {
+                    AckDisposition::Advanced => {
+                        emit_exit_stage(
+                            "cumulative_ack_advanced",
+                            json!({
+                                "stream_id": ack.stream_id,
+                                "ack_seq": details.ack_seq,
+                                "previous_ack_seq": details.previous_ack_seq,
+                                "acked_frames": details.acked_frames,
+                                "ack_latency_ms_avg": details.avg_latency_ms,
+                                "inflight_before": details.inflight_before,
+                                "inflight_after": details.inflight_after,
+                                "first_acked_seq": details.first_acked_seq,
+                                "last_acked_seq_exclusive": details.last_acked_seq_exclusive,
+                            }),
+                        );
+                        if details.acked_frames > 0 {
+                            emit_exit_stage(
+                                "inflight_cleanup_by_ack_range",
+                                json!({
+                                    "stream_id": ack.stream_id,
+                                    "ack_seq": details.ack_seq,
+                                    "acked_frames": details.acked_frames,
+                                    "inflight_before": details.inflight_before,
+                                    "inflight_after": details.inflight_after,
+                                    "first_acked_seq": details.first_acked_seq,
+                                    "last_acked_seq_exclusive": details.last_acked_seq_exclusive,
+                                }),
+                            );
+                        }
+                        if details.gap_detected {
+                            emit_exit_stage(
+                                "ack_gap_detected",
+                                json!({
+                                    "stream_id": ack.stream_id,
+                                    "ack_seq": details.ack_seq,
+                                    "previous_ack_seq": details.previous_ack_seq,
+                                    "acked_frames": details.acked_frames,
+                                    "first_acked_seq": details.first_acked_seq,
+                                    "last_acked_seq_exclusive": details.last_acked_seq_exclusive,
+                                }),
+                            );
+                        }
+                    }
+                    AckDisposition::Stale => {
+                        emit_exit_stage(
+                            "stale_ack_ignored",
+                            json!({
+                                "stream_id": ack.stream_id,
+                                "ack_seq": details.ack_seq,
+                                "previous_ack_seq": details.previous_ack_seq,
+                                "inflight_before": details.inflight_before,
+                                "inflight_after": details.inflight_after,
+                            }),
+                        );
+                    }
+                    AckDisposition::Regression => {
+                        emit_exit_stage(
+                            "ack_regression_ignored",
+                            json!({
+                                "stream_id": ack.stream_id,
+                                "ack_seq": details.ack_seq,
+                                "previous_ack_seq": details.previous_ack_seq,
+                                "inflight_before": details.inflight_before,
+                                "inflight_after": details.inflight_after,
+                            }),
+                        );
+                    }
+                }
+                if details.acked_frames > 0 {
                     debug!(
                         stream_id = ack.stream_id,
-                        ack_seq = ack.ack_seq,
-                        acked_frames = acked,
-                        ack_latency_ms_avg = ?avg_latency_ms,
+                        ack_seq = details.ack_seq,
+                        acked_frames = details.acked_frames,
+                        ack_latency_ms_avg = ?details.avg_latency_ms,
                         "exit: cumulative ACK applied"
                     );
                 }

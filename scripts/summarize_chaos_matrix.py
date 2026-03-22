@@ -69,6 +69,7 @@ def summarize_profile(prefix: Path):
     client_terminal_events = Counter()
     exit_open_failures = Counter()
     exit_duplicate_drops = Counter()
+    exit_ack_events = Counter()
     exit_exact = []
     exit_adaptive = []
     for item in stage:
@@ -98,6 +99,9 @@ def summarize_profile(prefix: Path):
             "duplicate_terminal_payload_after_local_completion",
             "terminal_close_after_local_completion",
             "duplicate_terminal_close_after_local_completion",
+            "terminal_close_before_response_start_queued",
+            "terminal_close_before_local_completion_queued",
+            "duplicate_close_stream_suppressed",
             "duplicate_payload_after_local_completion",
             "duplicate_payload_after_local_completion_repeat",
             "response_transport_local_completion",
@@ -115,6 +119,14 @@ def summarize_profile(prefix: Path):
             ] += 1
         elif component == "exit" and stage_name == "duplicate_packet_dropped":
             exit_duplicate_drops[stage_name] += 1
+        elif component == "exit" and stage_name in {
+            "cumulative_ack_advanced",
+            "ack_gap_detected",
+            "stale_ack_ignored",
+            "ack_regression_ignored",
+            "inflight_cleanup_by_ack_range",
+        }:
+            exit_ack_events[stage_name] += 1
         elif component == "exit" and stage_name == "stream_complete":
             site = item.get("site", "")
             if site.startswith("chaos-exact-3hop-run"):
@@ -181,6 +193,7 @@ def summarize_profile(prefix: Path):
         "client_terminal_events": dict(client_terminal_events),
         "exit_open_failures": dict(exit_open_failures),
         "exit_duplicate_drops": dict(exit_duplicate_drops),
+        "exit_ack_events": dict(exit_ack_events),
         "decision_reasons": dict(decision_reasons),
         "selected_routes": dict(selected_routes),
         "decision_events": len(decisions),
@@ -253,9 +266,9 @@ def main():
     out.append("## Adaptive Selector")
     out.append("")
     out.append(
-        "| profile | decision events | route changes | decision reasons | selected routes | client late events | client terminal events | client duplicate drops | exit duplicate drops | client open failures | exit open failures |"
+        "| profile | decision events | route changes | decision reasons | selected routes | client late events | client terminal events | exit ack events | client duplicate drops | exit duplicate drops | client open failures | exit open failures |"
     )
-    out.append("| --- | ---: | ---: | --- | --- | --- | --- | --- | --- | --- | --- |")
+    out.append("| --- | ---: | ---: | --- | --- | --- | --- | --- | --- | --- | --- | --- |")
     for profile_name in args.profiles:
         summary = summaries[profile_name]
         decision_reasons = ", ".join(
@@ -270,6 +283,10 @@ def main():
         client_terminal = ", ".join(
             f"{key}x{value}"
             for key, value in sorted(summary["client_terminal_events"].items())
+        ) or "n/a"
+        exit_ack = ", ".join(
+            f"{key}x{value}"
+            for key, value in sorted(summary["exit_ack_events"].items())
         ) or "n/a"
         client_duplicate_drops = ", ".join(
             f"{key}x{value}"
@@ -287,7 +304,7 @@ def main():
             f"{key}x{value}" for key, value in sorted(summary["exit_open_failures"].items())
         ) or "n/a"
         out.append(
-            f"| {profile_name} | {summary['decision_events']} | {summary['route_changes']} | {decision_reasons} | {selected_routes} | {client_late} | {client_terminal} | {client_duplicate_drops} | {exit_duplicate_drops} | {client_open} | {exit_open} |"
+            f"| {profile_name} | {summary['decision_events']} | {summary['route_changes']} | {decision_reasons} | {selected_routes} | {client_late} | {client_terminal} | {exit_ack} | {client_duplicate_drops} | {exit_duplicate_drops} | {client_open} | {exit_open} |"
         )
     out.append("")
     out.append("## Chaos Actions")

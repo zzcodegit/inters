@@ -1,0 +1,33 @@
+   Compiling vpnnode v0.1.0 (C:\neinternet\vpnnode)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 6.72s
+     Running tests\remote_perf_stages.rs (target\debug\deps\remote_perf_stages-aa5c5065a4a79a31.exe)
+
+running 1 test
+test remote_perf_stage_matrix_collects_measurements ... reset_topology label=relay-1 host=45.197.133.115 services=vpnnode-relay1.service
+active
+reset_topology label=relay-2 host=185.144.28.95 services=vpnnode-relay2.service
+active
+reset_topology label=exit host=31.192.232.26 services=vpnnode-exit.service
+active
+check_service label=exit-target-http host=31.192.232.26 service=vpnnode-target-http.service
+active
+reset_topology label=relay-1 host=45.197.133.115 services=vpnnode-relay1.service
+active
+reset_topology label=relay-2 host=185.144.28.95 services=vpnnode-relay2.service
+active
+reset_topology label=exit host=31.192.232.26 services=vpnnode-exit.service
+active
+check_service label=exit-target-http host=31.192.232.26 service=vpnnode-target-http.service
+active
+reset_topology label=relay-1 host=45.197.133.115 services=vpnnode-relay1.service
+active
+reset_topology label=relay-2 host=185.144.28.95 services=vpnnode-relay2.service
+active
+reset_topology label=exit host=31.192.232.26 services=vpnnode-exit.service
+active
+check_service label=exit-target-http host=31.192.232.26 service=vpnnode-target-http.service
+active
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 871.40s
+
