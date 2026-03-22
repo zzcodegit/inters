@@ -1,0 +1,10 @@
+﻿timestamp=2026-03-22T21:53:01.7202395+03:00
+relay1_host=45.197.133.115
+active
+relay2_host=185.144.28.95
+active
+exit_host=31.192.232.26
+vpnnode-exit=active
+vpnnode-target-http=active
+vpnnode-target-http-public=inactive
+stage_trace_dropin=absent

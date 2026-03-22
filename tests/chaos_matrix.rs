@@ -513,18 +513,27 @@ async fn combined_chaos_duplicate_packets_are_classified_without_open_failure() 
                 .duplicate_drop_events
                 .get("duplicate_packet_dropped")
                 .copied()
-                .unwrap_or(0)
+            .unwrap_or(0)
             > 0,
         "duplicate-noise regression must still observe duplicate packets and classify them as drops instead of failures"
     );
-    assert!(
+    assert_eq!(
         stage_analysis
             .client_terminal_events
             .get("response_transport_terminal_close_duplicate")
             .copied()
+            .unwrap_or(0),
+        0,
+        "duplicate-noise regression must not route duplicate CloseStream markers through the old terminal duplicate lifecycle path"
+    );
+    assert!(
+        stage_analysis
+            .client_terminal_events
+            .get("duplicate_close_stream_suppressed")
+            .copied()
             .unwrap_or(0)
             > 0,
-        "duplicate-noise regression must still observe duplicate terminal close markers under combined chaos"
+        "duplicate-noise regression must still observe duplicate CloseStream traffic and suppress it explicitly"
     );
 
     Ok(())

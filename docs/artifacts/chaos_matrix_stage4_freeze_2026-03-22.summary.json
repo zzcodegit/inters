@@ -1,0 +1,402 @@
+{
+  "none": {
+    "profile": {
+      "profile_name": "none",
+      "seed": 1,
+      "skip_packets": 0,
+      "loss_ppm": 0,
+      "duplicate_ppm": 0,
+      "reorder_ppm": 0,
+      "base_delay_ms": 0,
+      "jitter_ms": 0,
+      "reorder_extra_delay_ms": 0,
+      "duplicate_delay_ms": 2,
+      "runs": 5,
+      "request_body_bytes": 32768
+    },
+    "measurements": {
+      "exact-3hop": {
+        "count": 5,
+        "avg_connect_ms": 3.6602200000000003,
+        "avg_ttfb_ms": 229.63676,
+        "avg_total_ms": 233.47784000000001,
+        "avg_throughput_bps": 141165.10819285075
+      },
+      "adaptive": {
+        "count": 5,
+        "avg_connect_ms": 2.9162,
+        "avg_ttfb_ms": 225.35696000000002,
+        "avg_total_ms": 228.41942,
+        "avg_throughput_bps": 144369.03979418802
+      }
+    },
+    "exit_exact": {
+      "count": 5,
+      "avg_ack_p95_ms": 116.2,
+      "avg_total_retransmits": 0,
+      "avg_retransmit_rate": 0.0,
+      "avg_window_wait_total_ms": 0,
+      "avg_stream_duration_ms": 185.4,
+      "avg_overlay_gap_ms": 1.6
+    },
+    "exit_adaptive": {
+      "count": 5,
+      "avg_ack_p95_ms": 106.6,
+      "avg_total_retransmits": 0,
+      "avg_retransmit_rate": 0.0,
+      "avg_window_wait_total_ms": 0,
+      "avg_stream_duration_ms": 173.8,
+      "avg_overlay_gap_ms": 1.8
+    },
+    "chaos_counts": {},
+    "client_open_failures": {},
+    "client_duplicate_drops": {},
+    "client_late_events": {},
+    "client_terminal_events": {
+      "response_transport_local_completion": 16,
+      "response_transport_settlement_started": 16,
+      "response_transport_terminal_payload_observed": 16,
+      "duplicate_close_stream_suppressed": 32,
+      "response_transport_terminal_close_observed": 16,
+      "response_transport_settlement_completed": 16
+    },
+    "exit_open_failures": {},
+    "exit_duplicate_drops": {},
+    "exit_ack_events": {
+      "cumulative_ack_advanced": 392,
+      "inflight_cleanup_by_ack_range": 392,
+      "stale_ack_ignored": 32
+    },
+    "decision_reasons": {
+      "current_still_best": 5
+    },
+    "selected_routes": {
+      "Udp://127.0.0.1:19402 -> Udp://127.0.0.1:19403 -> Udp://127.0.0.1:19401": 5
+    },
+    "decision_events": 5,
+    "route_changes": 0
+  },
+  "mild-loss": {
+    "profile": {
+      "profile_name": "mild-loss",
+      "seed": 17,
+      "skip_packets": 24,
+      "loss_ppm": 1000,
+      "duplicate_ppm": 0,
+      "reorder_ppm": 0,
+      "base_delay_ms": 0,
+      "jitter_ms": 0,
+      "reorder_extra_delay_ms": 0,
+      "duplicate_delay_ms": 2,
+      "runs": 5,
+      "request_body_bytes": 32768
+    },
+    "measurements": {
+      "exact-3hop": {
+        "count": 5,
+        "avg_connect_ms": 3.59318,
+        "avg_ttfb_ms": 270.86314,
+        "avg_total_ms": 274.63542,
+        "avg_throughput_bps": 130621.9416186917
+      },
+      "adaptive": {
+        "count": 5,
+        "avg_connect_ms": 2.7084400000000004,
+        "avg_ttfb_ms": 265.6847,
+        "avg_total_ms": 268.5261,
+        "avg_throughput_bps": 132239.6853912412
+      }
+    },
+    "exit_exact": {
+      "count": 5,
+      "avg_ack_p95_ms": 111.6,
+      "avg_total_retransmits": 0,
+      "avg_retransmit_rate": 0.0,
+      "avg_window_wait_total_ms": 0,
+      "avg_stream_duration_ms": 179,
+      "avg_overlay_gap_ms": 1.4
+    },
+    "exit_adaptive": {
+      "count": 5,
+      "avg_ack_p95_ms": 100,
+      "avg_total_retransmits": 0,
+      "avg_retransmit_rate": 0.0,
+      "avg_window_wait_total_ms": 0,
+      "avg_stream_duration_ms": 168,
+      "avg_overlay_gap_ms": 1.8
+    },
+    "chaos_counts": {
+      "chaos_drop": 8
+    },
+    "client_open_failures": {},
+    "client_duplicate_drops": {},
+    "client_late_events": {},
+    "client_terminal_events": {
+      "response_transport_local_completion": 16,
+      "response_transport_settlement_started": 16,
+      "response_transport_terminal_payload_observed": 16,
+      "duplicate_close_stream_suppressed": 32,
+      "response_transport_terminal_close_observed": 16,
+      "response_transport_settlement_completed": 16
+    },
+    "exit_open_failures": {},
+    "exit_duplicate_drops": {},
+    "exit_ack_events": {
+      "cumulative_ack_advanced": 388,
+      "inflight_cleanup_by_ack_range": 388,
+      "stale_ack_ignored": 31
+    },
+    "decision_reasons": {
+      "current_still_best": 5
+    },
+    "selected_routes": {
+      "Udp://127.0.0.1:19502 -> Udp://127.0.0.1:19503 -> Udp://127.0.0.1:19501": 5
+    },
+    "decision_events": 5,
+    "route_changes": 0
+  },
+  "mild-reorder": {
+    "profile": {
+      "profile_name": "mild-reorder",
+      "seed": 23,
+      "skip_packets": 24,
+      "loss_ppm": 0,
+      "duplicate_ppm": 0,
+      "reorder_ppm": 20000,
+      "base_delay_ms": 0,
+      "jitter_ms": 0,
+      "reorder_extra_delay_ms": 40,
+      "duplicate_delay_ms": 2,
+      "runs": 5,
+      "request_body_bytes": 32768
+    },
+    "measurements": {
+      "exact-3hop": {
+        "count": 5,
+        "avg_connect_ms": 1.4698,
+        "avg_ttfb_ms": 238.30714,
+        "avg_total_ms": 239.97408,
+        "avg_throughput_bps": 138358.43978163347
+      },
+      "adaptive": {
+        "count": 5,
+        "avg_connect_ms": 10.333900000000002,
+        "avg_ttfb_ms": 231.75513999999998,
+        "avg_total_ms": 242.26772,
+        "avg_throughput_bps": 140449.17981447524
+      }
+    },
+    "exit_exact": {
+      "count": 5,
+      "avg_ack_p95_ms": 116.8,
+      "avg_total_retransmits": 0,
+      "avg_retransmit_rate": 0.0,
+      "avg_window_wait_total_ms": 0,
+      "avg_stream_duration_ms": 169.6,
+      "avg_overlay_gap_ms": 1.8
+    },
+    "exit_adaptive": {
+      "count": 5,
+      "avg_ack_p95_ms": 106.2,
+      "avg_total_retransmits": 0,
+      "avg_retransmit_rate": 0.0,
+      "avg_window_wait_total_ms": 0,
+      "avg_stream_duration_ms": 167.6,
+      "avg_overlay_gap_ms": 1.2
+    },
+    "chaos_counts": {
+      "chaos_delay": 79
+    },
+    "client_open_failures": {},
+    "client_duplicate_drops": {},
+    "client_late_events": {},
+    "client_terminal_events": {
+      "response_transport_local_completion": 16,
+      "response_transport_settlement_started": 16,
+      "response_transport_terminal_payload_observed": 16,
+      "duplicate_close_stream_suppressed": 32,
+      "response_transport_terminal_close_observed": 16,
+      "response_transport_settlement_completed": 16
+    },
+    "exit_open_failures": {},
+    "exit_duplicate_drops": {},
+    "exit_ack_events": {
+      "cumulative_ack_advanced": 202,
+      "inflight_cleanup_by_ack_range": 202,
+      "stale_ack_ignored": 222
+    },
+    "decision_reasons": {
+      "current_still_best": 5
+    },
+    "selected_routes": {
+      "Udp://127.0.0.1:19602 -> Udp://127.0.0.1:19603 -> Udp://127.0.0.1:19601": 5
+    },
+    "decision_events": 5,
+    "route_changes": 0
+  },
+  "mild-delay": {
+    "profile": {
+      "profile_name": "mild-delay",
+      "seed": 29,
+      "skip_packets": 24,
+      "loss_ppm": 0,
+      "duplicate_ppm": 0,
+      "reorder_ppm": 0,
+      "base_delay_ms": 4,
+      "jitter_ms": 2,
+      "reorder_extra_delay_ms": 0,
+      "duplicate_delay_ms": 2,
+      "runs": 5,
+      "request_body_bytes": 32768
+    },
+    "measurements": {
+      "exact-3hop": {
+        "count": 5,
+        "avg_connect_ms": 1.00794,
+        "avg_ttfb_ms": 1443.9668,
+        "avg_total_ms": 1445.1130600000001,
+        "avg_throughput_bps": 28354.282808053867
+      },
+      "adaptive": {
+        "count": 5,
+        "avg_connect_ms": 5.39214,
+        "avg_ttfb_ms": 458.93272,
+        "avg_total_ms": 464.46106,
+        "avg_throughput_bps": 77955.2634127349
+      }
+    },
+    "exit_exact": {
+      "count": 5,
+      "avg_ack_p95_ms": null,
+      "avg_total_retransmits": 0,
+      "avg_retransmit_rate": 0.0,
+      "avg_window_wait_total_ms": 0,
+      "avg_stream_duration_ms": 317,
+      "avg_overlay_gap_ms": 1.8
+    },
+    "exit_adaptive": {
+      "count": 5,
+      "avg_ack_p95_ms": null,
+      "avg_total_retransmits": 0,
+      "avg_retransmit_rate": 0.0,
+      "avg_window_wait_total_ms": 0,
+      "avg_stream_duration_ms": 230,
+      "avg_overlay_gap_ms": 2.2
+    },
+    "chaos_counts": {
+      "chaos_delay": 9912
+    },
+    "client_open_failures": {},
+    "client_duplicate_drops": {},
+    "client_late_events": {},
+    "client_terminal_events": {
+      "response_transport_local_completion": 16,
+      "response_transport_settlement_started": 16,
+      "response_transport_terminal_payload_observed": 16,
+      "duplicate_close_stream_suppressed": 32,
+      "response_transport_terminal_close_observed": 16,
+      "response_transport_settlement_completed": 16
+    },
+    "exit_open_failures": {},
+    "exit_duplicate_drops": {},
+    "exit_ack_events": {
+      "cumulative_ack_advanced": 52,
+      "inflight_cleanup_by_ack_range": 52,
+      "stale_ack_ignored": 788
+    },
+    "decision_reasons": {
+      "current_still_best": 5
+    },
+    "selected_routes": {
+      "Udp://127.0.0.1:19702 -> Udp://127.0.0.1:19703 -> Udp://127.0.0.1:19701": 5
+    },
+    "decision_events": 5,
+    "route_changes": 0
+  },
+  "combined": {
+    "profile": {
+      "profile_name": "combined",
+      "seed": 31,
+      "skip_packets": 24,
+      "loss_ppm": 1000,
+      "duplicate_ppm": 2000,
+      "reorder_ppm": 15000,
+      "base_delay_ms": 8,
+      "jitter_ms": 6,
+      "reorder_extra_delay_ms": 30,
+      "duplicate_delay_ms": 3,
+      "runs": 5,
+      "request_body_bytes": 32768
+    },
+    "measurements": {
+      "exact-3hop": {
+        "count": 5,
+        "avg_connect_ms": 13.63304,
+        "avg_ttfb_ms": 1175.97948,
+        "avg_total_ms": 1189.77614,
+        "avg_throughput_bps": 35835.03830135303
+      },
+      "adaptive": {
+        "count": 5,
+        "avg_connect_ms": 3.00292,
+        "avg_ttfb_ms": 550.6421,
+        "avg_total_ms": 553.8121,
+        "avg_throughput_bps": 62106.620311618935
+      }
+    },
+    "exit_exact": {
+      "count": 5,
+      "avg_ack_p95_ms": null,
+      "avg_total_retransmits": 0,
+      "avg_retransmit_rate": 0.0,
+      "avg_window_wait_total_ms": 0,
+      "avg_stream_duration_ms": 256.8,
+      "avg_overlay_gap_ms": 2
+    },
+    "exit_adaptive": {
+      "count": 5,
+      "avg_ack_p95_ms": null,
+      "avg_total_retransmits": 0,
+      "avg_retransmit_rate": 0.0,
+      "avg_window_wait_total_ms": 0,
+      "avg_stream_duration_ms": 191,
+      "avg_overlay_gap_ms": 2.6
+    },
+    "chaos_counts": {
+      "chaos_delay": 8060,
+      "chaos_duplicate": 11,
+      "chaos_drop": 8
+    },
+    "client_open_failures": {},
+    "client_duplicate_drops": {
+      "duplicate_packet_dropped": 2
+    },
+    "client_late_events": {},
+    "client_terminal_events": {
+      "response_transport_local_completion": 16,
+      "response_transport_settlement_started": 16,
+      "response_transport_terminal_payload_observed": 16,
+      "duplicate_close_stream_suppressed": 32,
+      "response_transport_terminal_close_observed": 16,
+      "response_transport_settlement_completed": 16,
+      "terminal_close_before_local_completion_queued": 2
+    },
+    "exit_open_failures": {},
+    "exit_duplicate_drops": {
+      "duplicate_packet_dropped": 9
+    },
+    "exit_ack_events": {
+      "cumulative_ack_advanced": 43,
+      "inflight_cleanup_by_ack_range": 43,
+      "stale_ack_ignored": 632
+    },
+    "decision_reasons": {
+      "current_still_best": 5
+    },
+    "selected_routes": {
+      "Udp://127.0.0.1:19802 -> Udp://127.0.0.1:19803 -> Udp://127.0.0.1:19801": 5
+    },
+    "decision_events": 5,
+    "route_changes": 0
+  }
+}

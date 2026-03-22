@@ -1,0 +1,180 @@
+=== lib:completed_response_stream_retains_ack_state_for_late_duplicates ===
+   Compiling vpnnode v0.1.0 (C:\neinternet\vpnnode)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 12.71s
+     Running unittests src\lib.rs (target\debug\deps\vpnnode-a32e04d484554ec4.exe)
+
+running 1 test
+test roles::client::tests::completed_response_stream_retains_ack_state_for_late_duplicates ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 74 filtered out; finished in 0.00s
+
+=== lib:response_data_dispatch_prefers_completed_stream_over_stale_active_state ===
+   Compiling vpnnode v0.1.0 (C:\neinternet\vpnnode)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 4.61s
+     Running unittests src\lib.rs (target\debug\deps\vpnnode-a32e04d484554ec4.exe)
+
+running 1 test
+test roles::client::tests::response_data_dispatch_prefers_completed_stream_over_stale_active_state ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 74 filtered out; finished in 0.00s
+
+=== lib:late_ack_after_completion_uses_completed_stream_state ===
+   Compiling vpnnode v0.1.0 (C:\neinternet\vpnnode)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 6.49s
+     Running unittests src\lib.rs (target\debug\deps\vpnnode-a32e04d484554ec4.exe)
+
+running 1 test
+test roles::client::tests::late_ack_after_completion_uses_completed_stream_state ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 74 filtered out; finished in 0.00s
+
+=== lib:orphaned_active_state_without_consumer_is_pruned ===
+   Compiling vpnnode v0.1.0 (C:\neinternet\vpnnode)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 4.83s
+     Running unittests src\lib.rs (target\debug\deps\vpnnode-a32e04d484554ec4.exe)
+
+running 1 test
+test roles::client::tests::orphaned_active_state_without_consumer_is_pruned ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 74 filtered out; finished in 0.00s
+
+=== chaos:combined_chaos_preserves_full_body_against_content_length ===
+   Compiling vpnnode v0.1.0 (C:\neinternet\vpnnode)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 6.62s
+     Running tests\chaos_matrix.rs (target\debug\deps\chaos_matrix-3eab1b6ea173bdb9.exe)
+
+running 1 test
+test combined_chaos_preserves_full_body_against_content_length ... [2m2026-03-22T17:49:18.550951Z[0m [33m WARN[0m [2mvpnnode::roles::exit[0m[2m:[0m SUSPICIOUSLY SMALL RESPONSE: possible accounting or streaming issue [3mstream_id[0m[2m=[0m1000000000 [3msite[0m[2m=[0mprobe [3mresp_bytes_total[0m[2m=[0m108 [3mframes_sent_total[0m[2m=[0m1
+[2m2026-03-22T17:49:18.938895Z[0m [33m WARN[0m [2mvpnnode::roles::exit[0m[2m:[0m SUSPICIOUSLY SMALL RESPONSE: possible accounting or streaming issue [3mstream_id[0m[2m=[0m1 [3msite[0m[2m=[0mexample [3mresp_bytes_total[0m[2m=[0m110 [3mframes_sent_total[0m[2m=[0m1
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 7 filtered out; finished in 4.94s
+
+=== chaos:reorder_chaos_does_not_reject_packets_inside_replay_window ===
+   Compiling vpnnode v0.1.0 (C:\neinternet\vpnnode)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 6.68s
+     Running tests\chaos_matrix.rs (target\debug\deps\chaos_matrix-3eab1b6ea173bdb9.exe)
+
+running 1 test
+test reorder_chaos_does_not_reject_packets_inside_replay_window ... [2m2026-03-22T17:49:49.146049Z[0m [33m WARN[0m [2mvpnnode::roles::exit[0m[2m:[0m SUSPICIOUSLY SMALL RESPONSE: possible accounting or streaming issue [3mstream_id[0m[2m=[0m1000000000 [3msite[0m[2m=[0mprobe [3mresp_bytes_total[0m[2m=[0m108 [3mframes_sent_total[0m[2m=[0m1
+[2m2026-03-22T17:49:49.537011Z[0m [33m WARN[0m [2mvpnnode::roles::exit[0m[2m:[0m SUSPICIOUSLY SMALL RESPONSE: possible accounting or streaming issue [3mstream_id[0m[2m=[0m1 [3msite[0m[2m=[0mexample [3mresp_bytes_total[0m[2m=[0m110 [3mframes_sent_total[0m[2m=[0m1
+[2m2026-03-22T17:49:51.394901Z[0m [33m WARN[0m [2mvpnnode::roles::exit[0m[2m:[0m SUSPICIOUSLY SMALL RESPONSE: possible accounting or streaming issue [3mstream_id[0m[2m=[0m1000000000 [3msite[0m[2m=[0mprobe [3mresp_bytes_total[0m[2m=[0m108 [3mframes_sent_total[0m[2m=[0m1
+[2m2026-03-22T17:49:51.566208Z[0m [33m WARN[0m [2mvpnnode::roles::exit[0m[2m:[0m SUSPICIOUSLY SMALL RESPONSE: possible accounting or streaming issue [3mstream_id[0m[2m=[0m1000000001 [3msite[0m[2m=[0mprobe [3mresp_bytes_total[0m[2m=[0m108 [3mframes_sent_total[0m[2m=[0m1
+[2m2026-03-22T17:49:51.738541Z[0m [33m WARN[0m [2mvpnnode::roles::exit[0m[2m:[0m SUSPICIOUSLY SMALL RESPONSE: possible accounting or streaming issue [3mstream_id[0m[2m=[0m1000000002 [3msite[0m[2m=[0mprobe [3mresp_bytes_total[0m[2m=[0m108 [3mframes_sent_total[0m[2m=[0m1
+[2m2026-03-22T17:49:51.911000Z[0m [33m WARN[0m [2mvpnnode::roles::exit[0m[2m:[0m SUSPICIOUSLY SMALL RESPONSE: possible accounting or streaming issue [3mstream_id[0m[2m=[0m1 [3msite[0m[2m=[0mexample [3mresp_bytes_total[0m[2m=[0m110 [3mframes_sent_total[0m[2m=[0m1
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 7 filtered out; finished in 4.67s
+
+=== chaos:mild_delay_content_length_completion_settles_terminal_signals_cleanly ===
+   Compiling vpnnode v0.1.0 (C:\neinternet\vpnnode)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 6.71s
+     Running tests\chaos_matrix.rs (target\debug\deps\chaos_matrix-3eab1b6ea173bdb9.exe)
+
+running 1 test
+test mild_delay_content_length_completion_settles_terminal_signals_cleanly ... [2m2026-03-22T17:50:14.271236Z[0m [33m WARN[0m [2mvpnnode::roles::exit[0m[2m:[0m SUSPICIOUSLY SMALL RESPONSE: possible accounting or streaming issue [3mstream_id[0m[2m=[0m1000000000 [3msite[0m[2m=[0mprobe [3mresp_bytes_total[0m[2m=[0m108 [3mframes_sent_total[0m[2m=[0m1
+[2m2026-03-22T17:50:14.681185Z[0m [33m WARN[0m [2mvpnnode::roles::exit[0m[2m:[0m SUSPICIOUSLY SMALL RESPONSE: possible accounting or streaming issue [3mstream_id[0m[2m=[0m1 [3msite[0m[2m=[0mexample [3mresp_bytes_total[0m[2m=[0m110 [3mframes_sent_total[0m[2m=[0m1
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 7 filtered out; finished in 8.80s
+
+=== chaos:combined_chaos_duplicate_packets_are_classified_without_open_failure ===
+   Compiling vpnnode v0.1.0 (C:\neinternet\vpnnode)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 6.69s
+     Running tests\chaos_matrix.rs (target\debug\deps\chaos_matrix-3eab1b6ea173bdb9.exe)
+
+running 1 test
+test combined_chaos_duplicate_packets_are_classified_without_open_failure ... [2m2026-03-22T17:50:41.925289Z[0m [33m WARN[0m [2mvpnnode::roles::exit[0m[2m:[0m SUSPICIOUSLY SMALL RESPONSE: possible accounting or streaming issue [3mstream_id[0m[2m=[0m1000000000 [3msite[0m[2m=[0mprobe [3mresp_bytes_total[0m[2m=[0m108 [3mframes_sent_total[0m[2m=[0m1
+[2m2026-03-22T17:50:42.320397Z[0m [33m WARN[0m [2mvpnnode::roles::exit[0m[2m:[0m SUSPICIOUSLY SMALL RESPONSE: possible accounting or streaming issue [3mstream_id[0m[2m=[0m1 [3msite[0m[2m=[0mexample [3mresp_bytes_total[0m[2m=[0m110 [3mframes_sent_total[0m[2m=[0m1
+[2m2026-03-22T17:50:50.712868Z[0m [33m WARN[0m [2mvpnnode::roles::exit[0m[2m:[0m SUSPICIOUSLY SMALL RESPONSE: possible accounting or streaming issue [3mstream_id[0m[2m=[0m1000000000 [3msite[0m[2m=[0mprobe [3mresp_bytes_total[0m[2m=[0m108 [3mframes_sent_total[0m[2m=[0m1
+[2m2026-03-22T17:50:50.883541Z[0m [33m WARN[0m [2mvpnnode::roles::exit[0m[2m:[0m SUSPICIOUSLY SMALL RESPONSE: possible accounting or streaming issue [3mstream_id[0m[2m=[0m1000000001 [3msite[0m[2m=[0mprobe [3mresp_bytes_total[0m[2m=[0m108 [3mframes_sent_total[0m[2m=[0m1
+[2m2026-03-22T17:50:51.056259Z[0m [33m WARN[0m [2mvpnnode::roles::exit[0m[2m:[0m SUSPICIOUSLY SMALL RESPONSE: possible accounting or streaming issue [3mstream_id[0m[2m=[0m1000000002 [3msite[0m[2m=[0mprobe [3mresp_bytes_total[0m[2m=[0m108 [3mframes_sent_total[0m[2m=[0m1
+[2m2026-03-22T17:50:51.219076Z[0m [33m WARN[0m [2mvpnnode::roles::exit[0m[2m:[0m SUSPICIOUSLY SMALL RESPONSE: possible accounting or streaming issue [3mstream_id[0m[2m=[0m1 [3msite[0m[2m=[0mexample [3mresp_bytes_total[0m[2m=[0m110 [3mframes_sent_total[0m[2m=[0m1
+FAILED
+
+failures:
+
+---- combined_chaos_duplicate_packets_are_classified_without_open_failure stdout ----
+
+thread 'combined_chaos_duplicate_packets_are_classified_without_open_failure' (7256) panicked at tests\chaos_matrix.rs:520:5:
+duplicate-noise regression must still observe duplicate terminal close markers under combined chaos
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    combined_chaos_duplicate_packets_are_classified_without_open_failure
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 7 filtered out; finished in 12.95s
+
+error: test failed, to rerun pass `--test chaos_matrix`
+=== chaos:combined_chaos_duplicate_packets_are_classified_without_open_failure (retry) ===
+c a r g o   :         C o m p i l i n g   v p n n o d e   v 0 . 1 . 0   ( C : \ n e i n t e r n e t \ v p n n o d e )  
+ A t   l i n e : 4   c h a r : 1 0 8  
+ +   . . .   0 3 - 2 2 . l o g ' ;   c a r g o   t e s t   - - t e s t   c h a o s _ m a t r i x   c o m b i n e d _ c h a o s _ d u p l i c a t e _ p   . . .  
+ +                                   ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~  
+         +   C a t e g o r y I n f o                     :   N o t S p e c i f i e d :   (       C o m p i l i n g   v p . . . t e r n e t \ v p n n o d e ) : S t r i n g )   [ ] ,   R e m o t e E x c e p t i o n  
+         +   F u l l y Q u a l i f i e d E r r o r I d   :   N a t i v e C o m m a n d E r r o r  
+    
+         F i n i s h e d   ` t e s t `   p r o f i l e   [ u n o p t i m i z e d   +   d e b u g i n f o ]   t a r g e t ( s )   i n   7 . 6 7 s  
+           R u n n i n g   t e s t s \ c h a o s _ m a t r i x . r s   ( t a r g e t \ d e b u g \ d e p s \ c h a o s _ m a t r i x - 3 e a b 1 b 6 e a 1 7 3 b d b 9 . e x e )  
+  
+ r u n n i n g   1   t e s t  
+ t e s t   c o m b i n e d _ c h a o s _ d u p l i c a t e _ p a c k e t s _ a r e _ c l a s s i f i e d _ w i t h o u t _ o p e n _ f a i l u r e   . . .    [ 2 m 2 0 2 6 - 0 3 - 2 2 T 1 7 : 5 3 : 5 2 . 4 1 4 4 8 0 Z  [ 0 m    [ 3 3 m   W A R N  [ 0 m    [ 2 m v p n n o d e : : r o l e s : : e x i t  [ 0 m  [ 2 m :  [ 0 m   S U S P I C I O U S L Y   S M A L L   R E S P O N S E :   p o s s i b l e   a c c o u n t i n g   o r   s t r e a m i n g   i s s u e    [ 3 m s t r e a m _ i d  [ 0 m  [ 2 m =  [ 0 m 1 0 0 0 0 0 0 0 0 0    [ 3 m s i t e  [ 0 m  [ 2 m =  [ 0 m p r o b e    [ 3 m r e s p _ b y t e s _ t o t a l  [ 0 m  [ 2 m =  [ 0 m 1 0 8    [ 3 m f r a m e s _ s e n t _ t o t a l  [ 0 m  [ 2 m =  [ 0 m 1  
+  [ 2 m 2 0 2 6 - 0 3 - 2 2 T 1 7 : 5 3 : 5 2 . 8 0 1 7 6 9 Z  [ 0 m    [ 3 3 m   W A R N  [ 0 m    [ 2 m v p n n o d e : : r o l e s : : e x i t  [ 0 m  [ 2 m :  [ 0 m   S U S P I C I O U S L Y   S M A L L   R E S P O N S E :   p o s s i b l e   a c c o u n t i n g   o r   s t r e a m i n g   i s s u e    [ 3 m s t r e a m _ i d  [ 0 m  [ 2 m =  [ 0 m 1    [ 3 m s i t e  [ 0 m  [ 2 m =  [ 0 m e x a m p l e    [ 3 m r e s p _ b y t e s _ t o t a l  [ 0 m  [ 2 m =  [ 0 m 1 1 0    [ 3 m f r a m e s _ s e n t _ t o t a l  [ 0 m  [ 2 m =  [ 0 m 1  
+  [ 2 m 2 0 2 6 - 0 3 - 2 2 T 1 7 : 5 3 : 5 6 . 7 6 3 5 2 7 Z  [ 0 m    [ 3 3 m   W A R N  [ 0 m    [ 2 m v p n n o d e : : r o l e s : : e x i t  [ 0 m  [ 2 m :  [ 0 m   S U S P I C I O U S L Y   S M A L L   R E S P O N S E :   p o s s i b l e   a c c o u n t i n g   o r   s t r e a m i n g   i s s u e    [ 3 m s t r e a m _ i d  [ 0 m  [ 2 m =  [ 0 m 1 0 0 0 0 0 0 0 0 0    [ 3 m s i t e  [ 0 m  [ 2 m =  [ 0 m p r o b e    [ 3 m r e s p _ b y t e s _ t o t a l  [ 0 m  [ 2 m =  [ 0 m 1 0 8    [ 3 m f r a m e s _ s e n t _ t o t a l  [ 0 m  [ 2 m =  [ 0 m 1  
+  [ 2 m 2 0 2 6 - 0 3 - 2 2 T 1 7 : 5 3 : 5 6 . 9 3 3 2 6 8 Z  [ 0 m    [ 3 3 m   W A R N  [ 0 m    [ 2 m v p n n o d e : : r o l e s : : e x i t  [ 0 m  [ 2 m :  [ 0 m   S U S P I C I O U S L Y   S M A L L   R E S P O N S E :   p o s s i b l e   a c c o u n t i n g   o r   s t r e a m i n g   i s s u e    [ 3 m s t r e a m _ i d  [ 0 m  [ 2 m =  [ 0 m 1 0 0 0 0 0 0 0 0 1    [ 3 m s i t e  [ 0 m  [ 2 m =  [ 0 m p r o b e    [ 3 m r e s p _ b y t e s _ t o t a l  [ 0 m  [ 2 m =  [ 0 m 1 0 8    [ 3 m f r a m e s _ s e n t _ t o t a l  [ 0 m  [ 2 m =  [ 0 m 1  
+  [ 2 m 2 0 2 6 - 0 3 - 2 2 T 1 7 : 5 3 : 5 7 . 1 0 5 1 1 6 Z  [ 0 m    [ 3 3 m   W A R N  [ 0 m    [ 2 m v p n n o d e : : r o l e s : : e x i t  [ 0 m  [ 2 m :  [ 0 m   S U S P I C I O U S L Y   S M A L L   R E S P O N S E :   p o s s i b l e   a c c o u n t i n g   o r   s t r e a m i n g   i s s u e    [ 3 m s t r e a m _ i d  [ 0 m  [ 2 m =  [ 0 m 1 0 0 0 0 0 0 0 0 2    [ 3 m s i t e  [ 0 m  [ 2 m =  [ 0 m p r o b e    [ 3 m r e s p _ b y t e s _ t o t a l  [ 0 m  [ 2 m =  [ 0 m 1 0 8    [ 3 m f r a m e s _ s e n t _ t o t a l  [ 0 m  [ 2 m =  [ 0 m 1  
+  [ 2 m 2 0 2 6 - 0 3 - 2 2 T 1 7 : 5 3 : 5 7 . 2 7 3 6 7 9 Z  [ 0 m    [ 3 3 m   W A R N  [ 0 m    [ 2 m v p n n o d e : : r o l e s : : e x i t  [ 0 m  [ 2 m :  [ 0 m   S U S P I C I O U S L Y   S M A L L   R E S P O N S E :   p o s s i b l e   a c c o u n t i n g   o r   s t r e a m i n g   i s s u e    [ 3 m s t r e a m _ i d  [ 0 m  [ 2 m =  [ 0 m 1    [ 3 m s i t e  [ 0 m  [ 2 m =  [ 0 m e x a m p l e    [ 3 m r e s p _ b y t e s _ t o t a l  [ 0 m  [ 2 m =  [ 0 m 1 1 0    [ 3 m f r a m e s _ s e n t _ t o t a l  [ 0 m  [ 2 m =  [ 0 m 1  
+ o k  
+  
+ t e s t   r e s u l t :   o k .   1   p a s s e d ;   0   f a i l e d ;   0   i g n o r e d ;   0   m e a s u r e d ;   7   f i l t e r e d   o u t ;   f i n i s h e d   i n   8 . 8 4 s  
+  
+ === chaos:combined_chaos_terminal_close_duplicates_are_suppressed_after_first_signal ===
+=== chaos:combined_chaos_terminal_close_duplicates_are_suppressed_after_first_signal === 
+   Compiling vpnnode v0.1.0 (C:\neinternet\vpnnode)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 6.81s
+     Running tests\chaos_matrix.rs (target\debug\deps\chaos_matrix-3eab1b6ea173bdb9.exe)
+
+running 1 test
+test combined_chaos_terminal_close_duplicates_are_suppressed_after_first_signal ... [2m2026-03-22T17:54:34.545230Z[0m [33m WARN[0m [2mvpnnode::roles::exit[0m[2m:[0m SUSPICIOUSLY SMALL RESPONSE: possible accounting or streaming issue [3mstream_id[0m[2m=[0m1000000000 [3msite[0m[2m=[0mprobe [3mresp_bytes_total[0m[2m=[0m108 [3mframes_sent_total[0m[2m=[0m1
+[2m2026-03-22T17:54:34.939343Z[0m [33m WARN[0m [2mvpnnode::roles::exit[0m[2m:[0m SUSPICIOUSLY SMALL RESPONSE: possible accounting or streaming issue [3mstream_id[0m[2m=[0m1 [3msite[0m[2m=[0mexample [3mresp_bytes_total[0m[2m=[0m110 [3mframes_sent_total[0m[2m=[0m1
+[2m2026-03-22T17:54:43.454038Z[0m [33m WARN[0m [2mvpnnode::roles::exit[0m[2m:[0m SUSPICIOUSLY SMALL RESPONSE: possible accounting or streaming issue [3mstream_id[0m[2m=[0m1000000000 [3msite[0m[2m=[0mprobe [3mresp_bytes_total[0m[2m=[0m108 [3mframes_sent_total[0m[2m=[0m1
+[2m2026-03-22T17:54:43.627820Z[0m [33m WARN[0m [2mvpnnode::roles::exit[0m[2m:[0m SUSPICIOUSLY SMALL RESPONSE: possible accounting or streaming issue [3mstream_id[0m[2m=[0m1000000001 [3msite[0m[2m=[0mprobe [3mresp_bytes_total[0m[2m=[0m108 [3mframes_sent_total[0m[2m=[0m1
+[2m2026-03-22T17:54:43.794857Z[0m [33m WARN[0m [2mvpnnode::roles::exit[0m[2m:[0m SUSPICIOUSLY SMALL RESPONSE: possible accounting or streaming issue [3mstream_id[0m[2m=[0m1 [3msite[0m[2m=[0mexample [3mresp_bytes_total[0m[2m=[0m110 [3mframes_sent_total[0m[2m=[0m1
+[2m2026-03-22T17:54:43.970591Z[0m [33m WARN[0m [2mvpnnode::roles::exit[0m[2m:[0m SUSPICIOUSLY SMALL RESPONSE: possible accounting or streaming issue [3mstream_id[0m[2m=[0m1000000002 [3msite[0m[2m=[0mprobe [3mresp_bytes_total[0m[2m=[0m108 [3mframes_sent_total[0m[2m=[0m1
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 7 filtered out; finished in 12.82s
+
+=== chaos:combined_chaos_terminal_payload_tail_is_absorbed_before_completed_tombstone === 
+   Compiling vpnnode v0.1.0 (C:\neinternet\vpnnode)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 6.94s
+     Running tests\chaos_matrix.rs (target\debug\deps\chaos_matrix-3eab1b6ea173bdb9.exe)
+
+running 1 test
+test combined_chaos_terminal_payload_tail_is_absorbed_before_completed_tombstone ... [2m2026-03-22T17:55:07.149233Z[0m [33m WARN[0m [2mvpnnode::roles::exit[0m[2m:[0m SUSPICIOUSLY SMALL RESPONSE: possible accounting or streaming issue [3mstream_id[0m[2m=[0m1000000000 [3msite[0m[2m=[0mprobe [3mresp_bytes_total[0m[2m=[0m108 [3mframes_sent_total[0m[2m=[0m1
+[2m2026-03-22T17:55:07.519994Z[0m [33m WARN[0m [2mvpnnode::roles::exit[0m[2m:[0m SUSPICIOUSLY SMALL RESPONSE: possible accounting or streaming issue [3mstream_id[0m[2m=[0m1 [3msite[0m[2m=[0mexample [3mresp_bytes_total[0m[2m=[0m110 [3mframes_sent_total[0m[2m=[0m1
+[2m2026-03-22T17:55:14.716856Z[0m [33m WARN[0m [2mvpnnode::roles::exit[0m[2m:[0m SUSPICIOUSLY SMALL RESPONSE: possible accounting or streaming issue [3mstream_id[0m[2m=[0m1000000000 [3msite[0m[2m=[0mprobe [3mresp_bytes_total[0m[2m=[0m108 [3mframes_sent_total[0m[2m=[0m1
+[2m2026-03-22T17:55:14.890027Z[0m [33m WARN[0m [2mvpnnode::roles::exit[0m[2m:[0m SUSPICIOUSLY SMALL RESPONSE: possible accounting or streaming issue [3mstream_id[0m[2m=[0m1000000001 [3msite[0m[2m=[0mprobe [3mresp_bytes_total[0m[2m=[0m108 [3mframes_sent_total[0m[2m=[0m1
+[2m2026-03-22T17:55:15.061561Z[0m [33m WARN[0m [2mvpnnode::roles::exit[0m[2m:[0m SUSPICIOUSLY SMALL RESPONSE: possible accounting or streaming issue [3mstream_id[0m[2m=[0m1000000002 [3msite[0m[2m=[0mprobe [3mresp_bytes_total[0m[2m=[0m108 [3mframes_sent_total[0m[2m=[0m1
+[2m2026-03-22T17:55:15.226814Z[0m [33m WARN[0m [2mvpnnode::roles::exit[0m[2m:[0m SUSPICIOUSLY SMALL RESPONSE: possible accounting or streaming issue [3mstream_id[0m[2m=[0m1 [3msite[0m[2m=[0mexample [3mresp_bytes_total[0m[2m=[0m110 [3mframes_sent_total[0m[2m=[0m1
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 7 filtered out; finished in 11.74s
+
+=== chaos:combined_chaos_duplicate_payload_tail_is_absorbed_before_completed_tombstone === 
+   Compiling vpnnode v0.1.0 (C:\neinternet\vpnnode)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 6.64s
+     Running tests\chaos_matrix.rs (target\debug\deps\chaos_matrix-3eab1b6ea173bdb9.exe)
+
+running 1 test
+test combined_chaos_duplicate_payload_tail_is_absorbed_before_completed_tombstone ... [2m2026-03-22T17:55:54.230705Z[0m [33m WARN[0m [2mvpnnode::roles::exit[0m[2m:[0m SUSPICIOUSLY SMALL RESPONSE: possible accounting or streaming issue [3mstream_id[0m[2m=[0m1000000000 [3msite[0m[2m=[0mprobe [3mresp_bytes_total[0m[2m=[0m108 [3mframes_sent_total[0m[2m=[0m1
+[2m2026-03-22T17:55:54.643685Z[0m [33m WARN[0m [2mvpnnode::roles::exit[0m[2m:[0m SUSPICIOUSLY SMALL RESPONSE: possible accounting or streaming issue [3mstream_id[0m[2m=[0m1 [3msite[0m[2m=[0mexample [3mresp_bytes_total[0m[2m=[0m110 [3mframes_sent_total[0m[2m=[0m1
+[2m2026-03-22T17:56:02.988075Z[0m [33m WARN[0m [2mvpnnode::roles::exit[0m[2m:[0m SUSPICIOUSLY SMALL RESPONSE: possible accounting or streaming issue [3mstream_id[0m[2m=[0m1000000000 [3msite[0m[2m=[0mprobe [3mresp_bytes_total[0m[2m=[0m108 [3mframes_sent_total[0m[2m=[0m1
+[2m2026-03-22T17:56:03.160147Z[0m [33m WARN[0m [2mvpnnode::roles::exit[0m[2m:[0m SUSPICIOUSLY SMALL RESPONSE: possible accounting or streaming issue [3mstream_id[0m[2m=[0m1000000001 [3msite[0m[2m=[0mprobe [3mresp_bytes_total[0m[2m=[0m108 [3mframes_sent_total[0m[2m=[0m1
+[2m2026-03-22T17:56:03.330833Z[0m [33m WARN[0m [2mvpnnode::roles::exit[0m[2m:[0m SUSPICIOUSLY SMALL RESPONSE: possible accounting or streaming issue [3mstream_id[0m[2m=[0m1000000002 [3msite[0m[2m=[0mprobe [3mresp_bytes_total[0m[2m=[0m108 [3mframes_sent_total[0m[2m=[0m1
+[2m2026-03-22T17:56:03.498663Z[0m [33m WARN[0m [2mvpnnode::roles::exit[0m[2m:[0m SUSPICIOUSLY SMALL RESPONSE: possible accounting or streaming issue [3mstream_id[0m[2m=[0m1 [3msite[0m[2m=[0mexample [3mresp_bytes_total[0m[2m=[0m110 [3mframes_sent_total[0m[2m=[0m1
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 7 filtered out; finished in 11.85s
+

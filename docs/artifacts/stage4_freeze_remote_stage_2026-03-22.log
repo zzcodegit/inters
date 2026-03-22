@@ -1,0 +1,72 @@
+=== remote perf stage matrix ===
+direct=31.192.232.26:18080
+relay1=45.197.133.115:30001
+relay2=185.144.28.95:30002
+exit=31.192.232.26:30000
+request_path=/perf-262144.bin
+runs=5
+stage_local_raw=docs/artifacts/stage5_entry_perf_stage_2026-03-22.local.jsonl
+client_stage_path=docs/artifacts/stage5_entry_perf_stage_2026-03-22.client.jsonl
+exit_stage_path=/var/log/vpnnode/overlay-stage-exit.jsonl
+direct_stage_path=/var/log/vpnnode/perf-forward-stage.jsonl
+=== target setup start 2026-03-22T21:30:56+03:00 ===
+payload_path=/opt/vpnnode/target-http/perf-262144.bin
+payload_bytes=262144
+tcp_forward.py            | 4 kB |   4.0 kB/s | ETA: 00:00:00 |  64%tcp_forward.py            | 6 kB |   6.2 kB/s | ETA: 00:00:00 | 100%
+active
+direct_addr=31.192.232.26:18080
+target_path=/perf-262144.bin
+payload_bytes=262144
+public_service=vpnnode-target-http-public.service
+forward_log_path=/var/log/vpnnode/perf-forward-stage.jsonl
+=== target setup end 2026-03-22T21:31:07+03:00 ===
+=== exit stage trace setup start 2026-03-22T21:31:07+03:00 ===
+active
+exit_stage_log_path=/var/log/vpnnode/overlay-stage-exit.jsonl
+=== exit stage trace setup end 2026-03-22T21:32:41+03:00 ===
+   Compiling vpnnode v0.1.0 (C:\neinternet\vpnnode)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 9.72s
+     Running tests\remote_perf_stages.rs (C:/Users/zekin/AppData/Local/Temp/vpnnode-target\debug\deps\remote_perf_stages-aa5c5065a4a79a31.exe)
+
+running 1 test
+test remote_perf_stage_matrix_collects_measurements ... reset_topology label=relay-1 host=45.197.133.115 services=vpnnode-relay1.service
+active
+reset_topology label=relay-2 host=185.144.28.95 services=vpnnode-relay2.service
+active
+reset_topology label=exit host=31.192.232.26 services=vpnnode-exit.service
+active
+check_service label=exit-target-http host=31.192.232.26 service=vpnnode-target-http.service
+active
+reset_topology label=relay-1 host=45.197.133.115 services=vpnnode-relay1.service
+active
+reset_topology label=relay-2 host=185.144.28.95 services=vpnnode-relay2.service
+active
+reset_topology label=exit host=31.192.232.26 services=vpnnode-exit.service
+active
+check_service label=exit-target-http host=31.192.232.26 service=vpnnode-target-http.service
+active
+reset_topology label=relay-1 host=45.197.133.115 services=vpnnode-relay1.service
+active
+reset_topology label=relay-2 host=185.144.28.95 services=vpnnode-relay2.service
+active
+reset_topology label=exit host=31.192.232.26 services=vpnnode-exit.service
+active
+check_service label=exit-target-http host=31.192.232.26 service=vpnnode-target-http.service
+active
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 887.13s
+
+=== collect stage artifacts start 2026-03-22T21:47:38+03:00 ===
+stage5_entry_perf_stage_2 | 32 kB |  32.0 kB/s | ETA: 00:00:00 |  89%stage5_entry_perf_stage_2 | 35 kB |  35.9 kB/s | ETA: 00:00:00 | 100%
+collected_exit_stage_log=docs/artifacts/stage5_entry_perf_stage_2026-03-22.exit.jsonl
+collected_direct_stage_log=docs/artifacts/stage5_entry_perf_stage_2026-03-22.direct.jsonl
+=== collect stage artifacts end 2026-03-22T21:47:48+03:00 ===
+=== summarize stage artifacts start 2026-03-22T21:47:48+03:00 ===
+=== summarize stage artifacts end 2026-03-22T21:47:49+03:00 ===
+=== cleanup start 2026-03-22T21:47:49+03:00 ===
+Removed /etc/systemd/system/multi-user.target.wants/vpnnode-target-http-public.service.
+exit_service=active
+public_service=inactive
+cleanup_status=done
+=== cleanup end 2026-03-22T21:49:28+03:00 ===
