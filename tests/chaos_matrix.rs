@@ -408,11 +408,29 @@ async fn mild_delay_content_length_completion_settles_terminal_signals_cleanly(
     assert!(
         stage_analysis
             .client_terminal_events
-            .get("duplicate_payload_after_local_completion")
+            .get("duplicate_payload_after_local_completion_absorbed")
             .copied()
             .unwrap_or(0)
             > 0,
-        "mild delay regression must still observe delayed duplicate payload frames, but no longer misclassify them as late payload"
+        "mild delay regression must still observe delayed duplicate payload frames, but must absorb them explicitly during completed/tombstone handling"
+    );
+    assert_eq!(
+        stage_analysis
+            .client_terminal_events
+            .get("duplicate_payload_after_local_completion")
+            .copied()
+            .unwrap_or(0),
+        0,
+        "mild delay regression must not leave duplicate payload tail in the old post-completion anomaly bucket"
+    );
+    assert_eq!(
+        stage_analysis
+            .client_terminal_events
+            .get("duplicate_payload_after_local_completion_repeat")
+            .copied()
+            .unwrap_or(0),
+        0,
+        "mild delay regression must not leave repeated duplicate payload tail in the old post-completion anomaly bucket"
     );
     assert_eq!(
         stage_analysis
@@ -696,6 +714,105 @@ async fn combined_chaos_terminal_payload_tail_is_absorbed_before_completed_tombs
             .unwrap_or(0),
         0,
         "terminal-payload regression must not deliver additional body bytes after local completion"
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn combined_chaos_duplicate_payload_tail_is_absorbed_before_completed_tombstone(
+) -> anyhow::Result<()> {
+    support::prepare_baseline(BaselineMode::Local);
+
+    let config =
+        ChaosRunConfig::combined_regression("duplicate-payload-tail-regression-test", 21_100, 5);
+    prepare_chaos_run(&config)?;
+
+    let exact_ports = ports_from_base(config.base_port);
+    let adaptive_ports = ports_from_base(config.base_port.saturating_add(100));
+
+    run_mode_scenario(
+        &config,
+        RunMode::Exact3Hop,
+        exact_ports,
+        true,
+        &config.exact_route_cache_path,
+    )
+    .await?;
+    run_mode_scenario(
+        &config,
+        RunMode::Adaptive,
+        adaptive_ports,
+        false,
+        &config.adaptive_route_cache_path,
+    )
+    .await?;
+
+    let measurements = read_measurements(&config.raw_path())?;
+    assert_eq!(
+        measurements.len(),
+        config.profile.runs * 2,
+        "duplicate-payload regression must produce successful exact and adaptive measurements"
+    );
+    assert!(
+        measurements.iter().all(|record| record.status_code == 200),
+        "duplicate-payload regression must keep HTTP 200"
+    );
+
+    let stage_analysis = analyze_stage_trace(&config.stage_trace_path)?;
+    assert_eq!(
+        stage_analysis
+            .client_terminal_events
+            .get("duplicate_payload_after_local_completion")
+            .copied()
+            .unwrap_or(0),
+        0,
+        "duplicate-payload regression must not route duplicate covered DATA frames into duplicate_payload_after_local_completion"
+    );
+    assert_eq!(
+        stage_analysis
+            .client_terminal_events
+            .get("duplicate_payload_after_local_completion_repeat")
+            .copied()
+            .unwrap_or(0),
+        0,
+        "duplicate-payload regression must not route repeated duplicate covered DATA frames into duplicate_payload_after_local_completion_repeat"
+    );
+    assert_eq!(
+        stage_analysis
+            .client_late_events
+            .get("payload_after_local_completion_during_settlement")
+            .copied()
+            .unwrap_or(0),
+        0,
+        "duplicate-payload regression must not deliver any extra body bytes during settlement"
+    );
+    assert!(
+        stage_analysis
+            .client_terminal_events
+            .get("duplicate_payload_after_local_completion_absorbed")
+            .copied()
+            .unwrap_or(0)
+            > 0,
+        "duplicate-payload regression must still observe duplicate covered DATA tail and absorb it explicitly"
+    );
+    assert!(
+        stage_analysis
+            .client_terminal_events
+            .get("response_transport_local_completion")
+            .copied()
+            .unwrap_or(0)
+            > 0,
+        "duplicate-payload regression must still reach local buffered completion before settlement cleanup"
+    );
+    assert!(
+        stage_analysis
+            .client_terminal_events
+            .get("response_transport_settlement_completed")
+            .copied()
+            .unwrap_or(0)
+            > 0,
+        "duplicate-payload regression must still complete settlement cleanly"
     );
 
     Ok(())
@@ -1074,6 +1191,7 @@ fn analyze_stage_trace(path: &Path) -> anyhow::Result<StageAnalysis> {
             | ("client", "duplicate_close_stream_suppressed")
             | ("client", "duplicate_payload_after_local_completion")
             | ("client", "duplicate_payload_after_local_completion_repeat")
+            | ("client", "duplicate_payload_after_local_completion_absorbed")
             | ("client", "response_transport_local_completion")
             | ("client", "response_transport_settlement_started")
             | ("client", "response_transport_terminal_payload_observed")

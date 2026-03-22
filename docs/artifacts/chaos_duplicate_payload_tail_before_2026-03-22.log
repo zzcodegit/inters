@@ -1,0 +1,47 @@
+   Compiling vpnnode v0.1.0 (C:\neinternet\vpnnode)
+warning: field `absorbed_duplicate_payloads` is never read
+   --> src\roles\client.rs:287:5
+    |
+281 | struct CompletedResponseStream {
+    |        ----------------------- field in this struct
+...
+287 |     absorbed_duplicate_payloads: u64,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: `CompletedResponseStream` has a derived impl for the trait `Clone`, but this is intentionally ignored during dead code analysis
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `note_completed_response_absorbed_duplicate_payload` is never used
+   --> src\roles\client.rs:428:4
+    |
+428 | fn note_completed_response_absorbed_duplicate_payload(
+    |    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: `vpnnode` (lib) generated 2 warnings
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 19.20s
+     Running tests\chaos_matrix.rs (target\debug\deps\chaos_matrix-3eab1b6ea173bdb9.exe)
+
+running 1 test
+test combined_chaos_duplicate_payload_tail_is_absorbed_before_completed_tombstone ... [2m2026-03-22T16:36:33.290175Z[0m [33m WARN[0m [2mvpnnode::roles::exit[0m[2m:[0m SUSPICIOUSLY SMALL RESPONSE: possible accounting or streaming issue [3mstream_id[0m[2m=[0m1000000000 [3msite[0m[2m=[0mprobe [3mresp_bytes_total[0m[2m=[0m108 [3mframes_sent_total[0m[2m=[0m1
+[2m2026-03-22T16:36:33.678037Z[0m [33m WARN[0m [2mvpnnode::roles::exit[0m[2m:[0m SUSPICIOUSLY SMALL RESPONSE: possible accounting or streaming issue [3mstream_id[0m[2m=[0m1 [3msite[0m[2m=[0mexample [3mresp_bytes_total[0m[2m=[0m110 [3mframes_sent_total[0m[2m=[0m1
+[2m2026-03-22T16:36:40.572497Z[0m [33m WARN[0m [2mvpnnode::roles::exit[0m[2m:[0m HIGH RETRANSMIT RATE [3mstream_id[0m[2m=[0m4 [3mframes_sent_total[0m[2m=[0m38 [3mtotal_retransmits[0m[2m=[0m5 [3mretransmit_rate[0m[2m=[0m0.13157894736842105
+[2m2026-03-22T16:36:52.924888Z[0m [33m WARN[0m [2mvpnnode::roles::exit[0m[2m:[0m SUSPICIOUSLY SMALL RESPONSE: possible accounting or streaming issue [3mstream_id[0m[2m=[0m1000000000 [3msite[0m[2m=[0mprobe [3mresp_bytes_total[0m[2m=[0m108 [3mframes_sent_total[0m[2m=[0m1
+[2m2026-03-22T16:36:53.112226Z[0m [33m WARN[0m [2mvpnnode::roles::exit[0m[2m:[0m SUSPICIOUSLY SMALL RESPONSE: possible accounting or streaming issue [3mstream_id[0m[2m=[0m1 [3msite[0m[2m=[0mexample [3mresp_bytes_total[0m[2m=[0m110 [3mframes_sent_total[0m[2m=[0m1
+[2m2026-03-22T16:36:53.289089Z[0m [33m WARN[0m [2mvpnnode::roles::exit[0m[2m:[0m SUSPICIOUSLY SMALL RESPONSE: possible accounting or streaming issue [3mstream_id[0m[2m=[0m1000000001 [3msite[0m[2m=[0mprobe [3mresp_bytes_total[0m[2m=[0m108 [3mframes_sent_total[0m[2m=[0m1
+[2m2026-03-22T16:36:53.743313Z[0m [33m WARN[0m [2mvpnnode::roles::exit[0m[2m:[0m SUSPICIOUSLY SMALL RESPONSE: possible accounting or streaming issue [3mstream_id[0m[2m=[0m1000000002 [3msite[0m[2m=[0mprobe [3mresp_bytes_total[0m[2m=[0m108 [3mframes_sent_total[0m[2m=[0m1
+
+thread 'combined_chaos_duplicate_payload_tail_is_absorbed_before_completed_tombstone' (15212) panicked at tests\chaos_matrix.rs:763:5:
+assertion `left == right` failed: duplicate-payload regression must not route duplicate covered DATA frames into duplicate_payload_after_local_completion
+  left: 9
+ right: 0
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+FAILED
+
+failures:
+
+failures:
+    combined_chaos_duplicate_payload_tail_is_absorbed_before_completed_tombstone
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 7 filtered out; finished in 27.47s
+
+error: test failed, to rerun pass `--test chaos_matrix`

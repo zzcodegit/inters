@@ -284,7 +284,7 @@ struct CompletedResponseStream {
     completed_at: Instant,
     completion_reason: &'static str,
     late_payloads: u64,
-    duplicate_payload_signals: u64,
+    absorbed_duplicate_payloads: u64,
     late_close_signals: u64,
     terminal_payload_signals: u64,
     terminal_close_signals: u64,
@@ -325,7 +325,7 @@ fn remember_completed_response_stream(
             completed_at: Instant::now(),
             completion_reason,
             late_payloads: 0,
-            duplicate_payload_signals: 0,
+            absorbed_duplicate_payloads: 0,
             late_close_signals: 0,
             terminal_payload_signals: 0,
             terminal_close_signals: 0,
@@ -376,6 +376,19 @@ fn completion_reason_uses_terminal_settlement(completion_reason: &'static str) -
     completion_reason == "content_length_reached"
 }
 
+fn is_ack_covered_duplicate_payload_tail(
+    completion_reason: &'static str,
+    frame: &StreamFrame,
+    ack_seq: u64,
+    late_bytes: usize,
+    end_of_stream: bool,
+) -> bool {
+    completion_reason_uses_terminal_settlement(completion_reason)
+        && late_bytes == 0
+        && !end_of_stream
+        && frame.frame_seq < ack_seq
+}
+
 fn note_completed_response_terminal_payload(
     completed_streams: &CompletedResponseStreamTable,
     stream_id: u32,
@@ -393,20 +406,18 @@ fn note_completed_response_terminal_payload(
     ))
 }
 
-fn note_completed_response_duplicate_payload(
+fn note_completed_response_absorbed_duplicate_payload(
     completed_streams: &CompletedResponseStreamTable,
     stream_id: u32,
-) -> Option<(u64, &'static str, bool, u64)> {
+) -> Option<(u64, &'static str, u64)> {
     let mut map = completed_streams.lock().unwrap();
     purge_completed_response_streams(&mut map, Instant::now());
     let entry = map.get_mut(&stream_id)?;
-    let first_signal = entry.duplicate_payload_signals == 0;
-    entry.duplicate_payload_signals = entry.duplicate_payload_signals.saturating_add(1);
+    entry.absorbed_duplicate_payloads = entry.absorbed_duplicate_payloads.saturating_add(1);
     Some((
         entry.completed_at.elapsed().as_millis() as u64,
         entry.completion_reason,
-        first_signal,
-        entry.duplicate_payload_signals,
+        entry.absorbed_duplicate_payloads,
     ))
 }
 
@@ -1545,10 +1556,13 @@ See README: Stage 2 support matrix."
                                 && late_bytes == 0
                                 && end_of_stream;
                         let duplicate_payload_after_local_completion =
-                            completion_reason_uses_terminal_settlement(completion_reason)
-                                && late_bytes == 0
-                                && !end_of_stream
-                                && frame.frame_seq < ack_seq;
+                            is_ack_covered_duplicate_payload_tail(
+                                completion_reason,
+                                &frame,
+                                ack_seq,
+                                late_bytes,
+                                end_of_stream,
+                            );
                         if terminal_after_local_completion {
                             if let Some((
                                 completed_age_ms,
@@ -1597,22 +1611,14 @@ See README: Stage 2 support matrix."
                                 );
                             }
                         } else if duplicate_payload_after_local_completion {
-                            if let Some((
-                                completed_age_ms,
-                                _,
-                                first_signal,
-                                duplicate_payload_count,
-                            )) = note_completed_response_duplicate_payload(
-                                &completed_response_streams_recv,
-                                sid,
-                            ) {
-                                let stage = if first_signal {
-                                    "duplicate_payload_after_local_completion"
-                                } else {
-                                    "duplicate_payload_after_local_completion_repeat"
-                                };
+                            if let Some((completed_age_ms, _, absorbed_duplicate_payload_count)) =
+                                note_completed_response_absorbed_duplicate_payload(
+                                    &completed_response_streams_recv,
+                                    sid,
+                                )
+                            {
                                 emit_client_stage(
-                                    stage,
+                                    "duplicate_payload_after_local_completion_absorbed",
                                     json!({
                                         "stream_id": sid,
                                         "route_len": route_for_this_stream.len(),
@@ -1626,7 +1632,9 @@ See README: Stage 2 support matrix."
                                         "ack_seq": ack_seq,
                                         "completed_age_ms": completed_age_ms,
                                         "completion_reason": completion_reason,
-                                        "duplicate_payload_count": duplicate_payload_count,
+                                        "absorbed_duplicate_payload_count": absorbed_duplicate_payload_count,
+                                        "dispatch_state": "completed_tombstone",
+                                        "ack_covered": true,
                                     }),
                                 );
                                 debug!(
@@ -1635,9 +1643,8 @@ See README: Stage 2 support matrix."
                                     ack_seq,
                                     completion_reason,
                                     completed_age_ms,
-                                    duplicate_payload_count,
-                                    first_signal,
-                                    "client: duplicate payload signal after local completion"
+                                    absorbed_duplicate_payload_count,
+                                    "client: duplicate payload tail absorbed after local completion"
                                 );
                             }
                         } else {
