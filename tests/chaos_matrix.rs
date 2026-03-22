@@ -231,6 +231,67 @@ async fn combined_chaos_preserves_full_body_against_content_length() -> anyhow::
     Ok(())
 }
 
+#[tokio::test]
+async fn reorder_chaos_does_not_reject_packets_inside_replay_window() -> anyhow::Result<()> {
+    support::prepare_baseline(BaselineMode::Local);
+
+    let config = ChaosRunConfig::mild_reorder_regression("replay-window-regression-test", 20_200, 5);
+    prepare_chaos_run(&config)?;
+
+    let exact_ports = ports_from_base(config.base_port);
+    let adaptive_ports = ports_from_base(config.base_port.saturating_add(100));
+
+    run_mode_scenario(
+        &config,
+        RunMode::Exact3Hop,
+        exact_ports,
+        true,
+        &config.exact_route_cache_path,
+    )
+    .await?;
+    run_mode_scenario(
+        &config,
+        RunMode::Adaptive,
+        adaptive_ports,
+        false,
+        &config.adaptive_route_cache_path,
+    )
+    .await?;
+
+    let stage_analysis = analyze_stage_trace(&config.stage_trace_path)?;
+    assert_eq!(
+        stage_analysis
+            .client_open_message_failures
+            .get("packet too old for replay window")
+            .copied()
+            .unwrap_or(0),
+        0,
+        "mild reorder chaos must not reject client packets as too old once they are still inside the expanded replay window"
+    );
+    assert_eq!(
+        stage_analysis
+            .open_message_failures
+            .get("packet too old for replay window")
+            .copied()
+            .unwrap_or(0),
+        0,
+        "mild reorder chaos must not reject exit packets as too old once they are still inside the expanded replay window"
+    );
+
+    let measurements = read_measurements(&config.raw_path())?;
+    assert_eq!(
+        measurements.len(),
+        config.profile.runs * 2,
+        "reorder replay regression must produce successful exact and adaptive measurements"
+    );
+    assert!(
+        measurements.iter().all(|record| record.status_code == 200),
+        "reorder replay regression must keep HTTP 200"
+    );
+
+    Ok(())
+}
+
 async fn run_mode_scenario(
     config: &ChaosRunConfig,
     mode: RunMode,
@@ -532,7 +593,7 @@ fn analyze_stage_trace(path: &Path) -> anyhow::Result<StageAnalysis> {
                     .unwrap_or("<missing>");
                 *analysis
                     .open_message_failures
-                    .entry(error.to_string())
+                    .entry(normalize_open_message_error(error))
                     .or_insert(0usize) += 1;
             }
             ("client", "open_message_failed") => {
@@ -542,7 +603,7 @@ fn analyze_stage_trace(path: &Path) -> anyhow::Result<StageAnalysis> {
                     .unwrap_or("<missing>");
                 *analysis
                     .client_open_message_failures
-                    .entry(error.to_string())
+                    .entry(normalize_open_message_error(error))
                     .or_insert(0usize) += 1;
             }
             ("client", "late_payload_after_completion")
@@ -604,6 +665,16 @@ fn analyze_stage_trace(path: &Path) -> anyhow::Result<StageAnalysis> {
         }
     }
     Ok(analysis)
+}
+
+fn normalize_open_message_error(error: &str) -> String {
+    if error.starts_with("packet too old for replay window") {
+        "packet too old for replay window".to_string()
+    } else if error.starts_with("duplicate packet detected") {
+        "duplicate packet detected".to_string()
+    } else {
+        error.to_string()
+    }
 }
 
 fn write_decision_trace(path: &Path, decisions: &[Value]) -> anyhow::Result<()> {
@@ -977,6 +1048,44 @@ impl ChaosRunConfig {
                 jitter_ms: 6,
                 reorder_extra_delay_ms: 30,
                 duplicate_delay_ms: 3,
+                runs,
+                request_body_bytes: 32_768,
+            },
+            base_port,
+            connect_timeout: Duration::from_secs(5),
+            write_timeout: Duration::from_secs(10),
+            read_timeout: Duration::from_secs(45),
+        }
+    }
+
+    fn mild_reorder_regression(profile_name: &str, base_port: u16, runs: usize) -> Self {
+        let temp_dir = std::env::temp_dir();
+        let artifact_prefix =
+            temp_dir.join(format!("vpnnode-chaos-{}-artifacts", profile_name));
+        let stage_trace_path =
+            PathBuf::from(format!("{}.stage.jsonl", artifact_prefix.display()));
+        Self {
+            exact_route_cache_path: temp_dir.join(format!(
+                "vpnnode-chaos-{}-exact-route-cache.json",
+                profile_name
+            )),
+            adaptive_route_cache_path: temp_dir.join(format!(
+                "vpnnode-chaos-{}-adaptive-route-cache.json",
+                profile_name
+            )),
+            artifact_prefix,
+            stage_trace_path,
+            profile: ChaosProfileArtifact {
+                profile_name: profile_name.to_string(),
+                seed: 23,
+                skip_packets: 24,
+                loss_ppm: 0,
+                duplicate_ppm: 0,
+                reorder_ppm: 20_000,
+                base_delay_ms: 0,
+                jitter_ms: 0,
+                reorder_extra_delay_ms: 40,
+                duplicate_delay_ms: 2,
                 runs,
                 request_body_bytes: 32_768,
             },

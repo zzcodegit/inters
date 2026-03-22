@@ -1,68 +1,179 @@
 use crate::crypto::{open, seal, AeadKey};
 use crate::protocol::{decode, encode, TunnelMessage};
 use anyhow::Result;
+use std::fmt;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 /// Simple sliding-window replay protection for a single session.
 ///
 /// We track the highest sequence number seen so far and a bitmap of the last
-/// WINDOW_SIZE sequence numbers. This is intentionally minimal but provides
-/// clear, testable anti-replay behavior for Stage 3.
-const REPLAY_WINDOW_SIZE: u64 = 64;
+/// WINDOW_SIZE sequence numbers. The window is intentionally wider than the
+/// original Stage 3 version so delayed packets inside bounded chaos/reorder
+/// bursts are still accepted while obviously stale traffic is rejected.
+const REPLAY_WINDOW_WORDS: usize = 8;
+const REPLAY_WINDOW_SIZE: u64 = (REPLAY_WINDOW_WORDS as u64) * 64;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReplayRejectKind {
+    InvalidSeq,
+    TooOld,
+    Duplicate,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ReplayReject {
+    kind: ReplayRejectKind,
+    seq: u64,
+    highest: u64,
+    behind: Option<u64>,
+    window: u64,
+}
+
+impl ReplayReject {
+    fn invalid_seq(seq: u64, highest: u64) -> Self {
+        Self {
+            kind: ReplayRejectKind::InvalidSeq,
+            seq,
+            highest,
+            behind: None,
+            window: REPLAY_WINDOW_SIZE,
+        }
+    }
+
+    fn too_old(seq: u64, highest: u64, behind: u64) -> Self {
+        Self {
+            kind: ReplayRejectKind::TooOld,
+            seq,
+            highest,
+            behind: Some(behind),
+            window: REPLAY_WINDOW_SIZE,
+        }
+    }
+
+    fn duplicate(seq: u64, highest: u64, behind: u64) -> Self {
+        Self {
+            kind: ReplayRejectKind::Duplicate,
+            seq,
+            highest,
+            behind: Some(behind),
+            window: REPLAY_WINDOW_SIZE,
+        }
+    }
+}
+
+impl fmt::Display for ReplayReject {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.kind {
+            ReplayRejectKind::InvalidSeq => {
+                write!(f, "seq 0 is reserved / invalid")
+            }
+            ReplayRejectKind::TooOld => write!(
+                f,
+                "packet too old for replay window: seq={} highest={} behind={} window={}",
+                self.seq,
+                self.highest,
+                self.behind.unwrap_or_default(),
+                self.window
+            ),
+            ReplayRejectKind::Duplicate => write!(
+                f,
+                "duplicate packet detected: seq={} highest={} behind={} window={}",
+                self.seq,
+                self.highest,
+                self.behind.unwrap_or_default(),
+                self.window
+            ),
+        }
+    }
+}
+
+impl std::error::Error for ReplayReject {}
 
 #[derive(Debug)]
 struct RecvReplayState {
     highest: u64,
-    bitmap: u64,
+    bitmap: [u64; REPLAY_WINDOW_WORDS],
 }
 
 impl RecvReplayState {
     fn new() -> Self {
         Self {
             highest: 0,
-            bitmap: 0,
+            bitmap: [0; REPLAY_WINDOW_WORDS],
         }
+    }
+
+    fn clear_history(&mut self) {
+        self.bitmap = [0; REPLAY_WINDOW_WORDS];
+    }
+
+    fn mark_seen(&mut self, behind: u64) {
+        let word_idx = (behind / 64) as usize;
+        let bit_idx = (behind % 64) as usize;
+        self.bitmap[word_idx] |= 1u64 << bit_idx;
+    }
+
+    fn is_seen(&self, behind: u64) -> bool {
+        let word_idx = (behind / 64) as usize;
+        let bit_idx = (behind % 64) as usize;
+        (self.bitmap[word_idx] & (1u64 << bit_idx)) != 0
+    }
+
+    fn shift_forward(&mut self, diff: u64) {
+        if diff >= REPLAY_WINDOW_SIZE {
+            self.clear_history();
+            return;
+        }
+        let word_shift = (diff / 64) as usize;
+        let bit_shift = (diff % 64) as usize;
+        let previous = self.bitmap;
+        let mut shifted = [0u64; REPLAY_WINDOW_WORDS];
+        for dest in (0..REPLAY_WINDOW_WORDS).rev() {
+            if dest < word_shift {
+                continue;
+            }
+            let src = dest - word_shift;
+            shifted[dest] |= previous[src] << bit_shift;
+            if bit_shift > 0 && src > 0 {
+                shifted[dest] |= previous[src - 1] >> (64 - bit_shift);
+            }
+        }
+        self.bitmap = shifted;
     }
 
     /// Returns Ok(()) if the given sequence number is acceptable and updates
     /// internal state, or Err if it is considered a replay / too old.
-    fn check_and_update(&mut self, seq: u64) -> Result<()> {
+    fn check_and_update(&mut self, seq: u64) -> std::result::Result<(), ReplayReject> {
         if seq == 0 {
-            anyhow::bail!("seq 0 is reserved / invalid");
+            return Err(ReplayReject::invalid_seq(seq, self.highest));
         }
         if self.highest == 0 {
             // First packet.
             self.highest = seq;
-            self.bitmap = 1;
+            self.clear_history();
+            self.mark_seen(0);
             return Ok(());
         }
 
         if seq > self.highest {
             let diff = seq - self.highest;
-            if diff >= REPLAY_WINDOW_SIZE {
-                // Jump forward beyond the window: drop all history.
-                self.bitmap = 1;
-            } else {
-                // Shift bitmap forward and mark newest bit.
-                self.bitmap <<= diff;
-                self.bitmap |= 1;
-            }
+            self.shift_forward(diff);
             self.highest = seq;
+            self.mark_seen(0);
             return Ok(());
         }
 
         // seq <= highest: check whether it is still within the window.
         let behind = self.highest - seq;
         if behind >= REPLAY_WINDOW_SIZE {
-            anyhow::bail!("packet too old for replay window");
+            return Err(ReplayReject::too_old(seq, self.highest, behind));
         }
-        let mask = 1u64 << behind;
-        if self.bitmap & mask != 0 {
-            anyhow::bail!("duplicate packet detected");
+        if self.is_seen(behind) {
+            return Err(ReplayReject::duplicate(seq, self.highest, behind));
         }
         // Mark as seen.
-        self.bitmap |= mask;
+        self.mark_seen(behind);
         Ok(())
     }
 }
@@ -110,11 +221,8 @@ impl SessionCrypto {
         seq_bytes.copy_from_slice(&data[..8]);
         let seq = u64::from_be_bytes(seq_bytes);
         {
-            let mut guard = self
-                .recv_replay
-                .lock()
-                .expect("recv_replay mutex poisoned");
-            guard.check_and_update(seq)?;
+            let mut guard = self.recv_replay.lock().expect("recv_replay mutex poisoned");
+            guard.check_and_update(seq).map_err(anyhow::Error::new)?;
         }
 
         let ct = &data[8..];
@@ -200,5 +308,36 @@ mod tests {
             "expected replay-related error, got: {err}"
         );
     }
-}
 
+    #[test]
+    fn replay_window_accepts_reordered_packet_within_expanded_window() {
+        let mut state = RecvReplayState::new();
+        for seq in 1..=400 {
+            if seq == 120 {
+                continue;
+            }
+            state.check_and_update(seq).unwrap();
+        }
+
+        state.check_and_update(120).unwrap();
+
+        let err = state.check_and_update(120).unwrap_err();
+        assert_eq!(err.kind, ReplayRejectKind::Duplicate);
+        assert_eq!(err.behind, Some(280));
+    }
+
+    #[test]
+    fn replay_window_rejects_unseen_packet_beyond_expanded_window() {
+        let mut state = RecvReplayState::new();
+        for seq in 1..=700 {
+            if seq == 100 {
+                continue;
+            }
+            state.check_and_update(seq).unwrap();
+        }
+
+        let err = state.check_and_update(100).unwrap_err();
+        assert_eq!(err.kind, ReplayRejectKind::TooOld);
+        assert_eq!(err.behind, Some(600));
+    }
+}

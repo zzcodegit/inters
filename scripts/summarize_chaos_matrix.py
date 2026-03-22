@@ -28,6 +28,14 @@ def average(values):
     return mean(values)
 
 
+def normalize_open_message_error(error: str) -> str:
+    if error.startswith("packet too old for replay window"):
+        return "packet too old for replay window"
+    if error.startswith("duplicate packet detected"):
+        return "duplicate packet detected"
+    return error
+
+
 def count_route_changes(decisions):
     previous = None
     changes = 0
@@ -70,7 +78,9 @@ def summarize_profile(prefix: Path):
         }:
             chaos_counts[stage_name] += 1
         elif component == "client" and stage_name == "open_message_failed":
-            client_open_failures[item.get("error", "<missing>")] += 1
+            client_open_failures[
+                normalize_open_message_error(item.get("error", "<missing>"))
+            ] += 1
         elif component == "client" and stage_name in {
             "late_payload_after_completion",
             "late_close_after_completion",
@@ -78,7 +88,9 @@ def summarize_profile(prefix: Path):
         }:
             client_late_events[stage_name] += 1
         elif component == "exit" and stage_name == "open_message_failed":
-            exit_open_failures[item.get("error", "<missing>")] += 1
+            exit_open_failures[
+                normalize_open_message_error(item.get("error", "<missing>"))
+            ] += 1
         elif component == "exit" and stage_name == "stream_complete":
             site = item.get("site", "")
             if site.startswith("chaos-exact-3hop-run"):

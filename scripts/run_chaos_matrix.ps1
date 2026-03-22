@@ -110,7 +110,7 @@ try {
         "=== chaos profile=$($profile.Name) base_port=$($profile.BasePort) loss_ppm=$($profile.LossPpm) duplicate_ppm=$($profile.DuplicatePpm) reorder_ppm=$($profile.ReorderPpm) base_delay_ms=$($profile.BaseDelayMs) jitter_ms=$($profile.JitterMs) reorder_extra_delay_ms=$($profile.ReorderExtraDelayMs) ===" |
             Tee-Object -FilePath $masterLog -Append
 
-        $cargoCommand = "cargo test --test chaos_matrix -- --test-threads=1 --nocapture"
+        $cargoCommand = "cargo test --test chaos_matrix chaos_profile_collects_transport_and_selection_artifacts -- --test-threads=1 --nocapture"
         $stdoutPath = Join-Path $env:TEMP "vpnnode-chaos-$($profile.Name)-stdout.log"
         $stderrPath = Join-Path $env:TEMP "vpnnode-chaos-$($profile.Name)-stderr.log"
         if (Test-Path $stdoutPath) { Remove-Item $stdoutPath -Force }

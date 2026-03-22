@@ -1,0 +1,15 @@
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on artifact directory
+   Compiling vpnnode v0.1.0 (C:\neinternet\vpnnode)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 23.40s
+     Running unittests src\lib.rs (target\debug\deps\vpnnode-a32e04d484554ec4.exe)
+
+running 3 tests
+test session::tests::replay_window_accepts_reordered_packet_within_expanded_window ... ok
+test session::tests::replay_window_rejects_duplicates_and_old_packets ... ok
+test session::tests::replay_window_rejects_unseen_packet_beyond_expanded_window ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 71 filtered out; finished in 0.01s
+
