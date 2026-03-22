@@ -18,7 +18,7 @@ use crate::protocol::{
 use crate::route::Route;
 use crate::route_memory::RouteCache;
 use crate::route_store::{LocalRouteObservation, RouteFailureKind, RouteStore};
-use crate::session::SessionCrypto;
+use crate::session::{classify_open_message_error, SessionCrypto, SessionOpenRejectKind};
 use crate::stage_trace;
 use crate::stream_reliable::{AckFrame, ReliableStream};
 use crate::transport::{Transport, UdpTransport};
@@ -1318,6 +1318,28 @@ See README: Stage 2 support matrix."
                                     }
                                 }
                             }
+                        }
+                        let reject = classify_open_message_error(&e);
+                        if reject.kind == SessionOpenRejectKind::Duplicate {
+                            emit_client_stage(
+                                "duplicate_packet_dropped",
+                                json!({
+                                    "peer": from.to_string(),
+                                    "seq": reject.seq,
+                                    "highest": reject.highest,
+                                    "behind": reject.behind,
+                                    "window": reject.window,
+                                }),
+                            );
+                            debug!(
+                                peer = %from,
+                                seq = ?reject.seq,
+                                highest = ?reject.highest,
+                                behind = ?reject.behind,
+                                window = ?reject.window,
+                                "client dropped duplicate packet before decode"
+                            );
+                            continue;
                         }
                         emit_client_stage(
                             "open_message_failed",
@@ -3380,6 +3402,17 @@ async fn run_client_tun_mode(
                                 }
                             }
                         }
+                    }
+                    let reject = classify_open_message_error(&e);
+                    if reject.kind == SessionOpenRejectKind::Duplicate {
+                        debug!(
+                            seq = ?reject.seq,
+                            highest = ?reject.highest,
+                            behind = ?reject.behind,
+                            window = ?reject.window,
+                            "client tun dropped duplicate packet before decode"
+                        );
+                        continue;
                     }
                     error!(%e, "client tun: failed to open message");
                     continue;

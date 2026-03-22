@@ -90,6 +90,47 @@ impl fmt::Display for ReplayReject {
 
 impl std::error::Error for ReplayReject {}
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SessionOpenRejectKind {
+    InvalidSeq,
+    TooOld,
+    Duplicate,
+    Other,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SessionOpenRejectInfo {
+    pub kind: SessionOpenRejectKind,
+    pub seq: Option<u64>,
+    pub highest: Option<u64>,
+    pub behind: Option<u64>,
+    pub window: Option<u64>,
+}
+
+pub fn classify_open_message_error(err: &anyhow::Error) -> SessionOpenRejectInfo {
+    if let Some(reject) = err.downcast_ref::<ReplayReject>() {
+        let kind = match reject.kind {
+            ReplayRejectKind::InvalidSeq => SessionOpenRejectKind::InvalidSeq,
+            ReplayRejectKind::TooOld => SessionOpenRejectKind::TooOld,
+            ReplayRejectKind::Duplicate => SessionOpenRejectKind::Duplicate,
+        };
+        return SessionOpenRejectInfo {
+            kind,
+            seq: Some(reject.seq),
+            highest: Some(reject.highest),
+            behind: reject.behind,
+            window: Some(reject.window),
+        };
+    }
+    SessionOpenRejectInfo {
+        kind: SessionOpenRejectKind::Other,
+        seq: None,
+        highest: None,
+        behind: None,
+        window: None,
+    }
+}
+
 #[derive(Debug)]
 struct RecvReplayState {
     highest: u64,

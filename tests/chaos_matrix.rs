@@ -95,6 +95,8 @@ struct StageAnalysis {
     chaos_counts: BTreeMap<String, usize>,
     open_message_failures: BTreeMap<String, usize>,
     client_open_message_failures: BTreeMap<String, usize>,
+    duplicate_drop_events: BTreeMap<String, usize>,
+    client_duplicate_drop_events: BTreeMap<String, usize>,
     client_late_events: BTreeMap<String, usize>,
     client_lifecycle_events: BTreeMap<String, usize>,
     client_terminal_events: BTreeMap<String, usize>,
@@ -177,6 +179,24 @@ async fn chaos_profile_collects_transport_and_selection_artifacts() -> anyhow::R
     if stage_analysis.exact_streams.is_empty() {
         bail!("chaos exact run did not emit exit stream summaries");
     }
+    assert_eq!(
+        stage_analysis
+            .client_open_message_failures
+            .get("duplicate packet detected")
+            .copied()
+            .unwrap_or(0),
+        0,
+        "chaos profile must not surface duplicate packets as client open-message failures once duplicate traffic is explicitly classified"
+    );
+    assert_eq!(
+        stage_analysis
+            .open_message_failures
+            .get("duplicate packet detected")
+            .copied()
+            .unwrap_or(0),
+        0,
+        "chaos profile must not surface duplicate packets as exit open-message failures once duplicate traffic is explicitly classified"
+    );
 
     Ok(())
 }
@@ -401,6 +421,91 @@ async fn mild_delay_content_length_completion_settles_terminal_signals_cleanly(
             .unwrap_or(0),
         0,
         "mild delay regression must not deliver extra body bytes after local content-length completion"
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn combined_chaos_duplicate_packets_are_classified_without_open_failure() -> anyhow::Result<()>
+{
+    support::prepare_baseline(BaselineMode::Local);
+
+    let config = ChaosRunConfig::combined_regression("duplicate-noise-regression-test", 20_800, 5);
+    prepare_chaos_run(&config)?;
+
+    let exact_ports = ports_from_base(config.base_port);
+    let adaptive_ports = ports_from_base(config.base_port.saturating_add(100));
+
+    run_mode_scenario(
+        &config,
+        RunMode::Exact3Hop,
+        exact_ports,
+        true,
+        &config.exact_route_cache_path,
+    )
+    .await?;
+    run_mode_scenario(
+        &config,
+        RunMode::Adaptive,
+        adaptive_ports,
+        false,
+        &config.adaptive_route_cache_path,
+    )
+    .await?;
+
+    let measurements = read_measurements(&config.raw_path())?;
+    assert_eq!(
+        measurements.len(),
+        config.profile.runs * 2,
+        "duplicate-noise regression must produce successful exact and adaptive measurements"
+    );
+    assert!(
+        measurements.iter().all(|record| record.status_code == 200),
+        "duplicate-noise regression must keep HTTP 200"
+    );
+
+    let stage_analysis = analyze_stage_trace(&config.stage_trace_path)?;
+    assert_eq!(
+        stage_analysis
+            .client_open_message_failures
+            .get("duplicate packet detected")
+            .copied()
+            .unwrap_or(0),
+        0,
+        "duplicate-noise regression must no longer classify duplicate packets as client open-message failures"
+    );
+    assert_eq!(
+        stage_analysis
+            .open_message_failures
+            .get("duplicate packet detected")
+            .copied()
+            .unwrap_or(0),
+        0,
+        "duplicate-noise regression must no longer classify duplicate packets as exit open-message failures"
+    );
+    assert!(
+        stage_analysis
+            .client_duplicate_drop_events
+            .get("duplicate_packet_dropped")
+            .copied()
+            .unwrap_or(0)
+            + stage_analysis
+                .duplicate_drop_events
+                .get("duplicate_packet_dropped")
+                .copied()
+                .unwrap_or(0)
+            > 0,
+        "duplicate-noise regression must still observe duplicate packets and classify them as drops instead of failures"
+    );
+    assert!(
+        stage_analysis
+            .client_terminal_events
+            .get("response_transport_terminal_close_duplicate")
+            .copied()
+            .unwrap_or(0)
+            > 0,
+        "duplicate-noise regression must still observe duplicate terminal close markers under combined chaos"
     );
 
     Ok(())
@@ -719,6 +824,12 @@ fn analyze_stage_trace(path: &Path) -> anyhow::Result<StageAnalysis> {
                     .entry(normalize_open_message_error(error))
                     .or_insert(0usize) += 1;
             }
+            ("exit", "duplicate_packet_dropped") => {
+                *analysis
+                    .duplicate_drop_events
+                    .entry(stage.to_string())
+                    .or_insert(0usize) += 1;
+            }
             ("client", "open_message_failed") => {
                 let error = value
                     .get("error")
@@ -727,6 +838,12 @@ fn analyze_stage_trace(path: &Path) -> anyhow::Result<StageAnalysis> {
                 *analysis
                     .client_open_message_failures
                     .entry(normalize_open_message_error(error))
+                    .or_insert(0usize) += 1;
+            }
+            ("client", "duplicate_packet_dropped") => {
+                *analysis
+                    .client_duplicate_drop_events
+                    .entry(stage.to_string())
                     .or_insert(0usize) += 1;
             }
             ("client", "late_payload_after_completion")
@@ -901,6 +1018,12 @@ fn render_report(config: &ChaosRunConfig, analysis: &StageAnalysis) -> anyhow::R
             out.push_str(&format!("- {error}: {count}\n"));
         }
     }
+    if !analysis.duplicate_drop_events.is_empty() {
+        out.push_str("\n## Exit Duplicate Drops\n\n");
+        for (stage, count) in &analysis.duplicate_drop_events {
+            out.push_str(&format!("- {stage}: {count}\n"));
+        }
+    }
     if !analysis.client_late_events.is_empty() {
         out.push_str("\n## Client Late Events\n\n");
         for (stage, count) in &analysis.client_late_events {
@@ -911,6 +1034,12 @@ fn render_report(config: &ChaosRunConfig, analysis: &StageAnalysis) -> anyhow::R
         out.push_str("\n## Client Open Message Failures\n\n");
         for (error, count) in &analysis.client_open_message_failures {
             out.push_str(&format!("- {error}: {count}\n"));
+        }
+    }
+    if !analysis.client_duplicate_drop_events.is_empty() {
+        out.push_str("\n## Client Duplicate Drops\n\n");
+        for (stage, count) in &analysis.client_duplicate_drop_events {
+            out.push_str(&format!("- {stage}: {count}\n"));
         }
     }
     if !analysis.client_lifecycle_events.is_empty() {

@@ -13,7 +13,7 @@ use crate::ops::drain;
 use crate::protocol::{
     decode, MsgType, ResponseQualityFeedback, StreamFrame, TunnelMessage, PROTOCOL_VERSION,
 };
-use crate::session::SessionCrypto;
+use crate::session::{classify_open_message_error, SessionCrypto, SessionOpenRejectKind};
 use crate::stage_trace;
 use crate::stream_reliable::{AckFrame, ReliableStream};
 use crate::transport::{Transport, UdpTransport};
@@ -2176,6 +2176,29 @@ pub async fn run_exit(args: ExitArgs) -> Result<()> {
                         session_crypto = Some(crypto_new);
                         continue;
                     }
+                }
+                let reject = classify_open_message_error(&e);
+                if reject.kind == SessionOpenRejectKind::Duplicate {
+                    emit_exit_stage(
+                        "duplicate_packet_dropped",
+                        json!({
+                            "peer": peer.to_string(),
+                            "route_len": session_route.as_ref().map(|route| route.len()),
+                            "seq": reject.seq,
+                            "highest": reject.highest,
+                            "behind": reject.behind,
+                            "window": reject.window,
+                        }),
+                    );
+                    debug!(
+                        peer = %peer,
+                        seq = ?reject.seq,
+                        highest = ?reject.highest,
+                        behind = ?reject.behind,
+                        window = ?reject.window,
+                        "exit dropped duplicate packet before decode"
+                    );
+                    continue;
                 }
                 emit_exit_stage(
                     "open_message_failed",

@@ -64,9 +64,11 @@ def summarize_profile(prefix: Path):
 
     chaos_counts = Counter()
     client_open_failures = Counter()
+    client_duplicate_drops = Counter()
     client_late_events = Counter()
     client_terminal_events = Counter()
     exit_open_failures = Counter()
+    exit_duplicate_drops = Counter()
     exit_exact = []
     exit_adaptive = []
     for item in stage:
@@ -82,6 +84,8 @@ def summarize_profile(prefix: Path):
             client_open_failures[
                 normalize_open_message_error(item.get("error", "<missing>"))
             ] += 1
+        elif component == "client" and stage_name == "duplicate_packet_dropped":
+            client_duplicate_drops[stage_name] += 1
         elif component == "client" and stage_name in {
             "late_payload_after_completion",
             "late_close_after_completion",
@@ -109,6 +113,8 @@ def summarize_profile(prefix: Path):
             exit_open_failures[
                 normalize_open_message_error(item.get("error", "<missing>"))
             ] += 1
+        elif component == "exit" and stage_name == "duplicate_packet_dropped":
+            exit_duplicate_drops[stage_name] += 1
         elif component == "exit" and stage_name == "stream_complete":
             site = item.get("site", "")
             if site.startswith("chaos-exact-3hop-run"):
@@ -170,9 +176,11 @@ def summarize_profile(prefix: Path):
         "exit_adaptive": exit_summary(exit_adaptive),
         "chaos_counts": dict(chaos_counts),
         "client_open_failures": dict(client_open_failures),
+        "client_duplicate_drops": dict(client_duplicate_drops),
         "client_late_events": dict(client_late_events),
         "client_terminal_events": dict(client_terminal_events),
         "exit_open_failures": dict(exit_open_failures),
+        "exit_duplicate_drops": dict(exit_duplicate_drops),
         "decision_reasons": dict(decision_reasons),
         "selected_routes": dict(selected_routes),
         "decision_events": len(decisions),
@@ -245,9 +253,9 @@ def main():
     out.append("## Adaptive Selector")
     out.append("")
     out.append(
-        "| profile | decision events | route changes | decision reasons | selected routes | client late events | client terminal events | client open failures | exit open failures |"
+        "| profile | decision events | route changes | decision reasons | selected routes | client late events | client terminal events | client duplicate drops | exit duplicate drops | client open failures | exit open failures |"
     )
-    out.append("| --- | ---: | ---: | --- | --- | --- | --- | --- | --- |")
+    out.append("| --- | ---: | ---: | --- | --- | --- | --- | --- | --- | --- | --- |")
     for profile_name in args.profiles:
         summary = summaries[profile_name]
         decision_reasons = ", ".join(
@@ -263,6 +271,14 @@ def main():
             f"{key}x{value}"
             for key, value in sorted(summary["client_terminal_events"].items())
         ) or "n/a"
+        client_duplicate_drops = ", ".join(
+            f"{key}x{value}"
+            for key, value in sorted(summary["client_duplicate_drops"].items())
+        ) or "n/a"
+        exit_duplicate_drops = ", ".join(
+            f"{key}x{value}"
+            for key, value in sorted(summary["exit_duplicate_drops"].items())
+        ) or "n/a"
         client_open = ", ".join(
             f"{key}x{value}"
             for key, value in sorted(summary["client_open_failures"].items())
@@ -271,7 +287,7 @@ def main():
             f"{key}x{value}" for key, value in sorted(summary["exit_open_failures"].items())
         ) or "n/a"
         out.append(
-            f"| {profile_name} | {summary['decision_events']} | {summary['route_changes']} | {decision_reasons} | {selected_routes} | {client_late} | {client_terminal} | {client_open} | {exit_open} |"
+            f"| {profile_name} | {summary['decision_events']} | {summary['route_changes']} | {decision_reasons} | {selected_routes} | {client_late} | {client_terminal} | {client_duplicate_drops} | {exit_duplicate_drops} | {client_open} | {exit_open} |"
         )
     out.append("")
     out.append("## Chaos Actions")
