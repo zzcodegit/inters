@@ -96,6 +96,7 @@ struct StageAnalysis {
     open_message_failures: BTreeMap<String, usize>,
     client_open_message_failures: BTreeMap<String, usize>,
     client_late_events: BTreeMap<String, usize>,
+    client_lifecycle_events: BTreeMap<String, usize>,
     exact_streams: Vec<ExitStreamSummary>,
     adaptive_streams: Vec<ExitStreamSummary>,
     adaptive_decisions: Vec<Value>,
@@ -205,6 +206,26 @@ async fn combined_chaos_preserves_full_body_against_content_length() -> anyhow::
             .iter()
             .all(|record| record.response_bytes > record.body_bytes && record.body_bytes > 0),
         "combined chaos regression must preserve a complete response body"
+    );
+
+    let stage_analysis = analyze_stage_trace(&config.stage_trace_path)?;
+    assert_eq!(
+        stage_analysis
+            .client_lifecycle_events
+            .get("orphaned_response_payload")
+            .copied()
+            .unwrap_or(0),
+        0,
+        "combined chaos regression must not leave payloads without a live or completed consumer"
+    );
+    assert_eq!(
+        stage_analysis
+            .client_lifecycle_events
+            .get("response_payload_unknown_stream")
+            .copied()
+            .unwrap_or(0),
+        0,
+        "combined chaos regression must not drop response payloads on unknown streams"
     );
 
     Ok(())
@@ -532,6 +553,16 @@ fn analyze_stage_trace(path: &Path) -> anyhow::Result<StageAnalysis> {
                     .entry(stage.to_string())
                     .or_insert(0usize) += 1;
             }
+            ("client", "stale_active_response_state_pruned")
+            | ("client", "orphaned_response_payload")
+            | ("client", "late_ack_after_completion")
+            | ("client", "ack_for_unknown_stream")
+            | ("client", "response_payload_unknown_stream") => {
+                *analysis
+                    .client_lifecycle_events
+                    .entry(stage.to_string())
+                    .or_insert(0usize) += 1;
+            }
             ("exit", "stream_complete") => {
                 let site = value
                     .get("site")
@@ -671,6 +702,12 @@ fn render_report(config: &ChaosRunConfig, analysis: &StageAnalysis) -> anyhow::R
         out.push_str("\n## Client Open Message Failures\n\n");
         for (error, count) in &analysis.client_open_message_failures {
             out.push_str(&format!("- {error}: {count}\n"));
+        }
+    }
+    if !analysis.client_lifecycle_events.is_empty() {
+        out.push_str("\n## Client Lifecycle Events\n\n");
+        for (stage, count) in &analysis.client_lifecycle_events {
+            out.push_str(&format!("- {stage}: {count}\n"));
         }
     }
     Ok(out)

@@ -190,6 +190,38 @@ enum ResponseEvent {
     CloseStream,
 }
 
+enum ResponseDataDispatch {
+    Active {
+        tx: ResponseTx,
+        reliable: Arc<Mutex<ReliableStream>>,
+        route: Route,
+    },
+    Completed {
+        reliable: Arc<Mutex<ReliableStream>>,
+        route: Route,
+        completion_reason: &'static str,
+        pruned_stale_active_state: bool,
+    },
+    Orphaned {
+        reliable: Arc<Mutex<ReliableStream>>,
+        route: Route,
+        pruned_stale_active_state: bool,
+    },
+    Unknown,
+}
+
+enum ResponseAckDispatch {
+    Active(Arc<Mutex<ReliableStream>>),
+    Completed {
+        reliable: Arc<Mutex<ReliableStream>>,
+        completion_reason: &'static str,
+        pruned_stale_active_state: bool,
+    },
+    Unknown {
+        pruned_stale_active_state: bool,
+    },
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct BufferedHttpResponseInspection {
     header_end: Option<usize>,
@@ -363,6 +395,170 @@ fn buffered_close_requires_wait(expected_total: Option<usize>, response_len: usi
     expected_total
         .map(|expected_total| response_len < expected_total)
         .unwrap_or(false)
+}
+
+fn prune_active_response_stream_state(
+    reliable_streams: &ReliableStreamTable,
+    response_started: &ResponseStartedTable,
+    stream_routes: &StreamRouteTable,
+    stream_id: u32,
+) -> bool {
+    let removed_reliable = {
+        let mut map = reliable_streams.lock().unwrap();
+        map.remove(&stream_id).is_some()
+    };
+    let removed_started = {
+        let mut map = response_started.lock().unwrap();
+        map.remove(&stream_id).is_some()
+    };
+    let removed_route = {
+        let mut map = stream_routes.lock().unwrap();
+        map.remove(&stream_id).is_some()
+    };
+    removed_reliable || removed_started || removed_route
+}
+
+fn resolve_response_data_dispatch(
+    stream_id: u32,
+    response_senders: &ResponseSenderTable,
+    reliable_streams: &ReliableStreamTable,
+    response_started: &ResponseStartedTable,
+    stream_routes: &StreamRouteTable,
+    completed_streams: &CompletedResponseStreamTable,
+    default_route: &Route,
+) -> ResponseDataDispatch {
+    let active_tx = {
+        let map = response_senders.lock().unwrap();
+        map.get(&stream_id).cloned()
+    };
+    let active_rs = {
+        let map = reliable_streams.lock().unwrap();
+        map.get(&stream_id).cloned()
+    };
+    let active_route = {
+        let map = stream_routes.lock().unwrap();
+        map.get(&stream_id).cloned()
+    };
+    let completed_entry = if active_tx.is_none() {
+        snapshot_completed_response_stream(completed_streams, stream_id)
+    } else {
+        None
+    };
+
+    if let Some(tx) = active_tx {
+        let reliable = if let Some(reliable) = active_rs {
+            reliable
+        } else {
+            let mut map = reliable_streams.lock().unwrap();
+            map.entry(stream_id)
+                .or_insert_with(|| Arc::new(Mutex::new(ReliableStream::new())))
+                .clone()
+        };
+        return ResponseDataDispatch::Active {
+            tx,
+            reliable,
+            route: active_route.unwrap_or_else(|| default_route.clone()),
+        };
+    }
+
+    if let Some(completed) = completed_entry {
+        let pruned_stale_active_state = if active_rs.is_some() {
+            prune_active_response_stream_state(
+                reliable_streams,
+                response_started,
+                stream_routes,
+                stream_id,
+            )
+        } else {
+            false
+        };
+        return ResponseDataDispatch::Completed {
+            reliable: completed.reliable.clone(),
+            route: completed.route.clone(),
+            completion_reason: completed.completion_reason,
+            pruned_stale_active_state,
+        };
+    }
+
+    if let Some(reliable) = active_rs {
+        let pruned_stale_active_state = prune_active_response_stream_state(
+            reliable_streams,
+            response_started,
+            stream_routes,
+            stream_id,
+        );
+        return ResponseDataDispatch::Orphaned {
+            reliable,
+            route: active_route.unwrap_or_else(|| default_route.clone()),
+            pruned_stale_active_state,
+        };
+    }
+
+    ResponseDataDispatch::Unknown
+}
+
+fn resolve_response_ack_dispatch(
+    stream_id: u32,
+    response_senders: &ResponseSenderTable,
+    reliable_streams: &ReliableStreamTable,
+    response_started: &ResponseStartedTable,
+    stream_routes: &StreamRouteTable,
+    completed_streams: &CompletedResponseStreamTable,
+) -> ResponseAckDispatch {
+    let has_active_consumer = {
+        let map = response_senders.lock().unwrap();
+        map.contains_key(&stream_id)
+    };
+    let active_rs = {
+        let map = reliable_streams.lock().unwrap();
+        map.get(&stream_id).cloned()
+    };
+    let completed_entry = if !has_active_consumer {
+        snapshot_completed_response_stream(completed_streams, stream_id)
+    } else {
+        None
+    };
+
+    if has_active_consumer {
+        if let Some(reliable) = active_rs {
+            return ResponseAckDispatch::Active(reliable);
+        }
+        return ResponseAckDispatch::Unknown {
+            pruned_stale_active_state: false,
+        };
+    }
+
+    if let Some(completed) = completed_entry {
+        let pruned_stale_active_state = if active_rs.is_some() {
+            prune_active_response_stream_state(
+                reliable_streams,
+                response_started,
+                stream_routes,
+                stream_id,
+            )
+        } else {
+            false
+        };
+        return ResponseAckDispatch::Completed {
+            reliable: completed.reliable.clone(),
+            completion_reason: completed.completion_reason,
+            pruned_stale_active_state,
+        };
+    }
+
+    let pruned_stale_active_state = if active_rs.is_some() {
+        prune_active_response_stream_state(
+            reliable_streams,
+            response_started,
+            stream_routes,
+            stream_id,
+        )
+    } else {
+        false
+    };
+    ResponseAckDispatch::Unknown {
+        pruned_stale_active_state,
+    }
 }
 
 fn build_probe_request() -> Vec<u8> {
@@ -860,60 +1056,88 @@ See README: Stage 2 support matrix."
                         "client: received StreamFrame from tunnel (response path)"
                     );
 
-                    let active_tx = {
-                        let map = response_senders_recv.lock().unwrap();
-                        map.get(&sid).cloned()
-                    };
-                    let active_rs = {
-                        let map = reliable_streams_recv.lock().unwrap();
-                        map.get(&sid).cloned()
-                    };
-                    let active_route = {
-                        let map = stream_routes_for_ack.lock().unwrap();
-                        map.get(&sid).cloned()
-                    };
-                    let completed_entry = if active_tx.is_none() && active_rs.is_none() {
-                        snapshot_completed_response_stream(&completed_response_streams_recv, sid)
-                    } else {
-                        None
-                    };
-                    let (rs_arc, route_for_this_stream, maybe_tx, completion_reason) =
-                        if let Some(rs_arc) = active_rs {
-                            (
-                                rs_arc,
-                                active_route.unwrap_or_else(|| default_route_for_ack.clone()),
-                                active_tx,
-                                None,
-                            )
-                        } else if active_tx.is_some() {
-                            let rs_arc = {
-                                let mut map = reliable_streams_recv.lock().unwrap();
-                                map.entry(sid)
-                                    .or_insert_with(|| Arc::new(Mutex::new(ReliableStream::new())))
-                                    .clone()
-                            };
-                            (
-                                rs_arc,
-                                active_route.unwrap_or_else(|| default_route_for_ack.clone()),
-                                active_tx,
-                                None,
-                            )
-                        } else if let Some(completed) = completed_entry {
-                            (
-                                completed.reliable.clone(),
-                                completed.route.clone(),
-                                None,
-                                Some(completed.completion_reason),
-                            )
-                        } else {
-                            error!(
+                    let dispatch = resolve_response_data_dispatch(
+                        sid,
+                        &response_senders_recv,
+                        &reliable_streams_recv,
+                        &response_started_recv,
+                        &stream_routes_for_ack,
+                        &completed_response_streams_recv,
+                        &default_route_for_ack,
+                    );
+                    let (
+                        rs_arc,
+                        route_for_this_stream,
+                        maybe_tx,
+                        completion_reason,
+                        orphaned_without_consumer,
+                        pruned_stale_active_state,
+                    ) = match dispatch {
+                        ResponseDataDispatch::Active {
+                            tx,
+                            reliable,
+                            route,
+                        } => (reliable, route, Some(tx), None, false, false),
+                        ResponseDataDispatch::Completed {
+                            reliable,
+                            route,
+                            completion_reason,
+                            pruned_stale_active_state,
+                        } => (
+                            reliable,
+                            route,
+                            None,
+                            Some(completion_reason),
+                            false,
+                            pruned_stale_active_state,
+                        ),
+                        ResponseDataDispatch::Orphaned {
+                            reliable,
+                            route,
+                            pruned_stale_active_state,
+                        } => (
+                            reliable,
+                            route,
+                            None,
+                            None,
+                            true,
+                            pruned_stale_active_state,
+                        ),
+                        ResponseDataDispatch::Unknown => {
+                            emit_client_stage(
+                                "response_payload_unknown_stream",
+                                json!({
+                                    "stream_id": sid,
+                                    "frame_seq": frame.frame_seq,
+                                    "payload_len": frame.payload.len(),
+                                }),
+                            );
+                            debug!(
                                 stream_id = sid,
                                 frame_seq = frame.frame_seq,
                                 payload_len = frame.payload.len(),
                                 "client: response payload for unknown stream"
                             );
                             continue;
-                        };
+                        }
+                    };
+
+                    if pruned_stale_active_state {
+                        emit_client_stage(
+                            "stale_active_response_state_pruned",
+                            json!({
+                                "stream_id": sid,
+                                "route_len": route_for_this_stream.len(),
+                                "route_chain": route_for_this_stream
+                                    .hops
+                                    .iter()
+                                    .map(|hop| hop.to_string())
+                                    .collect::<Vec<_>>()
+                                    .join(" -> "),
+                                "frame_seq": frame.frame_seq,
+                            }),
+                        );
+                    }
 
                     // Feed into per-stream reliable receive path and build cumulative ACK.
                     let (deliver, ack_seq, end_of_stream) = {
@@ -1019,10 +1243,34 @@ See README: Stage 2 support matrix."
                             late_payload_count = late_count,
                             "client: late response payload after completion"
                         );
-                    } else {
-                        error!(
+                    } else if orphaned_without_consumer {
+                        let late_bytes: usize = deliver.iter().map(|chunk| chunk.len()).sum();
+                        emit_client_stage(
+                            "orphaned_response_payload",
+                            json!({
+                                "stream_id": sid,
+                                "route_len": route_for_this_stream.len(),
+                                "route_chain": route_for_this_stream
+                                    .hops
+                                    .iter()
+                                    .map(|hop| hop.to_string())
+                                    .collect::<Vec<_>>()
+                                    .join(" -> "),
+                                "frame_seq": frame.frame_seq,
+                                "ack_seq": ack_seq,
+                                "delivered_chunks": deliver.len(),
+                                "delivered_bytes": late_bytes,
+                                "end_of_stream": end_of_stream,
+                                "duplicate_like": late_bytes == 0 && !end_of_stream,
+                            }),
+                        );
+                        debug!(
                             stream_id = sid,
-                            "client: MISSING response channel for response payloads"
+                            frame_seq = frame.frame_seq,
+                            ack_seq,
+                            delivered_bytes = late_bytes,
+                            end_of_stream,
+                            "client: orphaned response payload handled without active consumer"
                         );
                     }
                 } else if msg_type == MsgType::Ping {
@@ -1034,22 +1282,89 @@ See README: Stage 2 support matrix."
                             continue;
                         }
                     };
-                    let rs = {
-                        let mut map = reliable_streams_recv.lock().unwrap();
-                        map.entry(ack.stream_id)
-                            .or_insert_with(|| Arc::new(Mutex::new(ReliableStream::new())))
-                            .clone()
-                    };
-                    let mut guard = rs.lock().unwrap();
-                    let (acked, avg_latency_ms) = guard.apply_ack_with_latency(ack.ack_seq);
-                    if acked > 0 {
-                        debug!(
-                            stream_id = ack.stream_id,
-                            ack_seq = ack.ack_seq,
-                            acked_frames = acked,
-                            ack_latency_ms_avg = ?avg_latency_ms,
-                            "client: cumulative ACK applied"
-                        );
+                    match resolve_response_ack_dispatch(
+                        ack.stream_id,
+                        &response_senders_recv,
+                        &reliable_streams_recv,
+                        &response_started_recv,
+                        &stream_routes_for_ack,
+                        &completed_response_streams_recv,
+                    ) {
+                        ResponseAckDispatch::Active(rs) => {
+                            let mut guard = rs.lock().unwrap();
+                            let (acked, avg_latency_ms) = guard.apply_ack_with_latency(ack.ack_seq);
+                            if acked > 0 {
+                                debug!(
+                                    stream_id = ack.stream_id,
+                                    ack_seq = ack.ack_seq,
+                                    acked_frames = acked,
+                                    ack_latency_ms_avg = ?avg_latency_ms,
+                                    "client: cumulative ACK applied"
+                                );
+                            }
+                        }
+                        ResponseAckDispatch::Completed {
+                            reliable,
+                            completion_reason,
+                            pruned_stale_active_state,
+                        } => {
+                            if pruned_stale_active_state {
+                                emit_client_stage(
+                                    "stale_active_response_state_pruned",
+                                    json!({
+                                        "stream_id": ack.stream_id,
+                                        "ack_seq": ack.ack_seq,
+                                        "source": "ack",
+                                    }),
+                                );
+                            }
+                            let mut guard = reliable.lock().unwrap();
+                            let (acked, avg_latency_ms) = guard.apply_ack_with_latency(ack.ack_seq);
+                            emit_client_stage(
+                                "late_ack_after_completion",
+                                json!({
+                                    "stream_id": ack.stream_id,
+                                    "ack_seq": ack.ack_seq,
+                                    "acked_frames": acked,
+                                    "ack_latency_ms_avg": avg_latency_ms,
+                                    "completion_reason": completion_reason,
+                                }),
+                            );
+                            debug!(
+                                stream_id = ack.stream_id,
+                                ack_seq = ack.ack_seq,
+                                acked_frames = acked,
+                                ack_latency_ms_avg = ?avg_latency_ms,
+                                completion_reason,
+                                "client: late ACK applied after completion"
+                            );
+                        }
+                        ResponseAckDispatch::Unknown {
+                            pruned_stale_active_state,
+                        } => {
+                            if pruned_stale_active_state {
+                                emit_client_stage(
+                                    "stale_active_response_state_pruned",
+                                    json!({
+                                        "stream_id": ack.stream_id,
+                                        "ack_seq": ack.ack_seq,
+                                        "source": "ack",
+                                    }),
+                                );
+                            }
+                            emit_client_stage(
+                                "ack_for_unknown_stream",
+                                json!({
+                                    "stream_id": ack.stream_id,
+                                    "ack_seq": ack.ack_seq,
+                                }),
+                            );
+                            debug!(
+                                stream_id = ack.stream_id,
+                                ack_seq = ack.ack_seq,
+                                "client: ACK for unknown stream ignored"
+                            );
+                        }
                     }
                 } else if msg_type == MsgType::Error {
                     let maybe_tx = {
@@ -3102,5 +3417,146 @@ mod tests {
             "duplicate CloseStream feedback must not be applied twice"
         );
         assert!(mark_close_feedback_seen(&seen, 8));
+    }
+
+    #[test]
+    fn response_data_dispatch_prefers_completed_stream_over_stale_active_state() {
+        let stream_id = 77u32;
+        let response_senders: ResponseSenderTable = Arc::new(Mutex::new(HashMap::new()));
+        let reliable_streams: ReliableStreamTable = Arc::new(Mutex::new(HashMap::new()));
+        let response_started: ResponseStartedTable = Arc::new(Mutex::new(HashMap::new()));
+        let stream_routes: StreamRouteTable = Arc::new(Mutex::new(HashMap::new()));
+        let completed: CompletedResponseStreamTable = Arc::new(Mutex::new(HashMap::new()));
+
+        let completed_reliable = Arc::new(Mutex::new(ReliableStream::new()));
+        remember_completed_response_stream(
+            &completed,
+            stream_id,
+            completed_reliable.clone(),
+            test_route(),
+            "content_length_satisfied",
+        );
+
+        let stale_reliable = Arc::new(Mutex::new(ReliableStream::new()));
+        reliable_streams
+            .lock()
+            .unwrap()
+            .insert(stream_id, stale_reliable.clone());
+        stream_routes
+            .lock()
+            .unwrap()
+            .insert(stream_id, test_route());
+
+        match resolve_response_data_dispatch(
+            stream_id,
+            &response_senders,
+            &reliable_streams,
+            &response_started,
+            &stream_routes,
+            &completed,
+            &test_route(),
+        ) {
+            ResponseDataDispatch::Completed {
+                reliable,
+                pruned_stale_active_state,
+                ..
+            } => {
+                assert!(Arc::ptr_eq(&reliable, &completed_reliable));
+                assert!(pruned_stale_active_state);
+            }
+            _ => panic!("expected completed dispatch"),
+        }
+
+        assert!(
+            !reliable_streams.lock().unwrap().contains_key(&stream_id),
+            "stale active reliable state must be pruned"
+        );
+    }
+
+    #[test]
+    fn late_ack_after_completion_uses_completed_stream_state() {
+        let stream_id = 88u32;
+        let response_senders: ResponseSenderTable = Arc::new(Mutex::new(HashMap::new()));
+        let reliable_streams: ReliableStreamTable = Arc::new(Mutex::new(HashMap::new()));
+        let response_started: ResponseStartedTable = Arc::new(Mutex::new(HashMap::new()));
+        let stream_routes: StreamRouteTable = Arc::new(Mutex::new(HashMap::new()));
+        let completed: CompletedResponseStreamTable = Arc::new(Mutex::new(HashMap::new()));
+
+        let reliable = Arc::new(Mutex::new(ReliableStream::new()));
+        {
+            let mut guard = reliable.lock().unwrap();
+            let _ = guard.build_outgoing_frame(stream_id, b"hello".to_vec());
+            let _ = guard.build_outgoing_frame(stream_id, Vec::new());
+        }
+        remember_completed_response_stream(
+            &completed,
+            stream_id,
+            reliable.clone(),
+            test_route(),
+            "content_length_satisfied",
+        );
+
+        match resolve_response_ack_dispatch(
+            stream_id,
+            &response_senders,
+            &reliable_streams,
+            &response_started,
+            &stream_routes,
+            &completed,
+        ) {
+            ResponseAckDispatch::Completed { reliable, .. } => {
+                let mut guard = reliable.lock().unwrap();
+                let (acked, _) = guard.apply_ack_with_latency(2);
+                assert_eq!(acked, 2);
+            }
+            _ => panic!("expected completed ACK dispatch"),
+        }
+
+        assert!(
+            reliable_streams.lock().unwrap().is_empty(),
+            "late ACK must not recreate active reliable state"
+        );
+    }
+
+    #[test]
+    fn orphaned_active_state_without_consumer_is_pruned() {
+        let stream_id = 99u32;
+        let response_senders: ResponseSenderTable = Arc::new(Mutex::new(HashMap::new()));
+        let reliable_streams: ReliableStreamTable = Arc::new(Mutex::new(HashMap::new()));
+        let response_started: ResponseStartedTable = Arc::new(Mutex::new(HashMap::new()));
+        let stream_routes: StreamRouteTable = Arc::new(Mutex::new(HashMap::new()));
+        let completed: CompletedResponseStreamTable = Arc::new(Mutex::new(HashMap::new()));
+
+        reliable_streams
+            .lock()
+            .unwrap()
+            .insert(stream_id, Arc::new(Mutex::new(ReliableStream::new())));
+        stream_routes
+            .lock()
+            .unwrap()
+            .insert(stream_id, test_route());
+
+        match resolve_response_data_dispatch(
+            stream_id,
+            &response_senders,
+            &reliable_streams,
+            &response_started,
+            &stream_routes,
+            &completed,
+            &test_route(),
+        ) {
+            ResponseDataDispatch::Orphaned {
+                pruned_stale_active_state,
+                ..
+            } => {
+                assert!(pruned_stale_active_state);
+            }
+            _ => panic!("expected orphaned dispatch"),
+        }
+
+        assert!(
+            reliable_streams.lock().unwrap().is_empty(),
+            "orphaned active state must be pruned"
+        );
     }
 }
