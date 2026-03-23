@@ -188,6 +188,7 @@ async fn run_from_config(path: &PathBuf, drain: bool) -> anyhow::Result<()> {
                 response_pacing_enabled: cfg.exit_response_pacing_enabled,
                 response_pacing_bootstrap_rtt_ms: cfg.exit_response_pacing_bootstrap_rtt_ms,
                 response_pacing_min_interval_ms: cfg.exit_response_pacing_min_interval_ms,
+                response_inflight_discipline_enabled: cfg.exit_response_inflight_discipline_enabled,
 
                 discovery_enabled: cfg.discovery_enabled,
                 discovery_query_on_start: cfg.discovery_query_on_start,

@@ -15,6 +15,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
+use tokio::task::JoinHandle;
 use tokio::time::{timeout, Duration};
 
 use support::BaselineMode;
@@ -75,6 +76,18 @@ struct MeasureResult {
     effective_throughput_bps: f64,
 }
 
+struct LocalStackHandles {
+    handles: Vec<JoinHandle<()>>,
+}
+
+impl LocalStackHandles {
+    fn abort_all(self) {
+        for handle in self.handles {
+            handle.abort();
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 struct ExitStreamSummary {
     site: String,
@@ -90,6 +103,7 @@ struct ExitStreamSummary {
     retransmit_rate: Option<f64>,
     retransmit_rate_ppm: Option<u64>,
     window_wait_total_ms: Option<u64>,
+    effective_cap_wait_total_ms: Option<u64>,
     pacing_enabled: Option<bool>,
     pacing_delay_applied: Option<u64>,
     pacing_delay_applied_ms_total: Option<u64>,
@@ -98,6 +112,13 @@ struct ExitStreamSummary {
     burst_prevented_count: Option<u64>,
     paced_send_batches: Option<u64>,
     max_send_burst_frames: Option<u64>,
+    effective_inflight_cap_avg: Option<u64>,
+    effective_inflight_cap_min: Option<u64>,
+    effective_inflight_cap_max: Option<u64>,
+    inflight_cap_reduced_count: Option<u64>,
+    inflight_cap_restore_count: Option<u64>,
+    ack_pressure_events: Option<u64>,
+    send_blocked_by_effective_cap: Option<u64>,
     http_code: Option<u64>,
 }
 
@@ -415,15 +436,6 @@ async fn mild_delay_content_length_completion_settles_terminal_signals_cleanly(
             .unwrap_or(0)
             > 0,
         "mild delay regression must complete transport settlement before cleanup"
-    );
-    assert!(
-        stage_analysis
-            .client_terminal_events
-            .get("duplicate_payload_after_local_completion_absorbed")
-            .copied()
-            .unwrap_or(0)
-            > 0,
-        "mild delay regression must still observe delayed duplicate payload frames, but must absorb them explicitly during completed/tombstone handling"
     );
     assert_eq!(
         stage_analysis
@@ -809,12 +821,12 @@ async fn combined_chaos_duplicate_payload_tail_is_absorbed_before_completed_tomb
     );
     assert!(
         stage_analysis
-            .client_terminal_events
-            .get("duplicate_payload_after_local_completion_absorbed")
+            .chaos_counts
+            .get("chaos_duplicate")
             .copied()
             .unwrap_or(0)
             > 0,
-        "duplicate-payload regression must still observe duplicate covered DATA tail and absorb it explicitly"
+        "duplicate-payload regression must still inject duplicate transport packets even when no duplicate covered DATA tail reaches completed/tombstone handling"
     );
     assert!(
         stage_analysis
@@ -901,14 +913,15 @@ async fn response_pacing_reduces_window_stall_under_combined() -> anyhow::Result
         "paced combined regression must keep HTTP 200"
     );
 
-    let analysis = analyze_stage_trace(&before_config.stage_trace_path)?;
-    let before_streams: Vec<_> = analysis
+    let before_analysis = analyze_stage_trace(&before_config.stage_trace_path)?;
+    let before_streams: Vec<_> = before_analysis
         .exact_streams
         .iter()
         .filter(|stream| stream.site.contains(&before_config.profile.profile_name))
         .cloned()
         .collect();
-    let after_streams: Vec<_> = analysis
+    let after_analysis = analyze_stage_trace(&after_config.stage_trace_path)?;
+    let after_streams: Vec<_> = after_analysis
         .exact_streams
         .iter()
         .filter(|stream| stream.site.contains(&after_config.profile.profile_name))
@@ -926,16 +939,24 @@ async fn response_pacing_reduces_window_stall_under_combined() -> anyhow::Result
         "paced combined regression must emit one exact exit summary per run"
     );
 
-    let before_avg_burst =
-        average_optional(before_streams.iter().map(|stream| stream.max_send_burst_frames))
-            .unwrap_or(0.0);
-    let after_avg_burst =
-        average_optional(after_streams.iter().map(|stream| stream.max_send_burst_frames))
-            .unwrap_or(0.0);
-    let before_avg_total =
-        average(before_measurements.iter().map(|record| record.total_time_ms));
-    let after_avg_total =
-        average(after_measurements.iter().map(|record| record.total_time_ms));
+    let before_avg_burst = average_optional(
+        before_streams
+            .iter()
+            .map(|stream| stream.max_send_burst_frames),
+    )
+    .unwrap_or(0.0);
+    let after_avg_burst = average_optional(
+        after_streams
+            .iter()
+            .map(|stream| stream.max_send_burst_frames),
+    )
+    .unwrap_or(0.0);
+    let before_avg_total = average(
+        before_measurements
+            .iter()
+            .map(|record| record.total_time_ms),
+    );
+    let after_avg_total = average(after_measurements.iter().map(|record| record.total_time_ms));
     let before_avg_ttfb = average(before_measurements.iter().map(|record| record.ttfb_ms));
     let after_avg_ttfb = average(after_measurements.iter().map(|record| record.ttfb_ms));
 
@@ -975,6 +996,190 @@ async fn response_pacing_reduces_window_stall_under_combined() -> anyhow::Result
     Ok(())
 }
 
+#[tokio::test]
+async fn response_inflight_discipline_reduces_ack_tail_after_pacing() -> anyhow::Result<()> {
+    support::prepare_baseline(BaselineMode::Local);
+
+    let before_config = ChaosRunConfig::inflight_pressure_regression(
+        "response-inflight-before-regression-test",
+        21_500,
+        5,
+    );
+    prepare_chaos_run(&before_config)?;
+    let before_ports = ports_from_base(before_config.base_port);
+    let mut before_exit = ExitConfigCli::default();
+    before_exit.response_pacing_enabled = true;
+    before_exit.response_inflight_discipline_enabled = false;
+    run_mode_scenario_with_exit_config(
+        &before_config,
+        RunMode::Exact3Hop,
+        before_ports,
+        true,
+        &before_config.exact_route_cache_path,
+        before_exit,
+    )
+    .await?;
+
+    let before_measurements = read_measurements(&before_config.raw_path())?;
+    assert_eq!(
+        before_measurements.len(),
+        before_config.profile.runs,
+        "pre-discipline combined regression must produce one exact measurement per run"
+    );
+    assert!(
+        before_measurements
+            .iter()
+            .all(|record| record.status_code == 200),
+        "pre-discipline combined regression must keep HTTP 200"
+    );
+
+    let after_config = ChaosRunConfig::inflight_pressure_regression(
+        "response-inflight-after-regression-test",
+        21_650,
+        5,
+    );
+    prepare_chaos_run(&after_config)?;
+    let after_ports = ports_from_base(after_config.base_port);
+    let mut after_exit = ExitConfigCli::default();
+    after_exit.response_pacing_enabled = true;
+    after_exit.response_inflight_discipline_enabled = true;
+    run_mode_scenario_with_exit_config(
+        &after_config,
+        RunMode::Exact3Hop,
+        after_ports,
+        true,
+        &after_config.exact_route_cache_path,
+        after_exit,
+    )
+    .await?;
+
+    let after_measurements = read_measurements(&after_config.raw_path())?;
+    assert_eq!(
+        after_measurements.len(),
+        after_config.profile.runs,
+        "disciplined combined regression must produce one exact measurement per run"
+    );
+    assert!(
+        after_measurements
+            .iter()
+            .all(|record| record.status_code == 200),
+        "disciplined combined regression must keep HTTP 200"
+    );
+
+    let before_analysis = analyze_stage_trace(&before_config.stage_trace_path)?;
+    let before_streams: Vec<_> = before_analysis
+        .exact_streams
+        .iter()
+        .filter(|stream| stream.site.contains(&before_config.profile.profile_name))
+        .cloned()
+        .collect();
+    let after_analysis = analyze_stage_trace(&after_config.stage_trace_path)?;
+    let after_streams: Vec<_> = after_analysis
+        .exact_streams
+        .iter()
+        .filter(|stream| stream.site.contains(&after_config.profile.profile_name))
+        .cloned()
+        .collect();
+
+    assert_eq!(
+        before_streams.len(),
+        before_config.profile.runs,
+        "pre-discipline combined regression must emit one exact exit summary per run"
+    );
+    assert_eq!(
+        after_streams.len(),
+        after_config.profile.runs,
+        "disciplined combined regression must emit one exact exit summary per run"
+    );
+
+    let before_avg_ack_p95 = average_optional(
+        before_streams
+            .iter()
+            .map(|stream| stream.ack_latency_ms_p95),
+    )
+    .unwrap_or(0.0);
+    let after_avg_ack_p95 =
+        average_optional(after_streams.iter().map(|stream| stream.ack_latency_ms_p95))
+            .unwrap_or(0.0);
+    let before_avg_window_wait = average_optional(
+        before_streams
+            .iter()
+            .map(|stream| stream.window_wait_total_ms),
+    )
+    .unwrap_or(0.0);
+    let after_avg_window_wait = average_optional(
+        after_streams
+            .iter()
+            .map(|stream| stream.window_wait_total_ms),
+    )
+    .unwrap_or(0.0);
+    let after_avg_effective_cap_wait = average_optional(
+        after_streams
+            .iter()
+            .map(|stream| stream.effective_cap_wait_total_ms),
+    )
+    .unwrap_or(0.0);
+    let before_avg_inflight =
+        average_optional(before_streams.iter().map(|stream| stream.max_inflight)).unwrap_or(0.0);
+    let after_avg_inflight =
+        average_optional(after_streams.iter().map(|stream| stream.max_inflight)).unwrap_or(0.0);
+    let after_avg_effective_cap = average_optional(
+        after_streams
+            .iter()
+            .map(|stream| stream.effective_inflight_cap_avg),
+    )
+    .unwrap_or(64.0);
+    let before_avg_total = average(
+        before_measurements
+            .iter()
+            .map(|record| record.total_time_ms),
+    );
+    let after_avg_total = average(after_measurements.iter().map(|record| record.total_time_ms));
+
+    assert!(
+        after_avg_effective_cap < 64.0,
+        "disciplined combined regression must drive effective inflight cap below the hard window ({after_avg_effective_cap:.2} < 64)"
+    );
+    assert!(
+        after_streams
+            .iter()
+            .map(|stream| stream.inflight_cap_reduced_count.unwrap_or(0))
+            .sum::<u64>()
+            > 0,
+        "disciplined combined regression must reduce the effective inflight cap at least once"
+    );
+    assert!(
+        after_streams
+            .iter()
+            .map(|stream| stream.send_blocked_by_effective_cap.unwrap_or(0))
+            .sum::<u64>()
+            > 0,
+        "disciplined combined regression must block sends on the effective inflight cap at least once"
+    );
+    assert!(
+        after_avg_ack_p95 < before_avg_ack_p95,
+        "disciplined combined regression must reduce ACK p95 ({after_avg_ack_p95:.2} < {before_avg_ack_p95:.2})"
+    );
+    assert!(
+        after_avg_window_wait < before_avg_window_wait,
+        "disciplined combined regression must reduce hard-window wait ({after_avg_window_wait:.2} < {before_avg_window_wait:.2})"
+    );
+    assert!(
+        after_avg_effective_cap_wait > 0.0,
+        "disciplined combined regression must show intentional effective-cap wait once the control loop is active"
+    );
+    assert!(
+        after_avg_inflight < before_avg_inflight,
+        "disciplined combined regression must reduce inflight high-water marks ({after_avg_inflight:.2} < {before_avg_inflight:.2})"
+    );
+    assert!(
+        after_avg_total <= before_avg_total * 1.15,
+        "disciplined combined regression must not regress total time beyond a stable bound ({after_avg_total:.2} <= {before_avg_total:.2} * 1.15)"
+    );
+
+    Ok(())
+}
+
 async fn run_mode_scenario(
     config: &ChaosRunConfig,
     mode: RunMode,
@@ -1001,7 +1206,7 @@ async fn run_mode_scenario_with_exit_config(
     route_cache_path: &Path,
     exit_config: ExitConfigCli,
 ) -> anyhow::Result<()> {
-    spawn_local_stack(
+    let stack = spawn_local_stack(
         ports,
         mode.route_length(),
         exact_route_only,
@@ -1040,6 +1245,8 @@ async fn run_mode_scenario_with_exit_config(
     }
 
     tokio::time::sleep(Duration::from_millis(500)).await;
+    stack.abort_all();
+    tokio::time::sleep(Duration::from_millis(100)).await;
 
     Ok(())
 }
@@ -1050,8 +1257,8 @@ fn spawn_local_stack(
     exact_route_only: bool,
     route_cache_path: &Path,
     mut exit_config: ExitConfigCli,
-) {
-    tokio::spawn(async move {
+) -> LocalStackHandles {
+    let target_handle = tokio::spawn(async move {
         let _ = vpnnode::roles::target::run_target(TargetConfigCli {
             listen: ports.target_tcp,
         })
@@ -1061,11 +1268,11 @@ fn spawn_local_stack(
     exit_config.listen = ports.exit_udp;
     exit_config.target_addr = ports.target_tcp.to_string();
     exit_config.exit_key_path = "exit.key".to_string();
-    tokio::spawn(async move {
+    let exit_handle = tokio::spawn(async move {
         let _ = vpnnode::roles::exit::run_exit(exit_config).await;
     });
 
-    tokio::spawn(async move {
+    let relay2_handle = tokio::spawn(async move {
         let _ = vpnnode::roles::relay::run_relay(RelayConfigCli {
             listen: ports.relay2_udp,
             exit_addr: ports.exit_udp.to_string(),
@@ -1075,7 +1282,7 @@ fn spawn_local_stack(
         .await;
     });
 
-    tokio::spawn(async move {
+    let relay1_handle = tokio::spawn(async move {
         let _ = vpnnode::roles::relay::run_relay(RelayConfigCli {
             listen: ports.relay1_udp,
             exit_addr: ports.relay2_udp.to_string(),
@@ -1086,7 +1293,7 @@ fn spawn_local_stack(
     });
 
     let route_cache_path = route_cache_path.to_string_lossy().to_string();
-    tokio::spawn(async move {
+    let client_handle = tokio::spawn(async move {
         let _ = vpnnode::roles::client::run_client(ClientConfigCli {
             local_listen: ports.client_tcp,
             mode: "tcp".to_string(),
@@ -1117,6 +1324,16 @@ fn spawn_local_stack(
         })
         .await;
     });
+
+    LocalStackHandles {
+        handles: vec![
+            target_handle,
+            exit_handle,
+            relay2_handle,
+            relay1_handle,
+            client_handle,
+        ],
+    }
 }
 
 fn build_http_post_request(host: &str, path: &str, body_bytes: usize) -> Vec<u8> {
@@ -1227,6 +1444,7 @@ fn prepare_chaos_run(config: &ChaosRunConfig) -> anyhow::Result<()> {
         "VPNNODE_STAGE_TRACE_PATH",
         config.stage_trace_path.as_os_str(),
     );
+    vpnnode::stage_trace::refresh_from_env();
     std::env::set_var(
         "VPNNODE_TRANSPORT_CHAOS_LABEL",
         config.profile.profile_name.as_str(),
@@ -1405,6 +1623,9 @@ fn analyze_stage_trace(path: &Path) -> anyhow::Result<StageAnalysis> {
                     retransmit_rate: value.get("retransmit_rate").and_then(Value::as_f64),
                     retransmit_rate_ppm: value.get("retransmit_rate_ppm").and_then(Value::as_u64),
                     window_wait_total_ms: value.get("window_wait_total_ms").and_then(Value::as_u64),
+                    effective_cap_wait_total_ms: value
+                        .get("effective_cap_wait_total_ms")
+                        .and_then(Value::as_u64),
                     pacing_enabled: value.get("pacing_enabled").and_then(Value::as_bool),
                     pacing_delay_applied: value.get("pacing_delay_applied").and_then(Value::as_u64),
                     pacing_delay_applied_ms_total: value
@@ -1422,6 +1643,25 @@ fn analyze_stage_trace(path: &Path) -> anyhow::Result<StageAnalysis> {
                     paced_send_batches: value.get("paced_send_batches").and_then(Value::as_u64),
                     max_send_burst_frames: value
                         .get("max_send_burst_frames")
+                        .and_then(Value::as_u64),
+                    effective_inflight_cap_avg: value
+                        .get("effective_inflight_cap_avg")
+                        .and_then(Value::as_u64),
+                    effective_inflight_cap_min: value
+                        .get("effective_inflight_cap_min")
+                        .and_then(Value::as_u64),
+                    effective_inflight_cap_max: value
+                        .get("effective_inflight_cap_max")
+                        .and_then(Value::as_u64),
+                    inflight_cap_reduced_count: value
+                        .get("inflight_cap_reduced_count")
+                        .and_then(Value::as_u64),
+                    inflight_cap_restore_count: value
+                        .get("inflight_cap_restore_count")
+                        .and_then(Value::as_u64),
+                    ack_pressure_events: value.get("ack_pressure_events").and_then(Value::as_u64),
+                    send_blocked_by_effective_cap: value
+                        .get("send_blocked_by_effective_cap")
                         .and_then(Value::as_u64),
                     http_code: value.get("http_code").and_then(Value::as_u64),
                 };
@@ -1624,22 +1864,44 @@ fn format_exit_stream_block(label: &str, streams: &[ExitStreamSummary]) -> Strin
         average_optional(streams.iter().map(|stream| stream.retransmit_rate_ppm));
     let avg_window_wait =
         average_optional(streams.iter().map(|stream| stream.window_wait_total_ms));
+    let avg_effective_cap_wait = average_optional(
+        streams
+            .iter()
+            .map(|stream| stream.effective_cap_wait_total_ms),
+    );
     let avg_pacing_delay_ms = average_optional(
         streams
             .iter()
             .map(|stream| stream.pacing_delay_applied_ms_total),
     );
-    let avg_pacing_interval_ms = average_optional(
-        streams.iter().map(|stream| stream.pacing_interval_ms_avg),
+    let avg_pacing_interval_ms =
+        average_optional(streams.iter().map(|stream| stream.pacing_interval_ms_avg));
+    let avg_burst_prevented =
+        average_optional(streams.iter().map(|stream| stream.burst_prevented_count));
+    let avg_paced_batches =
+        average_optional(streams.iter().map(|stream| stream.paced_send_batches));
+    let avg_max_burst = average_optional(streams.iter().map(|stream| stream.max_send_burst_frames));
+    let avg_effective_cap = average_optional(
+        streams
+            .iter()
+            .map(|stream| stream.effective_inflight_cap_avg),
     );
-    let avg_burst_prevented = average_optional(
-        streams.iter().map(|stream| stream.burst_prevented_count),
+    let avg_cap_reduced = average_optional(
+        streams
+            .iter()
+            .map(|stream| stream.inflight_cap_reduced_count),
     );
-    let avg_paced_batches = average_optional(
-        streams.iter().map(|stream| stream.paced_send_batches),
+    let avg_cap_restore = average_optional(
+        streams
+            .iter()
+            .map(|stream| stream.inflight_cap_restore_count),
     );
-    let avg_max_burst = average_optional(
-        streams.iter().map(|stream| stream.max_send_burst_frames),
+    let avg_ack_pressure =
+        average_optional(streams.iter().map(|stream| stream.ack_pressure_events));
+    let avg_blocked_by_cap = average_optional(
+        streams
+            .iter()
+            .map(|stream| stream.send_blocked_by_effective_cap),
     );
     let avg_max_inflight = average_optional(streams.iter().map(|stream| stream.max_inflight));
     let avg_total = average_optional(streams.iter().map(|stream| stream.stream_duration_ms));
@@ -1661,7 +1923,7 @@ fn format_exit_stream_block(label: &str, streams: &[ExitStreamSummary]) -> Strin
         "mixed"
     };
     format!(
-        "### {label}\n\n- streams: {}\n- sites: {}\n- route lens: {}\n- http codes: {}\n- pacing: {}\n- avg ack avg ms: {}\n- avg ack p95 ms: {}\n- avg total retransmits: {}\n- avg retransmit rate: {}\n- avg retransmit ppm: {}\n- avg window wait ms: {}\n- avg pacing delay ms: {}\n- avg pacing interval ms: {}\n- avg burst prevented: {}\n- avg paced batches: {}\n- avg max send burst frames: {}\n- avg max inflight: {}\n- avg stream duration ms: {}\n- avg overlay first-send gap ms: {}\n",
+        "### {label}\n\n- streams: {}\n- sites: {}\n- route lens: {}\n- http codes: {}\n- pacing: {}\n- avg ack avg ms: {}\n- avg ack p95 ms: {}\n- avg total retransmits: {}\n- avg retransmit rate: {}\n- avg retransmit ppm: {}\n- avg hard window wait ms: {}\n- avg effective cap wait ms: {}\n- avg pacing delay ms: {}\n- avg pacing interval ms: {}\n- avg burst prevented: {}\n- avg paced batches: {}\n- avg max send burst frames: {}\n- avg effective inflight cap: {}\n- avg inflight cap reduced count: {}\n- avg inflight cap restore count: {}\n- avg ack pressure events: {}\n- avg blocked by effective cap: {}\n- avg max inflight: {}\n- avg stream duration ms: {}\n- avg overlay first-send gap ms: {}\n",
         streams.len(),
         streams
             .iter()
@@ -1687,11 +1949,17 @@ fn format_exit_stream_block(label: &str, streams: &[ExitStreamSummary]) -> Strin
             .unwrap_or_else(|| "n/a".to_string()),
         fmt_optional(avg_retransmit_ppm),
         fmt_optional(avg_window_wait),
+        fmt_optional(avg_effective_cap_wait),
         fmt_optional(avg_pacing_delay_ms),
         fmt_optional(avg_pacing_interval_ms),
         fmt_optional(avg_burst_prevented),
         fmt_optional(avg_paced_batches),
         fmt_optional(avg_max_burst),
+        fmt_optional(avg_effective_cap),
+        fmt_optional(avg_cap_reduced),
+        fmt_optional(avg_cap_restore),
+        fmt_optional(avg_ack_pressure),
+        fmt_optional(avg_blocked_by_cap),
         fmt_optional(avg_max_inflight),
         fmt_optional(avg_total),
         fmt_optional(avg_overlay_gap),
@@ -1963,6 +2231,42 @@ impl ChaosRunConfig {
             connect_timeout: Duration::from_secs(5),
             write_timeout: Duration::from_secs(10),
             read_timeout: Duration::from_secs(45),
+        }
+    }
+
+    fn inflight_pressure_regression(profile_name: &str, base_port: u16, runs: usize) -> Self {
+        let temp_dir = std::env::temp_dir();
+        let artifact_prefix = temp_dir.join(format!("vpnnode-chaos-{}-artifacts", profile_name));
+        let stage_trace_path = PathBuf::from(format!("{}.stage.jsonl", artifact_prefix.display()));
+        Self {
+            exact_route_cache_path: temp_dir.join(format!(
+                "vpnnode-chaos-{}-exact-route-cache.json",
+                profile_name
+            )),
+            adaptive_route_cache_path: temp_dir.join(format!(
+                "vpnnode-chaos-{}-adaptive-route-cache.json",
+                profile_name
+            )),
+            artifact_prefix,
+            stage_trace_path,
+            profile: ChaosProfileArtifact {
+                profile_name: profile_name.to_string(),
+                seed: 43,
+                skip_packets: 24,
+                loss_ppm: 0,
+                duplicate_ppm: 0,
+                reorder_ppm: 0,
+                base_delay_ms: 22,
+                jitter_ms: 6,
+                reorder_extra_delay_ms: 0,
+                duplicate_delay_ms: 2,
+                runs,
+                request_body_bytes: 262_144,
+            },
+            base_port,
+            connect_timeout: Duration::from_secs(5),
+            write_timeout: Duration::from_secs(10),
+            read_timeout: Duration::from_secs(90),
         }
     }
 

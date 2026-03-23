@@ -133,6 +133,9 @@ pub struct ExitConfigCli {
     /// Stage 5: lower bound for per-frame pacing interval.
     #[arg(long, default_value_t = 1)]
     pub response_pacing_min_interval_ms: u64,
+    /// Stage 5: enable RTT-aware effective inflight cap below the hard window.
+    #[arg(long, default_value_t = true)]
+    pub response_inflight_discipline_enabled: bool,
 
     /// Stage 9.1: enable minimal discovery (control-plane only).
     #[arg(long, default_value_t = false)]
@@ -201,6 +204,7 @@ impl Default for ExitConfigCli {
             response_pacing_enabled: true,
             response_pacing_bootstrap_rtt_ms: 200,
             response_pacing_min_interval_ms: 1,
+            response_inflight_discipline_enabled: true,
             discovery_enabled: false,
             discovery_query_on_start: false,
             discovery_max_entries: 256,

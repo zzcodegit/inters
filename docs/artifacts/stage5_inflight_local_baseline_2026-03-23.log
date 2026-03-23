@@ -1,0 +1,52 @@
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+   Compiling vpnnode v0.1.0 (C:\neinternet\vpnnode)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 6.42s
+     Running tests\baseline.rs (target\debug\deps\baseline-18a10cfd4cc7b25f.exe)
+
+running 9 tests
+test baseline_suite::baseline_handshake_challenge ... [2m2026-03-23T10:34:16.723033Z[0m [33m WARN[0m [2mvpnnode::roles::exit[0m[2m:[0m SUSPICIOUSLY SMALL RESPONSE: possible accounting or streaming issue [3mstream_id[0m[2m=[0m1000000000 [3msite[0m[2m=[0mprobe [3mresp_bytes_total[0m[2m=[0m108 [3mframes_sent_total[0m[2m=[0m1
+[2m2026-03-23T10:34:16.878405Z[0m [33m WARN[0m [2mvpnnode::roles::exit[0m[2m:[0m SUSPICIOUSLY SMALL RESPONSE: possible accounting or streaming issue [3mstream_id[0m[2m=[0m1000000001 [3msite[0m[2m=[0mprobe [3mresp_bytes_total[0m[2m=[0m108 [3mframes_sent_total[0m[2m=[0m1
+[2m2026-03-23T10:34:17.113947Z[0m [33m WARN[0m [2mvpnnode::roles::exit[0m[2m:[0m SUSPICIOUSLY SMALL RESPONSE: possible accounting or streaming issue [3mstream_id[0m[2m=[0m1 [3msite[0m[2m=[0mexample [3mresp_bytes_total[0m[2m=[0m110 [3mframes_sent_total[0m[2m=[0m1
+ok
+test baseline_suite::baseline_large_transfer_ge_5mb ... [2m2026-03-23T10:34:17.394958Z[0m [33m WARN[0m [2mvpnnode::roles::exit[0m[2m:[0m SUSPICIOUSLY SMALL RESPONSE: possible accounting or streaming issue [3mstream_id[0m[2m=[0m1000000000 [3msite[0m[2m=[0mprobe [3mresp_bytes_total[0m[2m=[0m108 [3mframes_sent_total[0m[2m=[0m1
+[2m2026-03-23T10:34:17.552376Z[0m [33m WARN[0m [2mvpnnode::roles::exit[0m[2m:[0m SUSPICIOUSLY SMALL RESPONSE: possible accounting or streaming issue [3mstream_id[0m[2m=[0m1000000001 [3msite[0m[2m=[0mprobe [3mresp_bytes_total[0m[2m=[0m108 [3mframes_sent_total[0m[2m=[0m1
+[2m2026-03-23T10:34:17.817909Z[0m [33m WARN[0m [2mvpnnode::roles::exit[0m[2m:[0m SUSPICIOUSLY SMALL RESPONSE: possible accounting or streaming issue [3mstream_id[0m[2m=[0m1 [3msite[0m[2m=[0mexample [3mresp_bytes_total[0m[2m=[0m110 [3mframes_sent_total[0m[2m=[0m1
+ok
+test baseline_suite::baseline_parallel_streams_ge_5 ... [2m2026-03-23T10:34:41.423540Z[0m [33m WARN[0m [2mvpnnode::roles::exit[0m[2m:[0m SUSPICIOUSLY SMALL RESPONSE: possible accounting or streaming issue [3mstream_id[0m[2m=[0m1000000000 [3msite[0m[2m=[0mprobe [3mresp_bytes_total[0m[2m=[0m108 [3mframes_sent_total[0m[2m=[0m1
+[2m2026-03-23T10:34:41.579425Z[0m [33m WARN[0m [2mvpnnode::roles::exit[0m[2m:[0m SUSPICIOUSLY SMALL RESPONSE: possible accounting or streaming issue [3mstream_id[0m[2m=[0m1000000001 [3msite[0m[2m=[0mprobe [3mresp_bytes_total[0m[2m=[0m108 [3mframes_sent_total[0m[2m=[0m1
+[2m2026-03-23T10:34:41.813584Z[0m [33m WARN[0m [2mvpnnode::roles::exit[0m[2m:[0m SUSPICIOUSLY SMALL RESPONSE: possible accounting or streaming issue [3mstream_id[0m[2m=[0m1 [3msite[0m[2m=[0mexample [3mresp_bytes_total[0m[2m=[0m110 [3mframes_sent_total[0m[2m=[0m1
+[2m2026-03-23T10:34:41.968515Z[0m [33m WARN[0m [2mvpnnode::roles::exit[0m[2m:[0m SUSPICIOUSLY SMALL RESPONSE: possible accounting or streaming issue [3mstream_id[0m[2m=[0m2 [3msite[0m[2m=[0mexample [3mresp_bytes_total[0m[2m=[0m110 [3mframes_sent_total[0m[2m=[0m1
+[2m2026-03-23T10:34:42.121885Z[0m [33m WARN[0m [2mvpnnode::roles::exit[0m[2m:[0m SUSPICIOUSLY SMALL RESPONSE: possible accounting or streaming issue [3mstream_id[0m[2m=[0m3 [3msite[0m[2m=[0mexample [3mresp_bytes_total[0m[2m=[0m110 [3mframes_sent_total[0m[2m=[0m1
+[2m2026-03-23T10:34:42.278296Z[0m [33m WARN[0m [2mvpnnode::roles::exit[0m[2m:[0m SUSPICIOUSLY SMALL RESPONSE: possible accounting or streaming issue [3mstream_id[0m[2m=[0m4 [3msite[0m[2m=[0mexample [3mresp_bytes_total[0m[2m=[0m110 [3mframes_sent_total[0m[2m=[0m1
+[2m2026-03-23T10:34:42.432704Z[0m [33m WARN[0m [2mvpnnode::roles::exit[0m[2m:[0m SUSPICIOUSLY SMALL RESPONSE: possible accounting or streaming issue [3mstream_id[0m[2m=[0m5 [3msite[0m[2m=[0mexample [3mresp_bytes_total[0m[2m=[0m110 [3mframes_sent_total[0m[2m=[0m1
+ok
+test baseline_suite::baseline_response_completion_respects_non_pathological_growth ... [2m2026-03-23T10:34:42.713135Z[0m [33m WARN[0m [2mvpnnode::roles::exit[0m[2m:[0m SUSPICIOUSLY SMALL RESPONSE: possible accounting or streaming issue [3mstream_id[0m[2m=[0m1000000000 [3msite[0m[2m=[0mprobe [3mresp_bytes_total[0m[2m=[0m108 [3mframes_sent_total[0m[2m=[0m1
+[2m2026-03-23T10:34:42.866939Z[0m [33m WARN[0m [2mvpnnode::roles::exit[0m[2m:[0m SUSPICIOUSLY SMALL RESPONSE: possible accounting or streaming issue [3mstream_id[0m[2m=[0m1000000001 [3msite[0m[2m=[0mprobe [3mresp_bytes_total[0m[2m=[0m108 [3mframes_sent_total[0m[2m=[0m1
+[2m2026-03-23T10:34:43.103482Z[0m [33m WARN[0m [2mvpnnode::roles::exit[0m[2m:[0m SUSPICIOUSLY SMALL RESPONSE: possible accounting or streaming issue [3mstream_id[0m[2m=[0m1 [3msite[0m[2m=[0mexample [3mresp_bytes_total[0m[2m=[0m110 [3mframes_sent_total[0m[2m=[0m1
+ok
+test baseline_suite::baseline_route_1hop_client_to_exit ... [2m2026-03-23T10:34:43.416528Z[0m [33m WARN[0m [2mvpnnode::roles::exit[0m[2m:[0m SUSPICIOUSLY SMALL RESPONSE: possible accounting or streaming issue [3mstream_id[0m[2m=[0m1000000000 [3msite[0m[2m=[0mprobe [3mresp_bytes_total[0m[2m=[0m108 [3mframes_sent_total[0m[2m=[0m1
+[2m2026-03-23T10:34:43.822374Z[0m [33m WARN[0m [2mvpnnode::roles::exit[0m[2m:[0m SUSPICIOUSLY SMALL RESPONSE: possible accounting or streaming issue [3mstream_id[0m[2m=[0m1 [3msite[0m[2m=[0mexample [3mresp_bytes_total[0m[2m=[0m110 [3mframes_sent_total[0m[2m=[0m1
+ok
+test baseline_suite::baseline_route_2hop_client_via_relay_to_exit ... [2m2026-03-23T10:34:44.088989Z[0m [33m WARN[0m [2mvpnnode::roles::exit[0m[2m:[0m SUSPICIOUSLY SMALL RESPONSE: possible accounting or streaming issue [3mstream_id[0m[2m=[0m1000000000 [3msite[0m[2m=[0mprobe [3mresp_bytes_total[0m[2m=[0m108 [3mframes_sent_total[0m[2m=[0m1
+[2m2026-03-23T10:34:44.246606Z[0m [33m WARN[0m [2mvpnnode::roles::exit[0m[2m:[0m SUSPICIOUSLY SMALL RESPONSE: possible accounting or streaming issue [3mstream_id[0m[2m=[0m1000000001 [3msite[0m[2m=[0mprobe [3mresp_bytes_total[0m[2m=[0m108 [3mframes_sent_total[0m[2m=[0m1
+[2m2026-03-23T10:34:44.496262Z[0m [33m WARN[0m [2mvpnnode::roles::exit[0m[2m:[0m SUSPICIOUSLY SMALL RESPONSE: possible accounting or streaming issue [3mstream_id[0m[2m=[0m1 [3msite[0m[2m=[0mexample [3mresp_bytes_total[0m[2m=[0m110 [3mframes_sent_total[0m[2m=[0m1
+ok
+test baseline_suite::baseline_route_3hop_via_two_relays_to_exit ... [2m2026-03-23T10:34:44.777759Z[0m [33m WARN[0m [2mvpnnode::roles::exit[0m[2m:[0m SUSPICIOUSLY SMALL RESPONSE: possible accounting or streaming issue [3mstream_id[0m[2m=[0m1000000000 [3msite[0m[2m=[0mprobe [3mresp_bytes_total[0m[2m=[0m108 [3mframes_sent_total[0m[2m=[0m1
+[2m2026-03-23T10:34:44.933288Z[0m [33m WARN[0m [2mvpnnode::roles::exit[0m[2m:[0m SUSPICIOUSLY SMALL RESPONSE: possible accounting or streaming issue [3mstream_id[0m[2m=[0m1000000001 [3msite[0m[2m=[0mprobe [3mresp_bytes_total[0m[2m=[0m108 [3mframes_sent_total[0m[2m=[0m1
+[2m2026-03-23T10:34:45.088082Z[0m [33m WARN[0m [2mvpnnode::roles::exit[0m[2m:[0m SUSPICIOUSLY SMALL RESPONSE: possible accounting or streaming issue [3mstream_id[0m[2m=[0m1000000002 [3msite[0m[2m=[0mprobe [3mresp_bytes_total[0m[2m=[0m108 [3mframes_sent_total[0m[2m=[0m1
+[2m2026-03-23T10:34:45.242660Z[0m [33m WARN[0m [2mvpnnode::roles::exit[0m[2m:[0m SUSPICIOUSLY SMALL RESPONSE: possible accounting or streaming issue [3mstream_id[0m[2m=[0m1 [3msite[0m[2m=[0mexample [3mresp_bytes_total[0m[2m=[0m110 [3mframes_sent_total[0m[2m=[0m1
+ok
+test baseline_suite::baseline_small_response_returns_200_and_completes ... [2m2026-03-23T10:34:45.524401Z[0m [33m WARN[0m [2mvpnnode::roles::exit[0m[2m:[0m SUSPICIOUSLY SMALL RESPONSE: possible accounting or streaming issue [3mstream_id[0m[2m=[0m1000000000 [3msite[0m[2m=[0mprobe [3mresp_bytes_total[0m[2m=[0m108 [3mframes_sent_total[0m[2m=[0m1
+[2m2026-03-23T10:34:45.679296Z[0m [33m WARN[0m [2mvpnnode::roles::exit[0m[2m:[0m SUSPICIOUSLY SMALL RESPONSE: possible accounting or streaming issue [3mstream_id[0m[2m=[0m1000000001 [3msite[0m[2m=[0mprobe [3mresp_bytes_total[0m[2m=[0m108 [3mframes_sent_total[0m[2m=[0m1
+[2m2026-03-23T10:34:45.913453Z[0m [33m WARN[0m [2mvpnnode::roles::exit[0m[2m:[0m SUSPICIOUSLY SMALL RESPONSE: possible accounting or streaming issue [3mstream_id[0m[2m=[0m1 [3msite[0m[2m=[0mexample [3mresp_bytes_total[0m[2m=[0m110 [3mframes_sent_total[0m[2m=[0m1
+ok
+test baseline_suite::baseline_target_unavailable_returns_502 ... [2m2026-03-23T10:34:47.050983Z[0m [31mERROR[0m [2mvpnnode::roles::exit[0m[2m:[0m exit connect to target timed out [3mstream_id[0m[2m=[0m1000000000 [3mtarget_addr[0m[2m=[0m127.0.0.1:28999
+[2m2026-03-23T10:34:48.065207Z[0m [31mERROR[0m [2mvpnnode::roles::exit[0m[2m:[0m exit connect to target timed out [3mstream_id[0m[2m=[0m1 [3mtarget_addr[0m[2m=[0m127.0.0.1:28999
+[2m2026-03-23T10:34:49.081094Z[0m [31mERROR[0m [2mvpnnode::roles::exit[0m[2m:[0m exit connect to target timed out [3mstream_id[0m[2m=[0m1000000001 [3mtarget_addr[0m[2m=[0m127.0.0.1:28999
+[2m2026-03-23T10:34:50.094579Z[0m [31mERROR[0m [2mvpnnode::roles::exit[0m[2m:[0m exit connect to target timed out [3mstream_id[0m[2m=[0m2 [3mtarget_addr[0m[2m=[0m127.0.0.1:28999
+ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 33.65s
+

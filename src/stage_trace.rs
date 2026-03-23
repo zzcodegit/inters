@@ -6,13 +6,21 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde_json::{Map, Value};
 
-static STAGE_TRACE_PATH: OnceLock<Option<PathBuf>> = OnceLock::new();
+static STAGE_TRACE_PATH: OnceLock<Mutex<Option<PathBuf>>> = OnceLock::new();
 static STAGE_TRACE_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
-fn stage_trace_path() -> Option<&'static PathBuf> {
-    STAGE_TRACE_PATH
-        .get_or_init(|| std::env::var("VPNNODE_STAGE_TRACE_PATH").ok().map(PathBuf::from))
-        .as_ref()
+fn stage_trace_path_slot() -> &'static Mutex<Option<PathBuf>> {
+    STAGE_TRACE_PATH.get_or_init(|| {
+        Mutex::new(
+            std::env::var("VPNNODE_STAGE_TRACE_PATH")
+                .ok()
+                .map(PathBuf::from),
+        )
+    })
+}
+
+fn stage_trace_path() -> Option<PathBuf> {
+    stage_trace_path_slot().lock().unwrap().clone()
 }
 
 fn stage_trace_lock() -> &'static Mutex<()> {
@@ -21,6 +29,13 @@ fn stage_trace_lock() -> &'static Mutex<()> {
 
 pub fn enabled() -> bool {
     stage_trace_path().is_some()
+}
+
+pub fn refresh_from_env() {
+    let next = std::env::var("VPNNODE_STAGE_TRACE_PATH")
+        .ok()
+        .map(PathBuf::from);
+    *stage_trace_path_slot().lock().unwrap() = next;
 }
 
 pub fn emit(mut value: Value) {

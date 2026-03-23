@@ -239,6 +239,15 @@ for measurement in measurements:
         joined_row["window_wait_events"] = stream_complete.get("window_wait_events")
         joined_row["window_wait_total_ms"] = stream_complete.get("window_wait_total_ms")
         joined_row["window_wait_max_ms"] = stream_complete.get("window_wait_max_ms")
+        joined_row["effective_cap_wait_events"] = stream_complete.get(
+            "effective_cap_wait_events"
+        )
+        joined_row["effective_cap_wait_total_ms"] = stream_complete.get(
+            "effective_cap_wait_total_ms"
+        )
+        joined_row["effective_cap_wait_max_ms"] = stream_complete.get(
+            "effective_cap_wait_max_ms"
+        )
         joined_row["time_at_inflight_1_ms"] = stream_complete.get("time_at_inflight_1_ms")
         joined_row["pacing_enabled"] = stream_complete.get("pacing_enabled")
         joined_row["pacing_delay_applied"] = stream_complete.get("pacing_delay_applied")
@@ -250,6 +259,25 @@ for measurement in measurements:
         joined_row["burst_prevented_count"] = stream_complete.get("burst_prevented_count")
         joined_row["paced_send_batches"] = stream_complete.get("paced_send_batches")
         joined_row["max_send_burst_frames"] = stream_complete.get("max_send_burst_frames")
+        joined_row["effective_inflight_cap_avg"] = stream_complete.get(
+            "effective_inflight_cap_avg"
+        )
+        joined_row["effective_inflight_cap_min"] = stream_complete.get(
+            "effective_inflight_cap_min"
+        )
+        joined_row["effective_inflight_cap_max"] = stream_complete.get(
+            "effective_inflight_cap_max"
+        )
+        joined_row["inflight_cap_reduced_count"] = stream_complete.get(
+            "inflight_cap_reduced_count"
+        )
+        joined_row["inflight_cap_restore_count"] = stream_complete.get(
+            "inflight_cap_restore_count"
+        )
+        joined_row["ack_pressure_events"] = stream_complete.get("ack_pressure_events")
+        joined_row["send_blocked_by_effective_cap"] = stream_complete.get(
+            "send_blocked_by_effective_cap"
+        )
 
     joined_row["client_body_tail_ms"] = None
     if joined_row.get("total_time_ms") is not None and joined_row.get("ttfb_ms") is not None:
@@ -341,6 +369,12 @@ for scenario_name in ["direct", "remote-1hop", "remote-2hop", "remote-3hop"]:
             "window_frames": mean([row.get("window_frames") for row in rows]),
             "window_wait_total_ms": mean([row.get("window_wait_total_ms") for row in rows]),
             "window_wait_events": mean([row.get("window_wait_events") for row in rows]),
+            "effective_cap_wait_total_ms": mean(
+                [row.get("effective_cap_wait_total_ms") for row in rows]
+            ),
+            "effective_cap_wait_events": mean(
+                [row.get("effective_cap_wait_events") for row in rows]
+            ),
             "retransmit_rate": mean([row.get("retransmit_rate") for row in rows]),
             "ack_latency_ms_avg": mean([row.get("ack_latency_ms_avg") for row in rows]),
             "ack_latency_ms_p95": mean([row.get("ack_latency_ms_p95") for row in rows]),
@@ -360,6 +394,27 @@ for scenario_name in ["direct", "remote-1hop", "remote-2hop", "remote-3hop"]:
             "paced_send_batches": mean([row.get("paced_send_batches") for row in rows]),
             "max_send_burst_frames": mean(
                 [row.get("max_send_burst_frames") for row in rows]
+            ),
+            "effective_inflight_cap_avg": mean(
+                [row.get("effective_inflight_cap_avg") for row in rows]
+            ),
+            "effective_inflight_cap_min": mean(
+                [row.get("effective_inflight_cap_min") for row in rows]
+            ),
+            "effective_inflight_cap_max": mean(
+                [row.get("effective_inflight_cap_max") for row in rows]
+            ),
+            "inflight_cap_reduced_count": mean(
+                [row.get("inflight_cap_reduced_count") for row in rows]
+            ),
+            "inflight_cap_restore_count": mean(
+                [row.get("inflight_cap_restore_count") for row in rows]
+            ),
+            "ack_pressure_events": mean(
+                [row.get("ack_pressure_events") for row in rows]
+            ),
+            "send_blocked_by_effective_cap": mean(
+                [row.get("send_blocked_by_effective_cap") for row in rows]
             ),
         }
     )
@@ -430,14 +485,14 @@ lines.append("")
 lines.append("## Scenario Averages")
 lines.append("")
 lines.append(
-    "| scenario | route | route ready ms | handshake ms | target connect ms | first target byte wait ms | exit first send delay ms | overlay first-send -> client ms | window stall ms | exit/body tail ms | client total ms | retransmit rate | ack avg ms | ack p95 ms | max burst frames | pacing interval ms | pacing delay ms | burst prevented | window frames |"
+    "| scenario | route | route ready ms | handshake ms | target connect ms | first target byte wait ms | exit first send delay ms | overlay first-send -> client ms | hard window stall ms | effective cap wait ms | exit/body tail ms | client total ms | retransmit rate | ack avg ms | ack p95 ms | max burst frames | pacing interval ms | pacing delay ms | burst prevented | effective cap avg | cap reduced | blocked by cap | window frames |"
 )
 lines.append(
-    "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |"
+    "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |"
 )
 for row in scenarios:
     lines.append(
-        "| {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} |".format(
+        "| {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} |".format(
             row["scenario"],
             row["route_length"],
             fmt_ms(row.get("route_ready_ms")),
@@ -447,6 +502,7 @@ for row in scenarios:
             fmt_ms(row.get("first_overlay_send_after_target_ms")),
             fmt_ms(row.get("overlay_first_send_to_client_ms")),
             fmt_ms(row.get("window_wait_total_ms")),
+            fmt_ms(row.get("effective_cap_wait_total_ms")),
             fmt_ms(row.get("exit_body_tail_ms")),
             fmt_ms(row.get("total_avg_ms")),
             fmt_num(row.get("retransmit_rate"), 4),
@@ -456,6 +512,9 @@ for row in scenarios:
             fmt_ms(row.get("pacing_interval_ms_avg")),
             fmt_ms(row.get("pacing_delay_applied_ms_total")),
             fmt_num(row.get("burst_prevented_count"), 0),
+            fmt_num(row.get("effective_inflight_cap_avg"), 0),
+            fmt_num(row.get("inflight_cap_reduced_count"), 0),
+            fmt_num(row.get("send_blocked_by_effective_cap"), 0),
             fmt_num(row.get("window_frames"), 0),
         )
     )
@@ -490,6 +549,9 @@ lines.append(
 )
 lines.append(
     "- `max_send_burst_frames`, `pacing_interval_ms_avg`, `pacing_delay_applied_ms_total`, and `burst_prevented_count` expose whether the exit is still dumping response frames in bursts or spreading them across the ACK window."
+)
+lines.append(
+    "- `effective_inflight_cap_avg`, `inflight_cap_reduced_count`, `send_blocked_by_effective_cap`, and `effective_cap_wait_total_ms` expose whether the exit still drives the hard window directly or whether RTT/ACK pressure is actively shaping in-flight occupancy."
 )
 lines.append(
     "- One-time costs (`route_ready_ms`, `handshake_ms`) matter for cold start, but they are not the reason the steady-state per-request `TTFB` stays in the multi-second range."

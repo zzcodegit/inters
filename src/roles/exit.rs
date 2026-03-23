@@ -42,6 +42,13 @@ const EXIT_RESPONSE_RETRANSMIT_MAX_MS: u64 = 1500;
 const DEFAULT_EXIT_RESPONSE_PACING_BOOTSTRAP_RTT_MS: u64 = 200;
 const DEFAULT_EXIT_RESPONSE_PACING_MIN_INTERVAL_MS: u64 = 1;
 const EXIT_RESPONSE_PACING_BURST_CAP_FRAMES: f64 = 4.0;
+const DEFAULT_EXIT_RESPONSE_INFLIGHT_DISCIPLINE_MIN_CAP_FRAMES: usize = 40;
+const EXIT_RESPONSE_INFLIGHT_DISCIPLINE_REDUCE_STEP_FRAMES: usize = 4;
+const EXIT_RESPONSE_INFLIGHT_DISCIPLINE_RESTORE_STEP_FRAMES: usize = 2;
+const EXIT_RESPONSE_INFLIGHT_DISCIPLINE_STALL_PRESSURE_MS: u64 = 24;
+const EXIT_RESPONSE_INFLIGHT_DISCIPLINE_STALL_SEVERE_MS: u64 = 96;
+const EXIT_RESPONSE_INFLIGHT_DISCIPLINE_RESTORE_STREAK_SAMPLES: u32 = 6;
+const EXIT_RESPONSE_INFLIGHT_DISCIPLINE_RESTORE_HEADROOM_FRAMES: usize = 8;
 
 struct ExitStream {
     socket: TcpStream,
@@ -54,9 +61,7 @@ fn clamp_response_window_frames(frames: usize) -> usize {
     )
 }
 
-fn adaptive_response_retransmit_interval(
-    summary: AckLatencySummary,
-) -> Duration {
+fn adaptive_response_retransmit_interval(summary: AckLatencySummary) -> Duration {
     let mut interval_ms = EXIT_RESPONSE_RETRANSMIT_BASE_MS;
     if let Some(p95_ms) = summary.p95_ms {
         interval_ms =
@@ -80,6 +85,14 @@ struct ResponsePacingConfig {
     min_interval_ms: u64,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct ResponseInflightDisciplineConfig {
+    enabled: bool,
+    hard_window_frames: usize,
+    bootstrap_rtt_ms: u64,
+    min_cap_frames: usize,
+}
+
 #[derive(Debug, Default, Clone)]
 struct ResponsePacingState {
     pacing_budget_frames: f64,
@@ -93,6 +106,20 @@ struct ResponsePacingState {
     pacing_interval_samples: u64,
     pacing_interval_ms_total: u64,
     pacing_interval_ms_max: u64,
+}
+
+#[derive(Debug, Clone)]
+struct ResponseInflightDisciplineState {
+    effective_cap_frames: usize,
+    effective_cap_sum: u64,
+    effective_cap_samples: u64,
+    effective_cap_min: usize,
+    effective_cap_max: usize,
+    inflight_cap_reduced_count: u64,
+    inflight_cap_restore_count: u64,
+    ack_pressure_events: u64,
+    send_blocked_by_effective_cap: u64,
+    restore_clean_streak: u32,
 }
 
 fn response_pacing_interval_ms(summary: AckLatencySummary, config: ResponsePacingConfig) -> u64 {
@@ -112,6 +139,78 @@ fn response_pacing_interval_ms(summary: AckLatencySummary, config: ResponsePacin
         .unwrap_or(bootstrap_rtt_ms);
     let divisor = config.window_frames.max(1) as u64;
     ((observed_rtt_ms.saturating_add(divisor.saturating_sub(1))) / divisor).max(min_interval_ms)
+}
+
+fn response_inflight_target_cap_frames(
+    summary: AckLatencySummary,
+    config: ResponseInflightDisciplineConfig,
+    recent_window_wait_ms: u64,
+    current_inflight: usize,
+) -> usize {
+    let hard_window_frames = config.hard_window_frames.max(1);
+    let min_cap_frames = config.min_cap_frames.clamp(1, hard_window_frames);
+    let bootstrap_rtt_ms = config
+        .bootstrap_rtt_ms
+        .max(DEFAULT_EXIT_RESPONSE_PACING_BOOTSTRAP_RTT_MS)
+        .max(1);
+    let ack_p95_ms = summary
+        .p95_ms
+        .or(summary.avg_ms)
+        .or(summary.p50_ms)
+        .filter(|value| *value > 0)
+        .unwrap_or(bootstrap_rtt_ms);
+    let ack_avg_ms = summary
+        .avg_ms
+        .or(summary.p50_ms)
+        .filter(|value| *value > 0)
+        .unwrap_or(ack_p95_ms);
+    let occupancy_near_window = current_inflight >= hard_window_frames.saturating_sub(4);
+    let anticipatory_pressure =
+        occupancy_near_window && ack_p95_ms > bootstrap_rtt_ms.saturating_mul(5) / 4;
+    let moderate_pressure = recent_window_wait_ms
+        >= EXIT_RESPONSE_INFLIGHT_DISCIPLINE_STALL_PRESSURE_MS
+        || anticipatory_pressure;
+    let severe_pressure = recent_window_wait_ms
+        >= EXIT_RESPONSE_INFLIGHT_DISCIPLINE_STALL_SEVERE_MS
+        || (occupancy_near_window && ack_avg_ms > bootstrap_rtt_ms.saturating_mul(3) / 2);
+    let target = if severe_pressure {
+        hard_window_frames.saturating_sub(EXIT_RESPONSE_INFLIGHT_DISCIPLINE_REDUCE_STEP_FRAMES * 2)
+    } else if moderate_pressure {
+        hard_window_frames.saturating_sub(EXIT_RESPONSE_INFLIGHT_DISCIPLINE_REDUCE_STEP_FRAMES)
+    } else {
+        hard_window_frames
+    };
+    target.clamp(min_cap_frames, hard_window_frames)
+}
+
+fn response_inflight_restore_is_clean(
+    summary: AckLatencySummary,
+    config: ResponseInflightDisciplineConfig,
+    recent_window_wait_ms: u64,
+    current_inflight: usize,
+    current_cap: usize,
+) -> bool {
+    let bootstrap_rtt_ms = config
+        .bootstrap_rtt_ms
+        .max(DEFAULT_EXIT_RESPONSE_PACING_BOOTSTRAP_RTT_MS)
+        .max(1);
+    let ack_p95_ms = summary
+        .p95_ms
+        .or(summary.avg_ms)
+        .or(summary.p50_ms)
+        .filter(|value| *value > 0)
+        .unwrap_or(bootstrap_rtt_ms);
+    let ack_avg_ms = summary
+        .avg_ms
+        .or(summary.p50_ms)
+        .filter(|value| *value > 0)
+        .unwrap_or(ack_p95_ms);
+    recent_window_wait_ms == 0
+        && ack_p95_ms <= bootstrap_rtt_ms.saturating_mul(3) / 2
+        && ack_avg_ms <= bootstrap_rtt_ms.saturating_mul(5) / 4
+        && current_inflight
+            .saturating_add(EXIT_RESPONSE_INFLIGHT_DISCIPLINE_RESTORE_HEADROOM_FRAMES)
+            < current_cap
 }
 
 impl ResponsePacingState {
@@ -202,6 +301,97 @@ impl ResponsePacingState {
             return None;
         }
         Some(self.pacing_interval_ms_total / self.pacing_interval_samples)
+    }
+}
+
+impl ResponseInflightDisciplineState {
+    fn current_cap(&mut self, config: ResponseInflightDisciplineConfig) -> usize {
+        let hard_window_frames = config.hard_window_frames.max(1);
+        if self.effective_cap_frames == 0 {
+            self.effective_cap_frames = hard_window_frames;
+            self.effective_cap_min = hard_window_frames;
+            self.effective_cap_max = hard_window_frames;
+        }
+        self.effective_cap_frames
+    }
+
+    fn sample_cap(&mut self, cap_frames: usize) {
+        self.effective_cap_sum = self.effective_cap_sum.saturating_add(cap_frames as u64);
+        self.effective_cap_samples = self.effective_cap_samples.saturating_add(1);
+        if self.effective_cap_min == 0 {
+            self.effective_cap_min = cap_frames;
+        } else {
+            self.effective_cap_min = self.effective_cap_min.min(cap_frames);
+        }
+        self.effective_cap_max = self.effective_cap_max.max(cap_frames);
+    }
+
+    fn update(
+        &mut self,
+        config: ResponseInflightDisciplineConfig,
+        summary: AckLatencySummary,
+        recent_window_wait_ms: u64,
+        current_inflight: usize,
+    ) -> usize {
+        let hard_window_frames = config.hard_window_frames.max(1);
+        if !config.enabled {
+            self.effective_cap_frames = hard_window_frames;
+            self.sample_cap(hard_window_frames);
+            return hard_window_frames;
+        }
+
+        let current = self.current_cap(config);
+        let target = response_inflight_target_cap_frames(
+            summary,
+            config,
+            recent_window_wait_ms,
+            current_inflight,
+        );
+        if target < current {
+            self.restore_clean_streak = 0;
+            self.ack_pressure_events = self.ack_pressure_events.saturating_add(1);
+            let adjusted = target;
+            if adjusted < current {
+                self.effective_cap_frames = adjusted;
+                self.inflight_cap_reduced_count = self.inflight_cap_reduced_count.saturating_add(1);
+            }
+        } else if current < hard_window_frames {
+            if target == hard_window_frames
+                && response_inflight_restore_is_clean(
+                    summary,
+                    config,
+                    recent_window_wait_ms,
+                    current_inflight,
+                    current,
+                )
+            {
+                self.restore_clean_streak = self.restore_clean_streak.saturating_add(1);
+                if self.restore_clean_streak
+                    >= EXIT_RESPONSE_INFLIGHT_DISCIPLINE_RESTORE_STREAK_SAMPLES
+                {
+                    let next = current
+                        .saturating_add(EXIT_RESPONSE_INFLIGHT_DISCIPLINE_RESTORE_STEP_FRAMES);
+                    let adjusted = next.min(hard_window_frames);
+                    if adjusted > current {
+                        self.effective_cap_frames = adjusted;
+                        self.inflight_cap_restore_count =
+                            self.inflight_cap_restore_count.saturating_add(1);
+                    }
+                    self.restore_clean_streak = 0;
+                }
+            } else {
+                self.restore_clean_streak = 0;
+            }
+        }
+        self.sample_cap(self.effective_cap_frames);
+        self.effective_cap_frames
+    }
+
+    fn avg_cap_frames(&self) -> Option<u64> {
+        if self.effective_cap_samples == 0 {
+            return None;
+        }
+        Some(self.effective_cap_sum / self.effective_cap_samples)
     }
 }
 
@@ -507,6 +697,12 @@ pub async fn run_exit(args: ExitArgs) -> Result<()> {
             .response_pacing_min_interval_ms
             .max(DEFAULT_EXIT_RESPONSE_PACING_MIN_INTERVAL_MS),
     };
+    let response_inflight_discipline_config = ResponseInflightDisciplineConfig {
+        enabled: args.response_inflight_discipline_enabled,
+        hard_window_frames: response_window_frames,
+        bootstrap_rtt_ms: response_pacing_config.bootstrap_rtt_ms,
+        min_cap_frames: DEFAULT_EXIT_RESPONSE_INFLIGHT_DISCIPLINE_MIN_CAP_FRAMES,
+    };
     info!(
         listen_addr = %args.listen,
         target_addr = %args.target_addr,
@@ -514,6 +710,8 @@ pub async fn run_exit(args: ExitArgs) -> Result<()> {
         response_pacing_enabled = response_pacing_config.enabled,
         response_pacing_bootstrap_rtt_ms = response_pacing_config.bootstrap_rtt_ms,
         response_pacing_min_interval_ms = response_pacing_config.min_interval_ms,
+        response_inflight_discipline_enabled = response_inflight_discipline_config.enabled,
+        response_inflight_discipline_min_cap_frames = response_inflight_discipline_config.min_cap_frames,
         "exit starting, binding UDP and resolving target"
     );
     info!(role = "exit", addr = %args.listen, "node ready");
@@ -682,6 +880,7 @@ pub async fn run_exit(args: ExitArgs) -> Result<()> {
     let _completed_requests_for_task = completed_requests.clone();
     let response_window_frames_for_task = response_window_frames;
     let response_pacing_config_for_task = response_pacing_config;
+    let response_inflight_discipline_config_for_task = response_inflight_discipline_config;
 
     // Task: handle TCP request/response per stream.
     tokio::spawn(async move {
@@ -998,7 +1197,23 @@ pub async fn run_exit(args: ExitArgs) -> Result<()> {
             let mut window_wait_events: u64 = 0;
             let mut window_wait_total_ms: u64 = 0;
             let mut window_wait_max_ms: u64 = 0;
+            let mut effective_cap_wait_events: u64 = 0;
+            let mut effective_cap_wait_total_ms: u64 = 0;
+            let mut effective_cap_wait_max_ms: u64 = 0;
             let mut response_pacing = ResponsePacingState::default();
+            let mut inflight_discipline = ResponseInflightDisciplineState {
+                effective_cap_frames: window_frames,
+                effective_cap_sum: 0,
+                effective_cap_samples: 0,
+                effective_cap_min: window_frames,
+                effective_cap_max: window_frames,
+                inflight_cap_reduced_count: 0,
+                inflight_cap_restore_count: 0,
+                ack_pressure_events: 0,
+                send_blocked_by_effective_cap: 0,
+                restore_clean_streak: 0,
+            };
+            let mut recent_window_wait_ms: u64 = 0;
 
             // Stage 9.1b observability:
             // - sample inflight every ~150ms while this stream is active
@@ -1182,10 +1397,62 @@ pub async fn run_exit(args: ExitArgs) -> Result<()> {
 
                                 let chunk_len = chunk.len();
 
+                                let (current_inflight_for_cap, ack_summary) = {
+                                    let map = reliable_streams_for_task.lock().unwrap();
+                                    if let Some(rs) = map.get(&stream_id) {
+                                        (rs.inflight(), rs.ack_latency_summary())
+                                    } else {
+                                        (0usize, AckLatencySummary::default())
+                                    }
+                                };
+                                let previous_effective_cap = inflight_discipline
+                                    .current_cap(response_inflight_discipline_config_for_task);
+                                let effective_cap = inflight_discipline.update(
+                                    response_inflight_discipline_config_for_task,
+                                    ack_summary,
+                                    recent_window_wait_ms,
+                                    current_inflight_for_cap,
+                                );
+                                if effective_cap < previous_effective_cap {
+                                    emit_exit_stage(
+                                        "effective_inflight_cap_reduced",
+                                        json!({
+                                            "stream_id": stream_id,
+                                            "site": site.as_str(),
+                                            "route_len": routing.route.len(),
+                                            "peer": peer.to_string(),
+                                            "target_addr": target_addr.to_string(),
+                                            "previous_cap": previous_effective_cap,
+                                            "effective_cap": effective_cap,
+                                            "recent_window_wait_ms": recent_window_wait_ms,
+                                            "ack_latency_ms_avg": ack_summary.avg_ms,
+                                            "ack_latency_ms_p95": ack_summary.p95_ms,
+                                        }),
+                                    );
+                                } else if effective_cap > previous_effective_cap {
+                                    emit_exit_stage(
+                                        "effective_inflight_cap_restored",
+                                        json!({
+                                            "stream_id": stream_id,
+                                            "site": site.as_str(),
+                                            "route_len": routing.route.len(),
+                                            "peer": peer.to_string(),
+                                            "target_addr": target_addr.to_string(),
+                                            "previous_cap": previous_effective_cap,
+                                            "effective_cap": effective_cap,
+                                            "recent_window_wait_ms": recent_window_wait_ms,
+                                            "ack_latency_ms_avg": ack_summary.avg_ms,
+                                            "ack_latency_ms_p95": ack_summary.p95_ms,
+                                        }),
+                                    );
+                                }
+
                                 // Sliding window cap: don't let in-flight response frames
-                                // grow beyond the configured response window.
+                                // grow beyond the hard window or the current effective cap.
                                 let window_wait_started = Instant::now();
                                 let mut waited_for_window = false;
+                                let mut blocked_by_effective_cap = false;
+                                let mut blocked_by_hard_window = false;
                                 loop {
                                     let inflight = {
                                         let map = reliable_streams_for_task.lock().unwrap();
@@ -1196,28 +1463,59 @@ pub async fn run_exit(args: ExitArgs) -> Result<()> {
                                     if inflight > max_inflight {
                                         max_inflight = inflight;
                                     }
-                                    if inflight < window_frames {
+                                    if inflight < effective_cap {
                                         break;
                                     }
                                     waited_for_window = true;
+                                    if inflight >= window_frames {
+                                        blocked_by_hard_window = true;
+                                    } else if effective_cap < window_frames {
+                                        blocked_by_effective_cap = true;
+                                    }
                                     tokio::time::sleep(Duration::from_millis(2)).await;
                                 }
                                 if waited_for_window {
                                     let waited_ms =
                                         window_wait_started.elapsed().as_millis() as u64;
-                                    window_wait_events = window_wait_events.saturating_add(1);
-                                    window_wait_total_ms =
-                                        window_wait_total_ms.saturating_add(waited_ms);
-                                    window_wait_max_ms = window_wait_max_ms.max(waited_ms);
+                                    if blocked_by_hard_window {
+                                        window_wait_events = window_wait_events.saturating_add(1);
+                                        window_wait_total_ms =
+                                            window_wait_total_ms.saturating_add(waited_ms);
+                                        window_wait_max_ms = window_wait_max_ms.max(waited_ms);
+                                        recent_window_wait_ms = waited_ms;
+                                    } else if blocked_by_effective_cap {
+                                        effective_cap_wait_events =
+                                            effective_cap_wait_events.saturating_add(1);
+                                        effective_cap_wait_total_ms =
+                                            effective_cap_wait_total_ms.saturating_add(waited_ms);
+                                        effective_cap_wait_max_ms =
+                                            effective_cap_wait_max_ms.max(waited_ms);
+                                        recent_window_wait_ms = 0;
+                                    }
                                     response_pacing.note_external_pause();
+                                    if blocked_by_effective_cap {
+                                        inflight_discipline.send_blocked_by_effective_cap =
+                                            inflight_discipline
+                                                .send_blocked_by_effective_cap
+                                                .saturating_add(1);
+                                        emit_exit_stage(
+                                            "send_blocked_by_effective_cap",
+                                            json!({
+                                                "stream_id": stream_id,
+                                                "site": site.as_str(),
+                                                "route_len": routing.route.len(),
+                                                "peer": peer.to_string(),
+                                                "target_addr": target_addr.to_string(),
+                                                "effective_cap": effective_cap,
+                                                "window_frames": window_frames,
+                                                "waited_ms": waited_ms,
+                                            }),
+                                        );
+                                    }
+                                } else {
+                                    recent_window_wait_ms = 0;
                                 }
 
-                                let ack_summary = {
-                                    let map = reliable_streams_for_task.lock().unwrap();
-                                    map.get(&stream_id)
-                                        .map(|rs| rs.ack_latency_summary())
-                                        .unwrap_or_default()
-                                };
                                 let pacing_interval_ms = response_pacing
                                     .before_send(response_pacing_config_for_task, ack_summary)
                                     .await;
@@ -1351,8 +1649,60 @@ pub async fn run_exit(args: ExitArgs) -> Result<()> {
                     pending_bytes_atomic.store(pending.len() as u64, AtomicOrdering::Relaxed);
                 }
 
+                let (current_inflight_for_cap, ack_summary) = {
+                    let map = reliable_streams_for_task.lock().unwrap();
+                    if let Some(rs) = map.get(&stream_id) {
+                        (rs.inflight(), rs.ack_latency_summary())
+                    } else {
+                        (0usize, AckLatencySummary::default())
+                    }
+                };
+                let previous_effective_cap =
+                    inflight_discipline.current_cap(response_inflight_discipline_config_for_task);
+                let effective_cap = inflight_discipline.update(
+                    response_inflight_discipline_config_for_task,
+                    ack_summary,
+                    recent_window_wait_ms,
+                    current_inflight_for_cap,
+                );
+                if effective_cap < previous_effective_cap {
+                    emit_exit_stage(
+                        "effective_inflight_cap_reduced",
+                        json!({
+                            "stream_id": stream_id,
+                            "site": site.as_str(),
+                            "route_len": routing.route.len(),
+                            "peer": peer.to_string(),
+                            "target_addr": target_addr.to_string(),
+                            "previous_cap": previous_effective_cap,
+                            "effective_cap": effective_cap,
+                            "recent_window_wait_ms": recent_window_wait_ms,
+                            "ack_latency_ms_avg": ack_summary.avg_ms,
+                            "ack_latency_ms_p95": ack_summary.p95_ms,
+                        }),
+                    );
+                } else if effective_cap > previous_effective_cap {
+                    emit_exit_stage(
+                        "effective_inflight_cap_restored",
+                        json!({
+                            "stream_id": stream_id,
+                            "site": site.as_str(),
+                            "route_len": routing.route.len(),
+                            "peer": peer.to_string(),
+                            "target_addr": target_addr.to_string(),
+                            "previous_cap": previous_effective_cap,
+                            "effective_cap": effective_cap,
+                            "recent_window_wait_ms": recent_window_wait_ms,
+                            "ack_latency_ms_avg": ack_summary.avg_ms,
+                            "ack_latency_ms_p95": ack_summary.p95_ms,
+                        }),
+                    );
+                }
+
                 let window_wait_started = Instant::now();
                 let mut waited_for_window = false;
+                let mut blocked_by_effective_cap = false;
+                let mut blocked_by_hard_window = false;
                 loop {
                     let inflight = {
                         let map = reliable_streams_for_task.lock().unwrap();
@@ -1361,26 +1711,54 @@ pub async fn run_exit(args: ExitArgs) -> Result<()> {
                     if inflight > max_inflight {
                         max_inflight = inflight;
                     }
-                    if inflight < window_frames {
+                    if inflight < effective_cap {
                         break;
                     }
                     waited_for_window = true;
+                    if inflight >= window_frames {
+                        blocked_by_hard_window = true;
+                    } else if effective_cap < window_frames {
+                        blocked_by_effective_cap = true;
+                    }
                     tokio::time::sleep(Duration::from_millis(2)).await;
                 }
                 if waited_for_window {
                     let waited_ms = window_wait_started.elapsed().as_millis() as u64;
-                    window_wait_events = window_wait_events.saturating_add(1);
-                    window_wait_total_ms = window_wait_total_ms.saturating_add(waited_ms);
-                    window_wait_max_ms = window_wait_max_ms.max(waited_ms);
+                    if blocked_by_hard_window {
+                        window_wait_events = window_wait_events.saturating_add(1);
+                        window_wait_total_ms = window_wait_total_ms.saturating_add(waited_ms);
+                        window_wait_max_ms = window_wait_max_ms.max(waited_ms);
+                        recent_window_wait_ms = waited_ms;
+                    } else if blocked_by_effective_cap {
+                        effective_cap_wait_events = effective_cap_wait_events.saturating_add(1);
+                        effective_cap_wait_total_ms =
+                            effective_cap_wait_total_ms.saturating_add(waited_ms);
+                        effective_cap_wait_max_ms = effective_cap_wait_max_ms.max(waited_ms);
+                        recent_window_wait_ms = 0;
+                    }
                     response_pacing.note_external_pause();
+                    if blocked_by_effective_cap {
+                        inflight_discipline.send_blocked_by_effective_cap = inflight_discipline
+                            .send_blocked_by_effective_cap
+                            .saturating_add(1);
+                        emit_exit_stage(
+                            "send_blocked_by_effective_cap",
+                            json!({
+                                "stream_id": stream_id,
+                                "site": site.as_str(),
+                                "route_len": routing.route.len(),
+                                "peer": peer.to_string(),
+                                "target_addr": target_addr.to_string(),
+                                "effective_cap": effective_cap,
+                                "window_frames": window_frames,
+                                "waited_ms": waited_ms,
+                            }),
+                        );
+                    }
+                } else {
+                    recent_window_wait_ms = 0;
                 }
 
-                let ack_summary = {
-                    let map = reliable_streams_for_task.lock().unwrap();
-                    map.get(&stream_id)
-                        .map(|rs| rs.ack_latency_summary())
-                        .unwrap_or_default()
-                };
                 let pacing_interval_ms = response_pacing
                     .before_send(response_pacing_config_for_task, ack_summary)
                     .await;
@@ -1411,7 +1789,8 @@ pub async fn run_exit(args: ExitArgs) -> Result<()> {
                 match udp_for_task.send(&peer, &ct2).await {
                     Ok(_) => {
                         ok = true;
-                        response_pacing.on_send(response_pacing_config_for_task, pacing_interval_ms);
+                        response_pacing
+                            .on_send(response_pacing_config_for_task, pacing_interval_ms);
                         if first_overlay_send_ms.is_none() && chunk_len > 0 {
                             let since_response_start = response_start.elapsed().as_millis() as u64;
                             let since_first_target_byte = first_target_byte_ms
@@ -1483,6 +1862,17 @@ pub async fn run_exit(args: ExitArgs) -> Result<()> {
             let pacing_interval_ms_avg = response_pacing.avg_interval_ms();
             let pacing_interval_ms_max = if response_pacing.pacing_interval_ms_max > 0 {
                 Some(response_pacing.pacing_interval_ms_max)
+            } else {
+                None
+            };
+            let effective_inflight_cap_avg = inflight_discipline.avg_cap_frames();
+            let effective_inflight_cap_min = if inflight_discipline.effective_cap_min > 0 {
+                Some(inflight_discipline.effective_cap_min as u64)
+            } else {
+                None
+            };
+            let effective_inflight_cap_max = if inflight_discipline.effective_cap_max > 0 {
+                Some(inflight_discipline.effective_cap_max as u64)
             } else {
                 None
             };
@@ -1643,6 +2033,9 @@ pub async fn run_exit(args: ExitArgs) -> Result<()> {
                 window_wait_events,
                 window_wait_total_ms,
                 window_wait_max_ms,
+                effective_cap_wait_events,
+                effective_cap_wait_total_ms,
+                effective_cap_wait_max_ms,
                 pacing_delay_applied = response_pacing.pacing_delay_applied,
                 pacing_delay_applied_ms_total = response_pacing.pacing_delay_applied_ms_total,
                 pacing_interval_ms_avg = ?pacing_interval_ms_avg,
@@ -1650,6 +2043,13 @@ pub async fn run_exit(args: ExitArgs) -> Result<()> {
                 burst_prevented_count = response_pacing.burst_prevented_count,
                 paced_send_batches = response_pacing.paced_send_batches,
                 max_send_burst_frames = response_pacing.max_send_burst_frames,
+                effective_inflight_cap_avg = ?effective_inflight_cap_avg,
+                effective_inflight_cap_min = ?effective_inflight_cap_min,
+                effective_inflight_cap_max = ?effective_inflight_cap_max,
+                inflight_cap_reduced_count = inflight_discipline.inflight_cap_reduced_count,
+                inflight_cap_restore_count = inflight_discipline.inflight_cap_restore_count,
+                ack_pressure_events = inflight_discipline.ack_pressure_events,
+                send_blocked_by_effective_cap = inflight_discipline.send_blocked_by_effective_cap,
                 frames_sent_total,
                 frames_acked_total,
                 total_retransmits,
@@ -1666,44 +2066,140 @@ pub async fn run_exit(args: ExitArgs) -> Result<()> {
             let route_hops = routing.route.len();
             let http_code_val = http_code.unwrap_or(0);
             let ack_latency_ms_avg_val = ack_latency_avg_ms.unwrap_or(0);
+            let mut stream_complete_payload = serde_json::Map::new();
+            stream_complete_payload.insert("stream_id".to_string(), json!(stream_id));
+            stream_complete_payload.insert("site".to_string(), json!(site.as_str()));
+            stream_complete_payload.insert("route_len".to_string(), json!(route_hops));
+            stream_complete_payload.insert("peer".to_string(), json!(peer.to_string()));
+            stream_complete_payload
+                .insert("target_addr".to_string(), json!(target_addr.to_string()));
+            stream_complete_payload.insert(
+                "first_target_byte_ms".to_string(),
+                json!(first_target_byte_ms),
+            );
+            stream_complete_payload.insert(
+                "first_overlay_send_ms".to_string(),
+                json!(first_overlay_send_ms),
+            );
+            stream_complete_payload.insert(
+                "stream_duration_ms".to_string(),
+                json!(stream_duration_ms_total),
+            );
+            stream_complete_payload.insert(
+                "resp_bytes".to_string(),
+                json!(sent_payload_bytes_total_u64),
+            );
+            stream_complete_payload.insert(
+                "frames_sent".to_string(),
+                json!(sent_frames_payload_total_u64),
+            );
+            stream_complete_payload.insert("avg_inflight".to_string(), json!(avg_inflight));
+            stream_complete_payload.insert("max_inflight".to_string(), json!(max_inflight));
+            stream_complete_payload.insert("window_frames".to_string(), json!(window_frames));
+            stream_complete_payload
+                .insert("window_wait_events".to_string(), json!(window_wait_events));
+            stream_complete_payload.insert(
+                "window_wait_total_ms".to_string(),
+                json!(window_wait_total_ms),
+            );
+            stream_complete_payload
+                .insert("window_wait_max_ms".to_string(), json!(window_wait_max_ms));
+            stream_complete_payload.insert(
+                "effective_cap_wait_events".to_string(),
+                json!(effective_cap_wait_events),
+            );
+            stream_complete_payload.insert(
+                "effective_cap_wait_total_ms".to_string(),
+                json!(effective_cap_wait_total_ms),
+            );
+            stream_complete_payload.insert(
+                "effective_cap_wait_max_ms".to_string(),
+                json!(effective_cap_wait_max_ms),
+            );
+            stream_complete_payload.insert(
+                "pacing_enabled".to_string(),
+                json!(response_pacing_config_for_task.enabled),
+            );
+            stream_complete_payload.insert(
+                "pacing_delay_applied".to_string(),
+                json!(response_pacing.pacing_delay_applied),
+            );
+            stream_complete_payload.insert(
+                "pacing_delay_applied_ms_total".to_string(),
+                json!(response_pacing.pacing_delay_applied_ms_total),
+            );
+            stream_complete_payload.insert(
+                "pacing_interval_ms_avg".to_string(),
+                json!(pacing_interval_ms_avg),
+            );
+            stream_complete_payload.insert(
+                "pacing_interval_ms_max".to_string(),
+                json!(pacing_interval_ms_max),
+            );
+            stream_complete_payload.insert(
+                "burst_prevented_count".to_string(),
+                json!(response_pacing.burst_prevented_count),
+            );
+            stream_complete_payload.insert(
+                "paced_send_batches".to_string(),
+                json!(response_pacing.paced_send_batches),
+            );
+            stream_complete_payload.insert(
+                "max_send_burst_frames".to_string(),
+                json!(response_pacing.max_send_burst_frames),
+            );
+            stream_complete_payload.insert(
+                "effective_inflight_cap_avg".to_string(),
+                json!(effective_inflight_cap_avg),
+            );
+            stream_complete_payload.insert(
+                "effective_inflight_cap_min".to_string(),
+                json!(effective_inflight_cap_min),
+            );
+            stream_complete_payload.insert(
+                "effective_inflight_cap_max".to_string(),
+                json!(effective_inflight_cap_max),
+            );
+            stream_complete_payload.insert(
+                "inflight_cap_reduced_count".to_string(),
+                json!(inflight_discipline.inflight_cap_reduced_count),
+            );
+            stream_complete_payload.insert(
+                "inflight_cap_restore_count".to_string(),
+                json!(inflight_discipline.inflight_cap_restore_count),
+            );
+            stream_complete_payload.insert(
+                "ack_pressure_events".to_string(),
+                json!(inflight_discipline.ack_pressure_events),
+            );
+            stream_complete_payload.insert(
+                "send_blocked_by_effective_cap".to_string(),
+                json!(inflight_discipline.send_blocked_by_effective_cap),
+            );
+            stream_complete_payload.insert(
+                "time_at_inflight_1_ms".to_string(),
+                json!(time_at_inflight_1_ms),
+            );
+            stream_complete_payload
+                .insert("total_retransmits".to_string(), json!(total_retransmits));
+            stream_complete_payload.insert("retransmit_rate".to_string(), json!(retransmit_rate));
+            stream_complete_payload.insert(
+                "ack_latency_ms_avg".to_string(),
+                json!(ack_latency_ms_avg_val),
+            );
+            stream_complete_payload
+                .insert("ack_latency_ms_min".to_string(), json!(ack_latency_min_ms));
+            stream_complete_payload
+                .insert("ack_latency_ms_p50".to_string(), json!(ack_latency_p50_ms));
+            stream_complete_payload
+                .insert("ack_latency_ms_p95".to_string(), json!(ack_latency_p95_ms));
+            stream_complete_payload
+                .insert("ack_latency_ms_max".to_string(), json!(ack_latency_max_ms));
+            stream_complete_payload.insert("http_code".to_string(), json!(http_code_val));
+            stream_complete_payload.insert("connection_alive".to_string(), json!(connection_alive));
             emit_exit_stage(
                 "stream_complete",
-                json!({
-                    "stream_id": stream_id,
-                    "site": site.as_str(),
-                    "route_len": route_hops,
-                    "peer": peer.to_string(),
-                    "target_addr": target_addr.to_string(),
-                    "first_target_byte_ms": first_target_byte_ms,
-                    "first_overlay_send_ms": first_overlay_send_ms,
-                    "stream_duration_ms": stream_duration_ms_total,
-                    "resp_bytes": sent_payload_bytes_total_u64,
-                    "frames_sent": sent_frames_payload_total_u64,
-                    "avg_inflight": avg_inflight,
-                    "max_inflight": max_inflight,
-                    "window_frames": window_frames,
-                    "window_wait_events": window_wait_events,
-                    "window_wait_total_ms": window_wait_total_ms,
-                    "window_wait_max_ms": window_wait_max_ms,
-                    "pacing_enabled": response_pacing_config_for_task.enabled,
-                    "pacing_delay_applied": response_pacing.pacing_delay_applied,
-                    "pacing_delay_applied_ms_total": response_pacing.pacing_delay_applied_ms_total,
-                    "pacing_interval_ms_avg": pacing_interval_ms_avg,
-                    "pacing_interval_ms_max": pacing_interval_ms_max,
-                    "burst_prevented_count": response_pacing.burst_prevented_count,
-                    "paced_send_batches": response_pacing.paced_send_batches,
-                    "max_send_burst_frames": response_pacing.max_send_burst_frames,
-                    "time_at_inflight_1_ms": time_at_inflight_1_ms,
-                    "total_retransmits": total_retransmits,
-                    "retransmit_rate": retransmit_rate,
-                    "ack_latency_ms_avg": ack_latency_ms_avg_val,
-                    "ack_latency_ms_min": ack_latency_min_ms,
-                    "ack_latency_ms_p50": ack_latency_p50_ms,
-                    "ack_latency_ms_p95": ack_latency_p95_ms,
-                    "ack_latency_ms_max": ack_latency_max_ms,
-                    "http_code": http_code_val,
-                    "connection_alive": connection_alive,
-                }),
+                serde_json::Value::Object(stream_complete_payload),
             );
             debug!(
                 stream_id,
@@ -2776,5 +3272,162 @@ mod tests {
             },
         );
         assert_eq!(min_interval_ms, 2);
+    }
+
+    #[test]
+    fn response_inflight_target_cap_reduces_when_ack_tail_and_stall_rise() {
+        let cap = response_inflight_target_cap_frames(
+            AckLatencySummary {
+                avg_ms: Some(220),
+                min_ms: Some(180),
+                p50_ms: Some(210),
+                p95_ms: Some(320),
+                max_ms: Some(360),
+            },
+            ResponseInflightDisciplineConfig {
+                enabled: true,
+                hard_window_frames: 64,
+                bootstrap_rtt_ms: 200,
+                min_cap_frames: 40,
+            },
+            120,
+            60,
+        );
+        assert!(cap < 64);
+        assert!(cap >= 40);
+    }
+
+    #[test]
+    fn response_inflight_target_cap_restores_to_hard_window_on_clean_ack_flow() {
+        let cap = response_inflight_target_cap_frames(
+            AckLatencySummary {
+                avg_ms: Some(160),
+                min_ms: Some(140),
+                p50_ms: Some(155),
+                p95_ms: Some(180),
+                max_ms: Some(210),
+            },
+            ResponseInflightDisciplineConfig {
+                enabled: true,
+                hard_window_frames: 64,
+                bootstrap_rtt_ms: 200,
+                min_cap_frames: 40,
+            },
+            0,
+            16,
+        );
+        assert_eq!(cap, 64);
+    }
+
+    #[test]
+    fn response_inflight_target_cap_reduces_under_sustained_high_occupancy() {
+        let cap = response_inflight_target_cap_frames(
+            AckLatencySummary {
+                avg_ms: Some(280),
+                min_ms: Some(180),
+                p50_ms: Some(260),
+                p95_ms: Some(520),
+                max_ms: Some(640),
+            },
+            ResponseInflightDisciplineConfig {
+                enabled: true,
+                hard_window_frames: 64,
+                bootstrap_rtt_ms: 200,
+                min_cap_frames: 40,
+            },
+            0,
+            61,
+        );
+        assert!(cap < 64);
+        assert!(cap >= 40);
+    }
+
+    #[test]
+    fn response_inflight_state_reduces_directly_to_target_under_pressure() {
+        let config = ResponseInflightDisciplineConfig {
+            enabled: true,
+            hard_window_frames: 64,
+            bootstrap_rtt_ms: 200,
+            min_cap_frames: 40,
+        };
+        let target = response_inflight_target_cap_frames(
+            AckLatencySummary {
+                avg_ms: Some(320),
+                min_ms: Some(260),
+                p50_ms: Some(300),
+                p95_ms: Some(420),
+                max_ms: Some(520),
+            },
+            config,
+            32,
+            61,
+        );
+        let mut state = ResponseInflightDisciplineState {
+            effective_cap_frames: 64,
+            effective_cap_sum: 0,
+            effective_cap_samples: 0,
+            effective_cap_min: 64,
+            effective_cap_max: 64,
+            inflight_cap_reduced_count: 0,
+            inflight_cap_restore_count: 0,
+            ack_pressure_events: 0,
+            send_blocked_by_effective_cap: 0,
+            restore_clean_streak: 0,
+        };
+        let next = state.update(
+            config,
+            AckLatencySummary {
+                avg_ms: Some(320),
+                min_ms: Some(260),
+                p50_ms: Some(300),
+                p95_ms: Some(420),
+                max_ms: Some(520),
+            },
+            32,
+            61,
+        );
+        assert_eq!(next, target);
+        assert_eq!(state.inflight_cap_reduced_count, 1);
+    }
+
+    #[test]
+    fn response_inflight_state_restores_only_after_clean_streak() {
+        let config = ResponseInflightDisciplineConfig {
+            enabled: true,
+            hard_window_frames: 64,
+            bootstrap_rtt_ms: 200,
+            min_cap_frames: 40,
+        };
+        let mut state = ResponseInflightDisciplineState {
+            effective_cap_frames: 56,
+            effective_cap_sum: 0,
+            effective_cap_samples: 0,
+            effective_cap_min: 56,
+            effective_cap_max: 56,
+            inflight_cap_reduced_count: 0,
+            inflight_cap_restore_count: 0,
+            ack_pressure_events: 0,
+            send_blocked_by_effective_cap: 0,
+            restore_clean_streak: 0,
+        };
+        let clean_summary = AckLatencySummary {
+            avg_ms: Some(180),
+            min_ms: Some(150),
+            p50_ms: Some(175),
+            p95_ms: Some(220),
+            max_ms: Some(250),
+        };
+
+        let cap_while_still_busy = state.update(config, clean_summary, 0, 52);
+        assert_eq!(cap_while_still_busy, 56);
+        assert_eq!(state.inflight_cap_restore_count, 0);
+
+        for _ in 0..(EXIT_RESPONSE_INFLIGHT_DISCIPLINE_RESTORE_STREAK_SAMPLES - 1) {
+            let cap = state.update(config, clean_summary, 0, 24);
+            assert_eq!(cap, 56);
+        }
+        let restored = state.update(config, clean_summary, 0, 24);
+        assert_eq!(restored, 58);
+        assert_eq!(state.inflight_cap_restore_count, 1);
     }
 }

@@ -59,6 +59,9 @@ pub struct NodeConfig {
     /// Exit-only: lower bound for per-frame pacing interval.
     #[serde(default = "default_exit_response_pacing_min_interval_ms")]
     pub exit_response_pacing_min_interval_ms: u64,
+    /// Exit-only: enable RTT-aware effective inflight cap below the hard window.
+    #[serde(default = "default_exit_response_inflight_discipline_enabled")]
+    pub exit_response_inflight_discipline_enabled: bool,
     /// Exit-only: allowlist for target hosts (foundation only; not enforced yet).
     #[serde(default)]
     pub exit_target_allowlist: Option<Vec<String>>,
@@ -100,6 +103,9 @@ fn default_exit_response_pacing_bootstrap_rtt_ms() -> u64 {
 }
 fn default_exit_response_pacing_min_interval_ms() -> u64 {
     1
+}
+fn default_exit_response_inflight_discipline_enabled() -> bool {
+    true
 }
 fn default_drain_timeout_sec() -> u64 {
     20
@@ -217,6 +223,8 @@ bind_port = 0
             exit_response_pacing_enabled: default_exit_response_pacing_enabled(),
             exit_response_pacing_bootstrap_rtt_ms: default_exit_response_pacing_bootstrap_rtt_ms(),
             exit_response_pacing_min_interval_ms: default_exit_response_pacing_min_interval_ms(),
+            exit_response_inflight_discipline_enabled:
+                default_exit_response_inflight_discipline_enabled(),
             exit_target_allowlist: None,
             discovery_enabled: false,
             discovery_query_on_start: false,
@@ -305,5 +313,20 @@ exit_response_pacing_min_interval_ms = 0
         )
         .unwrap();
         assert!(cfg.validate().is_err());
+    }
+
+    #[test]
+    fn parse_exit_inflight_discipline_toggle() {
+        let cfg: NodeConfig = toml::from_str(
+            r#"
+role = "exit"
+bind_ip = "127.0.0.1"
+bind_port = 30001
+exit_target_addr = "127.0.0.1:8080"
+exit_response_inflight_discipline_enabled = false
+"#,
+        )
+        .unwrap();
+        assert!(!cfg.exit_response_inflight_discipline_enabled);
     }
 }

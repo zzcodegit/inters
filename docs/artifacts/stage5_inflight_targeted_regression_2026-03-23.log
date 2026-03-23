@@ -1,0 +1,46 @@
+   Compiling vpnnode v0.1.0 (C:\neinternet\vpnnode)
+warning: fields `avg_inflight`, `pacing_interval_ms_max`, `effective_inflight_cap_min`, and `effective_inflight_cap_max` are never read
+   --> tests\chaos_matrix.rs:98:5
+    |
+ 92 | struct ExitStreamSummary {
+    |        ----------------- fields in this struct
+...
+ 98 |     avg_inflight: Option<f64>,
+    |     ^^^^^^^^^^^^
+...
+111 |     pacing_interval_ms_max: Option<u64>,
+    |     ^^^^^^^^^^^^^^^^^^^^^^
+...
+116 |     effective_inflight_cap_min: Option<u64>,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^
+117 |     effective_inflight_cap_max: Option<u64>,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: `ExitStreamSummary` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `vpnnode` (test "chaos_matrix") generated 1 warning
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 18.53s
+     Running tests\chaos_matrix.rs (target\debug\deps\chaos_matrix-3eab1b6ea173bdb9.exe)
+
+running 1 test
+test response_inflight_discipline_reduces_ack_tail_after_pacing ... [2m2026-03-23T13:18:01.263281Z[0m [33m WARN[0m [2mvpnnode::roles::exit[0m[2m:[0m SUSPICIOUSLY SMALL RESPONSE: possible accounting or streaming issue [3mstream_id[0m[2m=[0m1000000000 [3msite[0m[2m=[0mprobe [3mresp_bytes_total[0m[2m=[0m108 [3mframes_sent_total[0m[2m=[0m1
+[2m2026-03-23T13:18:01.682275Z[0m [33m WARN[0m [2mvpnnode::roles::exit[0m[2m:[0m SUSPICIOUSLY SMALL RESPONSE: possible accounting or streaming issue [3mstream_id[0m[2m=[0m1 [3msite[0m[2m=[0mexample [3mresp_bytes_total[0m[2m=[0m110 [3mframes_sent_total[0m[2m=[0m1
+[2m2026-03-23T13:18:15.638351Z[0m [33m WARN[0m [2mvpnnode::roles::exit[0m[2m:[0m HIGH RETRANSMIT RATE [3mstream_id[0m[2m=[0m2 [3mframes_sent_total[0m[2m=[0m290 [3mtotal_retransmits[0m[2m=[0m111 [3mretransmit_rate[0m[2m=[0m0.38275862068965516
+[2m2026-03-23T13:18:15.638474Z[0m [33m WARN[0m [2mvpnnode::roles::exit[0m[2m:[0m LOW THROUGHPUT [3mstream_id[0m[2m=[0m2 [3mthroughput_bps[0m[2m=[0m48358 [3mmin_thr_bps[0m[2m=[0m50000
+[2m2026-03-23T13:18:22.758831Z[0m [33m WARN[0m [2mvpnnode::roles::exit[0m[2m:[0m HIGH RETRANSMIT RATE [3mstream_id[0m[2m=[0m3 [3mframes_sent_total[0m[2m=[0m290 [3mtotal_retransmits[0m[2m=[0m43 [3mretransmit_rate[0m[2m=[0m0.1482758620689655
+[2m2026-03-23T13:18:31.251831Z[0m [33m WARN[0m [2mvpnnode::roles::exit[0m[2m:[0m HIGH RETRANSMIT RATE [3mstream_id[0m[2m=[0m4 [3mframes_sent_total[0m[2m=[0m290 [3mtotal_retransmits[0m[2m=[0m51 [3mretransmit_rate[0m[2m=[0m0.17586206896551723
+[2m2026-03-23T13:18:43.962800Z[0m [33m WARN[0m [2mvpnnode::roles::exit[0m[2m:[0m HIGH RETRANSMIT RATE [3mstream_id[0m[2m=[0m5 [3mframes_sent_total[0m[2m=[0m290 [3mtotal_retransmits[0m[2m=[0m136 [3mretransmit_rate[0m[2m=[0m0.4689655172413793
+[2m2026-03-23T13:18:43.962865Z[0m [33m WARN[0m [2mvpnnode::roles::exit[0m[2m:[0m LOW THROUGHPUT [3mstream_id[0m[2m=[0m5 [3mthroughput_bps[0m[2m=[0m41010 [3mmin_thr_bps[0m[2m=[0m50000
+[2m2026-03-23T13:18:59.427049Z[0m [33m WARN[0m [2mvpnnode::roles::exit[0m[2m:[0m HIGH RETRANSMIT RATE [3mstream_id[0m[2m=[0m6 [3mframes_sent_total[0m[2m=[0m290 [3mtotal_retransmits[0m[2m=[0m144 [3mretransmit_rate[0m[2m=[0m0.496551724137931
+[2m2026-03-23T13:18:59.427103Z[0m [33m WARN[0m [2mvpnnode::roles::exit[0m[2m:[0m LOW THROUGHPUT [3mstream_id[0m[2m=[0m6 [3mthroughput_bps[0m[2m=[0m39598 [3mmin_thr_bps[0m[2m=[0m50000
+[2m2026-03-23T13:19:00.343314Z[0m [33m WARN[0m [2mvpnnode::roles::exit[0m[2m:[0m SUSPICIOUSLY SMALL RESPONSE: possible accounting or streaming issue [3mstream_id[0m[2m=[0m1000000000 [3msite[0m[2m=[0mprobe [3mresp_bytes_total[0m[2m=[0m108 [3mframes_sent_total[0m[2m=[0m1
+[2m2026-03-23T13:19:00.719767Z[0m [33m WARN[0m [2mvpnnode::roles::exit[0m[2m:[0m SUSPICIOUSLY SMALL RESPONSE: possible accounting or streaming issue [3mstream_id[0m[2m=[0m1 [3msite[0m[2m=[0mexample [3mresp_bytes_total[0m[2m=[0m110 [3mframes_sent_total[0m[2m=[0m1
+[2m2026-03-23T13:19:14.813106Z[0m [33m WARN[0m [2mvpnnode::roles::exit[0m[2m:[0m HIGH RETRANSMIT RATE [3mstream_id[0m[2m=[0m2 [3mframes_sent_total[0m[2m=[0m290 [3mtotal_retransmits[0m[2m=[0m174 [3mretransmit_rate[0m[2m=[0m0.6
+[2m2026-03-23T13:19:14.813193Z[0m [33m WARN[0m [2mvpnnode::roles::exit[0m[2m:[0m LOW THROUGHPUT [3mstream_id[0m[2m=[0m2 [3mthroughput_bps[0m[2m=[0m35485 [3mmin_thr_bps[0m[2m=[0m50000
+[2m2026-03-23T13:19:37.727163Z[0m [33m WARN[0m [2mvpnnode::roles::exit[0m[2m:[0m HIGH RETRANSMIT RATE [3mstream_id[0m[2m=[0m4 [3mframes_sent_total[0m[2m=[0m290 [3mtotal_retransmits[0m[2m=[0m73 [3mretransmit_rate[0m[2m=[0m0.2517241379310345
+[2m2026-03-23T13:19:46.506291Z[0m [33m WARN[0m [2mvpnnode::roles::exit[0m[2m:[0m HIGH RETRANSMIT RATE [3mstream_id[0m[2m=[0m5 [3mframes_sent_total[0m[2m=[0m290 [3mtotal_retransmits[0m[2m=[0m22 [3mretransmit_rate[0m[2m=[0m0.07586206896551724
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 9 filtered out; finished in 114.56s
+
