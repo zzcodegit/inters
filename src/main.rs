@@ -185,6 +185,9 @@ async fn run_from_config(path: &PathBuf, drain: bool) -> anyhow::Result<()> {
                 target_addr: cfg.exit_target_addr,
                 exit_key_path: "exit.key".to_string(),
                 response_window_frames: cfg.exit_response_window_frames,
+                response_pacing_enabled: cfg.exit_response_pacing_enabled,
+                response_pacing_bootstrap_rtt_ms: cfg.exit_response_pacing_bootstrap_rtt_ms,
+                response_pacing_min_interval_ms: cfg.exit_response_pacing_min_interval_ms,
 
                 discovery_enabled: cfg.discovery_enabled,
                 discovery_query_on_start: cfg.discovery_query_on_start,

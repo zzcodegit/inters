@@ -82,11 +82,22 @@ struct ExitStreamSummary {
     stream_duration_ms: Option<u64>,
     first_target_byte_ms: Option<u64>,
     first_overlay_send_ms: Option<u64>,
+    avg_inflight: Option<f64>,
+    max_inflight: Option<u64>,
     ack_latency_ms_p95: Option<u64>,
+    ack_latency_ms_avg: Option<u64>,
     total_retransmits: Option<u64>,
     retransmit_rate: Option<f64>,
     retransmit_rate_ppm: Option<u64>,
     window_wait_total_ms: Option<u64>,
+    pacing_enabled: Option<bool>,
+    pacing_delay_applied: Option<u64>,
+    pacing_delay_applied_ms_total: Option<u64>,
+    pacing_interval_ms_avg: Option<u64>,
+    pacing_interval_ms_max: Option<u64>,
+    burst_prevented_count: Option<u64>,
+    paced_send_batches: Option<u64>,
+    max_send_burst_frames: Option<u64>,
     http_code: Option<u64>,
 }
 
@@ -827,6 +838,143 @@ async fn combined_chaos_duplicate_payload_tail_is_absorbed_before_completed_tomb
     Ok(())
 }
 
+#[tokio::test]
+async fn response_pacing_reduces_window_stall_under_combined() -> anyhow::Result<()> {
+    support::prepare_baseline(BaselineMode::Local);
+
+    let before_config =
+        ChaosRunConfig::combined_regression("response-pacing-before-regression-test", 21_200, 5);
+    prepare_chaos_run(&before_config)?;
+    let before_ports = ports_from_base(before_config.base_port);
+    let mut before_exit = ExitConfigCli::default();
+    before_exit.response_pacing_enabled = false;
+    run_mode_scenario_with_exit_config(
+        &before_config,
+        RunMode::Exact3Hop,
+        before_ports,
+        true,
+        &before_config.exact_route_cache_path,
+        before_exit,
+    )
+    .await?;
+
+    let before_measurements = read_measurements(&before_config.raw_path())?;
+    assert_eq!(
+        before_measurements.len(),
+        before_config.profile.runs,
+        "pre-pacing combined regression must produce one exact measurement per run"
+    );
+    assert!(
+        before_measurements
+            .iter()
+            .all(|record| record.status_code == 200),
+        "pre-pacing combined regression must keep HTTP 200"
+    );
+    let after_config =
+        ChaosRunConfig::combined_regression("response-pacing-after-regression-test", 21_350, 5);
+    prepare_chaos_run(&after_config)?;
+    let after_ports = ports_from_base(after_config.base_port);
+    let mut after_exit = ExitConfigCli::default();
+    after_exit.response_pacing_enabled = true;
+    after_exit.response_pacing_bootstrap_rtt_ms = 200;
+    after_exit.response_pacing_min_interval_ms = 1;
+    run_mode_scenario_with_exit_config(
+        &after_config,
+        RunMode::Exact3Hop,
+        after_ports,
+        true,
+        &after_config.exact_route_cache_path,
+        after_exit,
+    )
+    .await?;
+
+    let after_measurements = read_measurements(&after_config.raw_path())?;
+    assert_eq!(
+        after_measurements.len(),
+        after_config.profile.runs,
+        "paced combined regression must produce one exact measurement per run"
+    );
+    assert!(
+        after_measurements
+            .iter()
+            .all(|record| record.status_code == 200),
+        "paced combined regression must keep HTTP 200"
+    );
+
+    let analysis = analyze_stage_trace(&before_config.stage_trace_path)?;
+    let before_streams: Vec<_> = analysis
+        .exact_streams
+        .iter()
+        .filter(|stream| stream.site.contains(&before_config.profile.profile_name))
+        .cloned()
+        .collect();
+    let after_streams: Vec<_> = analysis
+        .exact_streams
+        .iter()
+        .filter(|stream| stream.site.contains(&after_config.profile.profile_name))
+        .cloned()
+        .collect();
+
+    assert_eq!(
+        before_streams.len(),
+        before_config.profile.runs,
+        "pre-pacing combined regression must emit one exact exit summary per run"
+    );
+    assert_eq!(
+        after_streams.len(),
+        after_config.profile.runs,
+        "paced combined regression must emit one exact exit summary per run"
+    );
+
+    let before_avg_burst =
+        average_optional(before_streams.iter().map(|stream| stream.max_send_burst_frames))
+            .unwrap_or(0.0);
+    let after_avg_burst =
+        average_optional(after_streams.iter().map(|stream| stream.max_send_burst_frames))
+            .unwrap_or(0.0);
+    let before_avg_total =
+        average(before_measurements.iter().map(|record| record.total_time_ms));
+    let after_avg_total =
+        average(after_measurements.iter().map(|record| record.total_time_ms));
+    let before_avg_ttfb = average(before_measurements.iter().map(|record| record.ttfb_ms));
+    let after_avg_ttfb = average(after_measurements.iter().map(|record| record.ttfb_ms));
+
+    assert!(
+        before_avg_burst >= 16.0,
+        "pre-pacing combined regression must show bursty response sends before the fixed window fills"
+    );
+    assert!(
+        after_avg_burst < before_avg_burst,
+        "paced combined regression must reduce max send burst size ({after_avg_burst:.2} < {before_avg_burst:.2})"
+    );
+    assert!(
+        after_avg_ttfb < before_avg_ttfb,
+        "paced combined regression must reduce TTFB ({after_avg_ttfb:.2} < {before_avg_ttfb:.2})"
+    );
+    assert!(
+        after_avg_total < before_avg_total,
+        "paced combined regression must reduce total time ({after_avg_total:.2} < {before_avg_total:.2})"
+    );
+    assert!(
+        after_streams
+            .iter()
+            .map(|stream| stream.pacing_delay_applied.unwrap_or(0))
+            .sum::<u64>()
+            > 0,
+        "paced combined regression must apply pacing delay at least once"
+    );
+    assert!(
+        after_streams
+            .iter()
+            .map(|stream| stream.burst_prevented_count.unwrap_or(0))
+            .sum::<u64>()
+            > 0,
+        "paced combined regression must prove a burst was actively prevented"
+    );
+
+    Ok(())
+}
+
 async fn run_mode_scenario(
     config: &ChaosRunConfig,
     mode: RunMode,
@@ -834,11 +982,31 @@ async fn run_mode_scenario(
     exact_route_only: bool,
     route_cache_path: &Path,
 ) -> anyhow::Result<()> {
+    run_mode_scenario_with_exit_config(
+        config,
+        mode,
+        ports,
+        exact_route_only,
+        route_cache_path,
+        ExitConfigCli::default(),
+    )
+    .await
+}
+
+async fn run_mode_scenario_with_exit_config(
+    config: &ChaosRunConfig,
+    mode: RunMode,
+    ports: LocalPorts,
+    exact_route_only: bool,
+    route_cache_path: &Path,
+    exit_config: ExitConfigCli,
+) -> anyhow::Result<()> {
     spawn_local_stack(
         ports,
         mode.route_length(),
         exact_route_only,
         route_cache_path,
+        exit_config,
     );
 
     helpers::wait_http_ready(ports.client_tcp)
@@ -846,7 +1014,11 @@ async fn run_mode_scenario(
         .with_context(|| format!("{} client path did not become ready", mode.as_str()))?;
 
     for run_index in 1..=config.profile.runs {
-        let host = format!("chaos-{}-run{run_index}", mode.as_str());
+        let host = format!(
+            "chaos-{}-run{run_index}-{}",
+            mode.as_str(),
+            config.profile.profile_name
+        );
         let request = build_http_post_request(&host, "/chaos", config.profile.request_body_bytes);
         let result = do_measure_http_request(ports.client_tcp, &request, config).await?;
         append_record(
@@ -877,6 +1049,7 @@ fn spawn_local_stack(
     route_length: u8,
     exact_route_only: bool,
     route_cache_path: &Path,
+    mut exit_config: ExitConfigCli,
 ) {
     tokio::spawn(async move {
         let _ = vpnnode::roles::target::run_target(TargetConfigCli {
@@ -885,14 +1058,11 @@ fn spawn_local_stack(
         .await;
     });
 
+    exit_config.listen = ports.exit_udp;
+    exit_config.target_addr = ports.target_tcp.to_string();
+    exit_config.exit_key_path = "exit.key".to_string();
     tokio::spawn(async move {
-        let _ = vpnnode::roles::exit::run_exit(ExitConfigCli {
-            listen: ports.exit_udp,
-            target_addr: ports.target_tcp.to_string(),
-            exit_key_path: "exit.key".to_string(),
-            ..Default::default()
-        })
-        .await;
+        let _ = vpnnode::roles::exit::run_exit(exit_config).await;
     });
 
     tokio::spawn(async move {
@@ -1227,11 +1397,32 @@ fn analyze_stage_trace(path: &Path) -> anyhow::Result<StageAnalysis> {
                     first_overlay_send_ms: value
                         .get("first_overlay_send_ms")
                         .and_then(Value::as_u64),
+                    avg_inflight: value.get("avg_inflight").and_then(Value::as_f64),
+                    max_inflight: value.get("max_inflight").and_then(Value::as_u64),
                     ack_latency_ms_p95: value.get("ack_latency_ms_p95").and_then(Value::as_u64),
+                    ack_latency_ms_avg: value.get("ack_latency_ms_avg").and_then(Value::as_u64),
                     total_retransmits: value.get("total_retransmits").and_then(Value::as_u64),
                     retransmit_rate: value.get("retransmit_rate").and_then(Value::as_f64),
                     retransmit_rate_ppm: value.get("retransmit_rate_ppm").and_then(Value::as_u64),
                     window_wait_total_ms: value.get("window_wait_total_ms").and_then(Value::as_u64),
+                    pacing_enabled: value.get("pacing_enabled").and_then(Value::as_bool),
+                    pacing_delay_applied: value.get("pacing_delay_applied").and_then(Value::as_u64),
+                    pacing_delay_applied_ms_total: value
+                        .get("pacing_delay_applied_ms_total")
+                        .and_then(Value::as_u64),
+                    pacing_interval_ms_avg: value
+                        .get("pacing_interval_ms_avg")
+                        .and_then(Value::as_u64),
+                    pacing_interval_ms_max: value
+                        .get("pacing_interval_ms_max")
+                        .and_then(Value::as_u64),
+                    burst_prevented_count: value
+                        .get("burst_prevented_count")
+                        .and_then(Value::as_u64),
+                    paced_send_batches: value.get("paced_send_batches").and_then(Value::as_u64),
+                    max_send_burst_frames: value
+                        .get("max_send_burst_frames")
+                        .and_then(Value::as_u64),
                     http_code: value.get("http_code").and_then(Value::as_u64),
                 };
                 if site.starts_with("chaos-exact-3hop-run") {
@@ -1424,6 +1615,7 @@ fn format_exit_stream_block(label: &str, streams: &[ExitStreamSummary]) -> Strin
             .or_insert(0usize) += 1;
     }
     let avg_ack_p95 = average_optional(streams.iter().map(|stream| stream.ack_latency_ms_p95));
+    let avg_ack_avg = average_optional(streams.iter().map(|stream| stream.ack_latency_ms_avg));
     let avg_total_retransmits =
         average_optional(streams.iter().map(|stream| stream.total_retransmits));
     let avg_retransmit_rate =
@@ -1432,6 +1624,24 @@ fn format_exit_stream_block(label: &str, streams: &[ExitStreamSummary]) -> Strin
         average_optional(streams.iter().map(|stream| stream.retransmit_rate_ppm));
     let avg_window_wait =
         average_optional(streams.iter().map(|stream| stream.window_wait_total_ms));
+    let avg_pacing_delay_ms = average_optional(
+        streams
+            .iter()
+            .map(|stream| stream.pacing_delay_applied_ms_total),
+    );
+    let avg_pacing_interval_ms = average_optional(
+        streams.iter().map(|stream| stream.pacing_interval_ms_avg),
+    );
+    let avg_burst_prevented = average_optional(
+        streams.iter().map(|stream| stream.burst_prevented_count),
+    );
+    let avg_paced_batches = average_optional(
+        streams.iter().map(|stream| stream.paced_send_batches),
+    );
+    let avg_max_burst = average_optional(
+        streams.iter().map(|stream| stream.max_send_burst_frames),
+    );
+    let avg_max_inflight = average_optional(streams.iter().map(|stream| stream.max_inflight));
     let avg_total = average_optional(streams.iter().map(|stream| stream.stream_duration_ms));
     let avg_overlay_gap = average_optional(streams.iter().map(|stream| {
         stream
@@ -1439,8 +1649,19 @@ fn format_exit_stream_block(label: &str, streams: &[ExitStreamSummary]) -> Strin
             .zip(stream.first_target_byte_ms)
             .map(|(overlay, target)| overlay.saturating_sub(target))
     }));
+    let pacing_modes = streams
+        .iter()
+        .map(|stream| stream.pacing_enabled.unwrap_or(false))
+        .collect::<Vec<_>>();
+    let pacing_label = if pacing_modes.iter().all(|value| *value) {
+        "enabled"
+    } else if pacing_modes.iter().all(|value| !*value) {
+        "disabled"
+    } else {
+        "mixed"
+    };
     format!(
-        "### {label}\n\n- streams: {}\n- sites: {}\n- route lens: {}\n- http codes: {}\n- avg ack p95 ms: {}\n- avg total retransmits: {}\n- avg retransmit rate: {}\n- avg retransmit ppm: {}\n- avg window wait ms: {}\n- avg stream duration ms: {}\n- avg overlay first-send gap ms: {}\n",
+        "### {label}\n\n- streams: {}\n- sites: {}\n- route lens: {}\n- http codes: {}\n- pacing: {}\n- avg ack avg ms: {}\n- avg ack p95 ms: {}\n- avg total retransmits: {}\n- avg retransmit rate: {}\n- avg retransmit ppm: {}\n- avg window wait ms: {}\n- avg pacing delay ms: {}\n- avg pacing interval ms: {}\n- avg burst prevented: {}\n- avg paced batches: {}\n- avg max send burst frames: {}\n- avg max inflight: {}\n- avg stream duration ms: {}\n- avg overlay first-send gap ms: {}\n",
         streams.len(),
         streams
             .iter()
@@ -1457,6 +1678,8 @@ fn format_exit_stream_block(label: &str, streams: &[ExitStreamSummary]) -> Strin
             .map(|(http_code, count)| format!("{http_code}x{count}"))
             .collect::<Vec<_>>()
             .join(", "),
+        pacing_label,
+        fmt_optional(avg_ack_avg),
         fmt_optional(avg_ack_p95),
         fmt_optional(avg_total_retransmits),
         avg_retransmit_rate
@@ -1464,6 +1687,12 @@ fn format_exit_stream_block(label: &str, streams: &[ExitStreamSummary]) -> Strin
             .unwrap_or_else(|| "n/a".to_string()),
         fmt_optional(avg_retransmit_ppm),
         fmt_optional(avg_window_wait),
+        fmt_optional(avg_pacing_delay_ms),
+        fmt_optional(avg_pacing_interval_ms),
+        fmt_optional(avg_burst_prevented),
+        fmt_optional(avg_paced_batches),
+        fmt_optional(avg_max_burst),
+        fmt_optional(avg_max_inflight),
         fmt_optional(avg_total),
         fmt_optional(avg_overlay_gap),
     )

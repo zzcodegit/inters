@@ -1,0 +1,29 @@
+   Compiling vpnnode v0.1.0 (C:\neinternet\vpnnode)
+warning: fields `avg_inflight` and `pacing_interval_ms_max` are never read
+  --> tests\chaos_matrix.rs:85:5
+   |
+79 | struct ExitStreamSummary {
+   |        ----------------- fields in this struct
+...
+85 |     avg_inflight: Option<f64>,
+   |     ^^^^^^^^^^^^
+...
+97 |     pacing_interval_ms_max: Option<u64>,
+   |     ^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `ExitStreamSummary` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `vpnnode` (test "chaos_matrix") generated 1 warning
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 9.41s
+     Running tests\chaos_matrix.rs (target\debug\deps\chaos_matrix-3eab1b6ea173bdb9.exe)
+
+running 1 test
+test response_pacing_reduces_window_stall_under_combined ... [2m2026-03-23T08:52:59.241334Z[0m [33m WARN[0m [2mvpnnode::roles::exit[0m[2m:[0m SUSPICIOUSLY SMALL RESPONSE: possible accounting or streaming issue [3mstream_id[0m[2m=[0m1000000000 [3msite[0m[2m=[0mprobe [3mresp_bytes_total[0m[2m=[0m108 [3mframes_sent_total[0m[2m=[0m1
+[2m2026-03-23T08:52:59.634576Z[0m [33m WARN[0m [2mvpnnode::roles::exit[0m[2m:[0m SUSPICIOUSLY SMALL RESPONSE: possible accounting or streaming issue [3mstream_id[0m[2m=[0m1 [3msite[0m[2m=[0mexample [3mresp_bytes_total[0m[2m=[0m110 [3mframes_sent_total[0m[2m=[0m1
+[2m2026-03-23T08:53:06.840073Z[0m [33m WARN[0m [2mvpnnode::roles::exit[0m[2m:[0m SUSPICIOUSLY SMALL RESPONSE: possible accounting or streaming issue [3mstream_id[0m[2m=[0m1 [3msite[0m[2m=[0mexample [3mresp_bytes_total[0m[2m=[0m110 [3mframes_sent_total[0m[2m=[0m1
+[2m2026-03-23T08:53:07.038815Z[0m [33m WARN[0m [2mvpnnode::roles::exit[0m[2m:[0m SUSPICIOUSLY SMALL RESPONSE: possible accounting or streaming issue [3mstream_id[0m[2m=[0m1000000000 [3msite[0m[2m=[0mprobe [3mresp_bytes_total[0m[2m=[0m108 [3mframes_sent_total[0m[2m=[0m1
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 8 filtered out; finished in 11.51s
+

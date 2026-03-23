@@ -50,6 +50,15 @@ pub struct NodeConfig {
     /// Exit-only: max in-flight response DATA frames per stream.
     #[serde(default = "default_exit_response_window_frames")]
     pub exit_response_window_frames: usize,
+    /// Exit-only: enable simple RTT-aware response pacing.
+    #[serde(default = "default_exit_response_pacing_enabled")]
+    pub exit_response_pacing_enabled: bool,
+    /// Exit-only: fallback RTT used before any ACK latency samples exist.
+    #[serde(default = "default_exit_response_pacing_bootstrap_rtt_ms")]
+    pub exit_response_pacing_bootstrap_rtt_ms: u64,
+    /// Exit-only: lower bound for per-frame pacing interval.
+    #[serde(default = "default_exit_response_pacing_min_interval_ms")]
+    pub exit_response_pacing_min_interval_ms: u64,
     /// Exit-only: allowlist for target hosts (foundation only; not enforced yet).
     #[serde(default)]
     pub exit_target_allowlist: Option<Vec<String>>,
@@ -82,6 +91,15 @@ fn default_exit_target_addr() -> String {
 }
 fn default_exit_response_window_frames() -> usize {
     64
+}
+fn default_exit_response_pacing_enabled() -> bool {
+    true
+}
+fn default_exit_response_pacing_bootstrap_rtt_ms() -> u64 {
+    200
+}
+fn default_exit_response_pacing_min_interval_ms() -> u64 {
+    1
 }
 fn default_drain_timeout_sec() -> u64 {
     20
@@ -141,6 +159,12 @@ impl NodeConfig {
                 if !(8..=256).contains(&self.exit_response_window_frames) {
                     anyhow::bail!("exit_response_window_frames must be in 8..=256");
                 }
+                if self.exit_response_pacing_bootstrap_rtt_ms == 0 {
+                    anyhow::bail!("exit_response_pacing_bootstrap_rtt_ms must be >= 1");
+                }
+                if self.exit_response_pacing_min_interval_ms == 0 {
+                    anyhow::bail!("exit_response_pacing_min_interval_ms must be >= 1");
+                }
             }
             NodeRole::Client => {
                 if self.route_length >= 2 && self.peers.is_empty() {
@@ -190,6 +214,9 @@ bind_port = 0
             route_length: 2,
             exit_target_addr: default_exit_target_addr(),
             exit_response_window_frames: default_exit_response_window_frames(),
+            exit_response_pacing_enabled: default_exit_response_pacing_enabled(),
+            exit_response_pacing_bootstrap_rtt_ms: default_exit_response_pacing_bootstrap_rtt_ms(),
+            exit_response_pacing_min_interval_ms: default_exit_response_pacing_min_interval_ms(),
             exit_target_allowlist: None,
             discovery_enabled: false,
             discovery_query_on_start: false,
@@ -244,6 +271,36 @@ bind_ip = "127.0.0.1"
 bind_port = 30001
 exit_target_addr = "127.0.0.1:8080"
 exit_response_window_frames = 4
+"#,
+        )
+        .unwrap();
+        assert!(cfg.validate().is_err());
+    }
+
+    #[test]
+    fn invalid_exit_response_pacing_bootstrap_fails_validation() {
+        let cfg: NodeConfig = toml::from_str(
+            r#"
+role = "exit"
+bind_ip = "127.0.0.1"
+bind_port = 30001
+exit_target_addr = "127.0.0.1:8080"
+exit_response_pacing_bootstrap_rtt_ms = 0
+"#,
+        )
+        .unwrap();
+        assert!(cfg.validate().is_err());
+    }
+
+    #[test]
+    fn invalid_exit_response_pacing_min_interval_fails_validation() {
+        let cfg: NodeConfig = toml::from_str(
+            r#"
+role = "exit"
+bind_ip = "127.0.0.1"
+bind_port = 30001
+exit_target_addr = "127.0.0.1:8080"
+exit_response_pacing_min_interval_ms = 0
 "#,
         )
         .unwrap();

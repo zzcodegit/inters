@@ -15,7 +15,7 @@ use crate::protocol::{
 };
 use crate::session::{classify_open_message_error, SessionCrypto, SessionOpenRejectKind};
 use crate::stage_trace;
-use crate::stream_reliable::{AckDisposition, AckFrame, ReliableStream};
+use crate::stream_reliable::{AckDisposition, AckFrame, AckLatencySummary, ReliableStream};
 use crate::transport::{Transport, UdpTransport};
 use crate::wire::{build_encrypted_packet, parse_routing_header, RoutingInfo};
 use anyhow::Result;
@@ -39,6 +39,9 @@ const MAX_EXIT_RESPONSE_WINDOW_FRAMES: usize = 256;
 const EXIT_RESPONSE_RETRANSMIT_BASE_MS: u64 = 350;
 const EXIT_RESPONSE_RETRANSMIT_SAFETY_MARGIN_MS: u64 = 75;
 const EXIT_RESPONSE_RETRANSMIT_MAX_MS: u64 = 1500;
+const DEFAULT_EXIT_RESPONSE_PACING_BOOTSTRAP_RTT_MS: u64 = 200;
+const DEFAULT_EXIT_RESPONSE_PACING_MIN_INTERVAL_MS: u64 = 1;
+const EXIT_RESPONSE_PACING_BURST_CAP_FRAMES: f64 = 4.0;
 
 struct ExitStream {
     socket: TcpStream,
@@ -52,7 +55,7 @@ fn clamp_response_window_frames(frames: usize) -> usize {
 }
 
 fn adaptive_response_retransmit_interval(
-    summary: crate::stream_reliable::AckLatencySummary,
+    summary: AckLatencySummary,
 ) -> Duration {
     let mut interval_ms = EXIT_RESPONSE_RETRANSMIT_BASE_MS;
     if let Some(p95_ms) = summary.p95_ms {
@@ -67,6 +70,139 @@ fn adaptive_response_retransmit_interval(
     }
 
     Duration::from_millis(interval_ms.min(EXIT_RESPONSE_RETRANSMIT_MAX_MS))
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ResponsePacingConfig {
+    enabled: bool,
+    window_frames: usize,
+    bootstrap_rtt_ms: u64,
+    min_interval_ms: u64,
+}
+
+#[derive(Debug, Default, Clone)]
+struct ResponsePacingState {
+    pacing_budget_frames: f64,
+    last_budget_refresh: Option<Instant>,
+    pacing_delay_applied: u64,
+    pacing_delay_applied_ms_total: u64,
+    burst_prevented_count: u64,
+    paced_send_batches: u64,
+    max_send_burst_frames: u64,
+    current_send_burst_frames: u64,
+    pacing_interval_samples: u64,
+    pacing_interval_ms_total: u64,
+    pacing_interval_ms_max: u64,
+}
+
+fn response_pacing_interval_ms(summary: AckLatencySummary, config: ResponsePacingConfig) -> u64 {
+    let bootstrap_rtt_ms = config
+        .bootstrap_rtt_ms
+        .max(DEFAULT_EXIT_RESPONSE_PACING_BOOTSTRAP_RTT_MS)
+        .max(1);
+    let min_interval_ms = config
+        .min_interval_ms
+        .max(DEFAULT_EXIT_RESPONSE_PACING_MIN_INTERVAL_MS)
+        .max(1);
+    let observed_rtt_ms = summary
+        .avg_ms
+        .or(summary.p50_ms)
+        .or(summary.p95_ms)
+        .filter(|value| *value > 0)
+        .unwrap_or(bootstrap_rtt_ms);
+    let divisor = config.window_frames.max(1) as u64;
+    ((observed_rtt_ms.saturating_add(divisor.saturating_sub(1))) / divisor).max(min_interval_ms)
+}
+
+impl ResponsePacingState {
+    fn refresh_budget(&mut self, interval_ms: u64) {
+        let now = Instant::now();
+        match self.last_budget_refresh {
+            None => {
+                self.last_budget_refresh = Some(now);
+                self.pacing_budget_frames = EXIT_RESPONSE_PACING_BURST_CAP_FRAMES;
+            }
+            Some(previous) => {
+                if interval_ms == 0 {
+                    self.last_budget_refresh = Some(now);
+                    self.pacing_budget_frames = EXIT_RESPONSE_PACING_BURST_CAP_FRAMES;
+                    return;
+                }
+                let elapsed = now.duration_since(previous).as_secs_f64();
+                let interval_secs = interval_ms as f64 / 1000.0;
+                let earned = if interval_secs > 0.0 {
+                    elapsed / interval_secs
+                } else {
+                    EXIT_RESPONSE_PACING_BURST_CAP_FRAMES
+                };
+                self.pacing_budget_frames = (self.pacing_budget_frames + earned)
+                    .clamp(0.0, EXIT_RESPONSE_PACING_BURST_CAP_FRAMES);
+                self.last_budget_refresh = Some(now);
+            }
+        }
+    }
+
+    async fn before_send(
+        &mut self,
+        config: ResponsePacingConfig,
+        summary: AckLatencySummary,
+    ) -> u64 {
+        if !config.enabled {
+            return 0;
+        }
+
+        let interval_ms = response_pacing_interval_ms(summary, config);
+        self.pacing_interval_samples = self.pacing_interval_samples.saturating_add(1);
+        self.pacing_interval_ms_total = self.pacing_interval_ms_total.saturating_add(interval_ms);
+        self.pacing_interval_ms_max = self.pacing_interval_ms_max.max(interval_ms);
+
+        self.refresh_budget(interval_ms);
+        if self.pacing_budget_frames + f64::EPSILON < 1.0 {
+            let wait_fraction = (1.0 - self.pacing_budget_frames).clamp(0.0, 1.0);
+            let wait_started = Instant::now();
+            tokio::time::sleep(Duration::from_secs_f64(
+                (interval_ms as f64 / 1000.0) * wait_fraction,
+            ))
+            .await;
+            let waited_ms = wait_started.elapsed().as_millis() as u64;
+            self.pacing_delay_applied = self.pacing_delay_applied.saturating_add(1);
+            self.pacing_delay_applied_ms_total = self
+                .pacing_delay_applied_ms_total
+                .saturating_add(waited_ms.max(interval_ms / 2).max(1));
+            if self.current_send_burst_frames > 0 {
+                self.burst_prevented_count = self.burst_prevented_count.saturating_add(1);
+            }
+            self.current_send_burst_frames = 0;
+            self.refresh_budget(interval_ms);
+        }
+
+        interval_ms
+    }
+
+    fn on_send(&mut self, config: ResponsePacingConfig, interval_ms: u64) {
+        self.current_send_burst_frames = self.current_send_burst_frames.saturating_add(1);
+        self.max_send_burst_frames = self
+            .max_send_burst_frames
+            .max(self.current_send_burst_frames);
+        if config.enabled {
+            if self.current_send_burst_frames == 1 {
+                self.paced_send_batches = self.paced_send_batches.saturating_add(1);
+            }
+            self.refresh_budget(interval_ms);
+            self.pacing_budget_frames = (self.pacing_budget_frames - 1.0).max(0.0);
+        }
+    }
+
+    fn note_external_pause(&mut self) {
+        self.current_send_burst_frames = 0;
+    }
+
+    fn avg_interval_ms(&self) -> Option<u64> {
+        if self.pacing_interval_samples == 0 {
+            return None;
+        }
+        Some(self.pacing_interval_ms_total / self.pacing_interval_samples)
+    }
 }
 
 /// Minimal HTTP parser helper: try to find Content-Length and header/body split.
@@ -361,10 +497,23 @@ fn best_effort_outbound_ip() -> Option<IpAddr> {
 pub async fn run_exit(args: ExitArgs) -> Result<()> {
     let udp = Arc::new(UdpTransport::bind(args.listen).await?);
     let response_window_frames = clamp_response_window_frames(args.response_window_frames);
+    let response_pacing_config = ResponsePacingConfig {
+        enabled: args.response_pacing_enabled,
+        window_frames: response_window_frames,
+        bootstrap_rtt_ms: args
+            .response_pacing_bootstrap_rtt_ms
+            .max(DEFAULT_EXIT_RESPONSE_PACING_BOOTSTRAP_RTT_MS),
+        min_interval_ms: args
+            .response_pacing_min_interval_ms
+            .max(DEFAULT_EXIT_RESPONSE_PACING_MIN_INTERVAL_MS),
+    };
     info!(
         listen_addr = %args.listen,
         target_addr = %args.target_addr,
         response_window_frames,
+        response_pacing_enabled = response_pacing_config.enabled,
+        response_pacing_bootstrap_rtt_ms = response_pacing_config.bootstrap_rtt_ms,
+        response_pacing_min_interval_ms = response_pacing_config.min_interval_ms,
         "exit starting, binding UDP and resolving target"
     );
     info!(role = "exit", addr = %args.listen, "node ready");
@@ -532,6 +681,7 @@ pub async fn run_exit(args: ExitArgs) -> Result<()> {
     let request_buffer_for_task = request_buffer.clone();
     let _completed_requests_for_task = completed_requests.clone();
     let response_window_frames_for_task = response_window_frames;
+    let response_pacing_config_for_task = response_pacing_config;
 
     // Task: handle TCP request/response per stream.
     tokio::spawn(async move {
@@ -848,6 +998,7 @@ pub async fn run_exit(args: ExitArgs) -> Result<()> {
             let mut window_wait_events: u64 = 0;
             let mut window_wait_total_ms: u64 = 0;
             let mut window_wait_max_ms: u64 = 0;
+            let mut response_pacing = ResponsePacingState::default();
 
             // Stage 9.1b observability:
             // - sample inflight every ~150ms while this stream is active
@@ -1058,7 +1209,18 @@ pub async fn run_exit(args: ExitArgs) -> Result<()> {
                                     window_wait_total_ms =
                                         window_wait_total_ms.saturating_add(waited_ms);
                                     window_wait_max_ms = window_wait_max_ms.max(waited_ms);
+                                    response_pacing.note_external_pause();
                                 }
+
+                                let ack_summary = {
+                                    let map = reliable_streams_for_task.lock().unwrap();
+                                    map.get(&stream_id)
+                                        .map(|rs| rs.ack_latency_summary())
+                                        .unwrap_or_default()
+                                };
+                                let pacing_interval_ms = response_pacing
+                                    .before_send(response_pacing_config_for_task, ack_summary)
+                                    .await;
 
                                 let frame = {
                                     let mut map = reliable_streams_for_task.lock().unwrap();
@@ -1109,6 +1271,10 @@ pub async fn run_exit(args: ExitArgs) -> Result<()> {
                                 match udp_for_task.send(&peer, &ct2).await {
                                     Ok(_) => {
                                         ok = true;
+                                        response_pacing.on_send(
+                                            response_pacing_config_for_task,
+                                            pacing_interval_ms,
+                                        );
                                         if first_overlay_send_ms.is_none() && chunk_len > 0 {
                                             let since_response_start =
                                                 response_start.elapsed().as_millis() as u64;
@@ -1206,7 +1372,18 @@ pub async fn run_exit(args: ExitArgs) -> Result<()> {
                     window_wait_events = window_wait_events.saturating_add(1);
                     window_wait_total_ms = window_wait_total_ms.saturating_add(waited_ms);
                     window_wait_max_ms = window_wait_max_ms.max(waited_ms);
+                    response_pacing.note_external_pause();
                 }
+
+                let ack_summary = {
+                    let map = reliable_streams_for_task.lock().unwrap();
+                    map.get(&stream_id)
+                        .map(|rs| rs.ack_latency_summary())
+                        .unwrap_or_default()
+                };
+                let pacing_interval_ms = response_pacing
+                    .before_send(response_pacing_config_for_task, ack_summary)
+                    .await;
 
                 let frame = {
                     let mut map = reliable_streams_for_task.lock().unwrap();
@@ -1234,6 +1411,7 @@ pub async fn run_exit(args: ExitArgs) -> Result<()> {
                 match udp_for_task.send(&peer, &ct2).await {
                     Ok(_) => {
                         ok = true;
+                        response_pacing.on_send(response_pacing_config_for_task, pacing_interval_ms);
                         if first_overlay_send_ms.is_none() && chunk_len > 0 {
                             let since_response_start = response_start.elapsed().as_millis() as u64;
                             let since_first_target_byte = first_target_byte_ms
@@ -1302,6 +1480,12 @@ pub async fn run_exit(args: ExitArgs) -> Result<()> {
                 .inflight1_samples
                 .saturating_mul(SAMPLE_INTERVAL_MS);
             max_inflight = sample_stats.max_inflight as usize;
+            let pacing_interval_ms_avg = response_pacing.avg_interval_ms();
+            let pacing_interval_ms_max = if response_pacing.pacing_interval_ms_max > 0 {
+                Some(response_pacing.pacing_interval_ms_max)
+            } else {
+                None
+            };
 
             let stream_duration_ms = response_start.elapsed().as_millis() as u64;
             let effective_throughput = if stream_duration_ms > 0 {
@@ -1459,6 +1643,13 @@ pub async fn run_exit(args: ExitArgs) -> Result<()> {
                 window_wait_events,
                 window_wait_total_ms,
                 window_wait_max_ms,
+                pacing_delay_applied = response_pacing.pacing_delay_applied,
+                pacing_delay_applied_ms_total = response_pacing.pacing_delay_applied_ms_total,
+                pacing_interval_ms_avg = ?pacing_interval_ms_avg,
+                pacing_interval_ms_max = ?pacing_interval_ms_max,
+                burst_prevented_count = response_pacing.burst_prevented_count,
+                paced_send_batches = response_pacing.paced_send_batches,
+                max_send_burst_frames = response_pacing.max_send_burst_frames,
                 frames_sent_total,
                 frames_acked_total,
                 total_retransmits,
@@ -1494,6 +1685,14 @@ pub async fn run_exit(args: ExitArgs) -> Result<()> {
                     "window_wait_events": window_wait_events,
                     "window_wait_total_ms": window_wait_total_ms,
                     "window_wait_max_ms": window_wait_max_ms,
+                    "pacing_enabled": response_pacing_config_for_task.enabled,
+                    "pacing_delay_applied": response_pacing.pacing_delay_applied,
+                    "pacing_delay_applied_ms_total": response_pacing.pacing_delay_applied_ms_total,
+                    "pacing_interval_ms_avg": pacing_interval_ms_avg,
+                    "pacing_interval_ms_max": pacing_interval_ms_max,
+                    "burst_prevented_count": response_pacing.burst_prevented_count,
+                    "paced_send_batches": response_pacing.paced_send_batches,
+                    "max_send_burst_frames": response_pacing.max_send_burst_frames,
                     "time_at_inflight_1_ms": time_at_inflight_1_ms,
                     "total_retransmits": total_retransmits,
                     "retransmit_rate": retransmit_rate,
@@ -2526,5 +2725,56 @@ mod tests {
             interval,
             Duration::from_millis(EXIT_RESPONSE_RETRANSMIT_MAX_MS)
         );
+    }
+
+    #[test]
+    fn response_pacing_interval_uses_bootstrap_when_ack_samples_missing() {
+        let interval_ms = response_pacing_interval_ms(
+            AckLatencySummary::default(),
+            ResponsePacingConfig {
+                enabled: true,
+                window_frames: 64,
+                bootstrap_rtt_ms: 200,
+                min_interval_ms: 1,
+            },
+        );
+        assert_eq!(interval_ms, 4);
+    }
+
+    #[test]
+    fn response_pacing_interval_tracks_ack_rtt_and_respects_minimum() {
+        let interval_ms = response_pacing_interval_ms(
+            AckLatencySummary {
+                avg_ms: Some(320),
+                min_ms: Some(280),
+                p50_ms: Some(300),
+                p95_ms: Some(410),
+                max_ms: Some(430),
+            },
+            ResponsePacingConfig {
+                enabled: true,
+                window_frames: 64,
+                bootstrap_rtt_ms: 200,
+                min_interval_ms: 1,
+            },
+        );
+        assert_eq!(interval_ms, 5);
+
+        let min_interval_ms = response_pacing_interval_ms(
+            AckLatencySummary {
+                avg_ms: Some(20),
+                min_ms: Some(15),
+                p50_ms: Some(18),
+                p95_ms: Some(24),
+                max_ms: Some(28),
+            },
+            ResponsePacingConfig {
+                enabled: true,
+                window_frames: 64,
+                bootstrap_rtt_ms: 200,
+                min_interval_ms: 2,
+            },
+        );
+        assert_eq!(min_interval_ms, 2);
     }
 }

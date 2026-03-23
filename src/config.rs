@@ -124,6 +124,15 @@ pub struct ExitConfigCli {
     /// Max in-flight response DATA frames per stream before exit applies backpressure.
     #[arg(long, default_value_t = 64)]
     pub response_window_frames: usize,
+    /// Stage 5: enable simple RTT-aware pacing for response DATA.
+    #[arg(long, default_value_t = true)]
+    pub response_pacing_enabled: bool,
+    /// Stage 5: fallback RTT used when ACK latency is not sampled yet.
+    #[arg(long, default_value_t = 200)]
+    pub response_pacing_bootstrap_rtt_ms: u64,
+    /// Stage 5: lower bound for per-frame pacing interval.
+    #[arg(long, default_value_t = 1)]
+    pub response_pacing_min_interval_ms: u64,
 
     /// Stage 9.1: enable minimal discovery (control-plane only).
     #[arg(long, default_value_t = false)]
@@ -189,6 +198,9 @@ impl Default for ExitConfigCli {
             target_addr: "127.0.0.1:8080".to_string(),
             exit_key_path: "exit.key".to_string(),
             response_window_frames: 64,
+            response_pacing_enabled: true,
+            response_pacing_bootstrap_rtt_ms: 200,
+            response_pacing_min_interval_ms: 1,
             discovery_enabled: false,
             discovery_query_on_start: false,
             discovery_max_entries: 256,
