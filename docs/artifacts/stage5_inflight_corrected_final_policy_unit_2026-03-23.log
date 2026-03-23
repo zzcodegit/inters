@@ -1,0 +1,19 @@
+[policy_unit] 2026-03-23T20:09:17.3444297+03:00
+   Compiling vpnnode v0.1.0 (C:\neinternet\vpnnode)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 9.43s
+     Running unittests src\lib.rs (target\debug\deps\vpnnode-a32e04d484554ec4.exe)
+
+running 1 test
+test roles::exit::tests::response_inflight_state_requires_sustained_pressure_before_reducing ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 84 filtered out; finished in 0.00s
+
+   Compiling vpnnode v0.1.0 (C:\neinternet\vpnnode)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 7.82s
+     Running unittests src\lib.rs (target\debug\deps\vpnnode-a32e04d484554ec4.exe)
+
+running 1 test
+test roles::exit::tests::response_inflight_state_restores_after_shorter_clean_streak ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 84 filtered out; finished in 0.00s
+

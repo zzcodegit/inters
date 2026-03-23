@@ -1,0 +1,10 @@
+[setup_perf_target_public] 2026-03-23T19:35:57.5357629+03:00
+payload_path=/opt/vpnnode/target-http/perf-262144.bin
+payload_bytes=262144
+tcp_forward.py            | 4 kB |   4.0 kB/s | ETA: 00:00:00 |  64%tcp_forward.py            | 6 kB |   6.2 kB/s | ETA: 00:00:00 | 100%
+Created symlink /etc/systemd/system/multi-user.target.wants/vpnnode-target-http-public.service → /etc/systemd/system/vpnnode-target-http-public.service.
+active
+direct_addr=31.192.232.26:18080
+target_path=/perf-262144.bin
+payload_bytes=262144
+public_service=vpnnode-target-http-public.service

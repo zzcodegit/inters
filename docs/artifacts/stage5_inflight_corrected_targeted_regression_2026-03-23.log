@@ -1,0 +1,50 @@
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+   Compiling vpnnode v0.1.0 (C:\neinternet\vpnnode)
+warning: fields `avg_inflight`, `pacing_interval_ms_max`, `effective_inflight_cap_min`, and `effective_inflight_cap_max` are never read
+   --> tests\chaos_matrix.rs:98:5
+    |
+ 92 | struct ExitStreamSummary {
+    |        ----------------- fields in this struct
+...
+ 98 |     avg_inflight: Option<f64>,
+    |     ^^^^^^^^^^^^
+...
+111 |     pacing_interval_ms_max: Option<u64>,
+    |     ^^^^^^^^^^^^^^^^^^^^^^
+...
+116 |     effective_inflight_cap_min: Option<u64>,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^
+117 |     effective_inflight_cap_max: Option<u64>,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: `ExitStreamSummary` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: associated function `inflight_pressure_regression` is never used
+    --> tests\chaos_matrix.rs:2146:8
+     |
+1979 | impl ChaosRunConfig {
+     | ------------------- associated function in this implementation
+...
+2146 |     fn inflight_pressure_regression(profile_name: &str, base_port: u16, runs: usize) -> Self {
+     |        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: `vpnnode` (test "chaos_matrix") generated 2 warnings
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 12.58s
+     Running tests\chaos_matrix.rs (target\debug\deps\chaos_matrix-3eab1b6ea173bdb9.exe)
+
+running 1 test
+test response_inflight_discipline_avoids_transient_overtrigger_on_moderate_route ... [2m2026-03-23T14:21:02.411937Z[0m [33m WARN[0m [2mvpnnode::roles::exit[0m[2m:[0m SUSPICIOUSLY SMALL RESPONSE: possible accounting or streaming issue [3mstream_id[0m[2m=[0m1000000000 [3msite[0m[2m=[0mprobe [3mresp_bytes_total[0m[2m=[0m108 [3mframes_sent_total[0m[2m=[0m1
+[2m2026-03-23T14:21:02.810826Z[0m [33m WARN[0m [2mvpnnode::roles::exit[0m[2m:[0m SUSPICIOUSLY SMALL RESPONSE: possible accounting or streaming issue [3mstream_id[0m[2m=[0m1 [3msite[0m[2m=[0mexample [3mresp_bytes_total[0m[2m=[0m110 [3mframes_sent_total[0m[2m=[0m1
+[2m2026-03-23T14:21:25.182342Z[0m [33m WARN[0m [2mvpnnode::roles::exit[0m[2m:[0m HIGH RETRANSMIT RATE [3mstream_id[0m[2m=[0m2 [3mframes_sent_total[0m[2m=[0m290 [3mtotal_retransmits[0m[2m=[0m206 [3mretransmit_rate[0m[2m=[0m0.7103448275862069
+[2m2026-03-23T14:21:25.182566Z[0m [33m WARN[0m [2mvpnnode::roles::exit[0m[2m:[0m LOW THROUGHPUT [3mstream_id[0m[2m=[0m2 [3mthroughput_bps[0m[2m=[0m25237 [3mmin_thr_bps[0m[2m=[0m50000
+[2m2026-03-23T14:21:48.297718Z[0m [33m WARN[0m [2mvpnnode::roles::exit[0m[2m:[0m HIGH RETRANSMIT RATE [3mstream_id[0m[2m=[0m3 [3mframes_sent_total[0m[2m=[0m290 [3mtotal_retransmits[0m[2m=[0m211 [3mretransmit_rate[0m[2m=[0m0.7275862068965517
+[2m2026-03-23T14:21:48.297840Z[0m [33m WARN[0m [2mvpnnode::roles::exit[0m[2m:[0m LOW THROUGHPUT [3mstream_id[0m[2m=[0m3 [3mthroughput_bps[0m[2m=[0m23158 [3mmin_thr_bps[0m[2m=[0m50000
+[2m2026-03-23T14:22:13.975029Z[0m [33m WARN[0m [2mvpnnode::roles::exit[0m[2m:[0m HIGH RETRANSMIT RATE [3mstream_id[0m[2m=[0m4 [3mframes_sent_total[0m[2m=[0m290 [3mtotal_retransmits[0m[2m=[0m209 [3mretransmit_rate[0m[2m=[0m0.7206896551724138
+[2m2026-03-23T14:22:13.975117Z[0m [33m WARN[0m [2mvpnnode::roles::exit[0m[2m:[0m LOW THROUGHPUT [3mstream_id[0m[2m=[0m4 [3mthroughput_bps[0m[2m=[0m22540 [3mmin_thr_bps[0m[2m=[0m50000
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 9 filtered out; finished in 73.94s
+

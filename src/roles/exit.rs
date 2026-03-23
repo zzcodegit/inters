@@ -44,11 +44,13 @@ const DEFAULT_EXIT_RESPONSE_PACING_MIN_INTERVAL_MS: u64 = 1;
 const EXIT_RESPONSE_PACING_BURST_CAP_FRAMES: f64 = 4.0;
 const DEFAULT_EXIT_RESPONSE_INFLIGHT_DISCIPLINE_MIN_CAP_FRAMES: usize = 40;
 const EXIT_RESPONSE_INFLIGHT_DISCIPLINE_REDUCE_STEP_FRAMES: usize = 4;
-const EXIT_RESPONSE_INFLIGHT_DISCIPLINE_RESTORE_STEP_FRAMES: usize = 2;
+const EXIT_RESPONSE_INFLIGHT_DISCIPLINE_RESTORE_STEP_FRAMES: usize = 4;
 const EXIT_RESPONSE_INFLIGHT_DISCIPLINE_STALL_PRESSURE_MS: u64 = 24;
 const EXIT_RESPONSE_INFLIGHT_DISCIPLINE_STALL_SEVERE_MS: u64 = 96;
-const EXIT_RESPONSE_INFLIGHT_DISCIPLINE_RESTORE_STREAK_SAMPLES: u32 = 6;
-const EXIT_RESPONSE_INFLIGHT_DISCIPLINE_RESTORE_HEADROOM_FRAMES: usize = 8;
+const EXIT_RESPONSE_INFLIGHT_DISCIPLINE_RESTORE_STREAK_SAMPLES: u32 = 3;
+const EXIT_RESPONSE_INFLIGHT_DISCIPLINE_RESTORE_HEADROOM_FRAMES: usize = 4;
+const EXIT_RESPONSE_INFLIGHT_DISCIPLINE_MODERATE_PRESSURE_STREAK_SAMPLES: u32 = 2;
+const EXIT_RESPONSE_INFLIGHT_DISCIPLINE_SEVERE_PRESSURE_STREAK_SAMPLES: u32 = 2;
 
 struct ExitStream {
     socket: TcpStream,
@@ -119,7 +121,51 @@ struct ResponseInflightDisciplineState {
     inflight_cap_restore_count: u64,
     ack_pressure_events: u64,
     send_blocked_by_effective_cap: u64,
+    pressure_streak: u32,
+    max_pressure_streak: u32,
     restore_clean_streak: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ResponseInflightPressureLevel {
+    None,
+    Moderate,
+    Severe,
+}
+
+impl ResponseInflightPressureLevel {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Moderate => "moderate",
+            Self::Severe => "severe",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ResponseInflightPressureSignal {
+    level: ResponseInflightPressureLevel,
+    target_cap_frames: usize,
+    reason: &'static str,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ResponseInflightCapAction {
+    None,
+    Reduced,
+    Restored,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ResponseInflightDecision {
+    previous_cap_frames: usize,
+    effective_cap_frames: usize,
+    pressure_level: ResponseInflightPressureLevel,
+    pressure_reason: &'static str,
+    pressure_streak: u32,
+    restore_clean_streak: u32,
+    action: ResponseInflightCapAction,
 }
 
 fn response_pacing_interval_ms(summary: AckLatencySummary, config: ResponsePacingConfig) -> u64 {
@@ -141,12 +187,12 @@ fn response_pacing_interval_ms(summary: AckLatencySummary, config: ResponsePacin
     ((observed_rtt_ms.saturating_add(divisor.saturating_sub(1))) / divisor).max(min_interval_ms)
 }
 
-fn response_inflight_target_cap_frames(
+fn response_inflight_pressure_signal(
     summary: AckLatencySummary,
     config: ResponseInflightDisciplineConfig,
     recent_window_wait_ms: u64,
     current_inflight: usize,
-) -> usize {
+) -> ResponseInflightPressureSignal {
     let hard_window_frames = config.hard_window_frames.max(1);
     let min_cap_frames = config.min_cap_frames.clamp(1, hard_window_frames);
     let bootstrap_rtt_ms = config
@@ -165,22 +211,44 @@ fn response_inflight_target_cap_frames(
         .filter(|value| *value > 0)
         .unwrap_or(ack_p95_ms);
     let occupancy_near_window = current_inflight >= hard_window_frames.saturating_sub(4);
-    let anticipatory_pressure =
-        occupancy_near_window && ack_p95_ms > bootstrap_rtt_ms.saturating_mul(5) / 4;
-    let moderate_pressure = recent_window_wait_ms
-        >= EXIT_RESPONSE_INFLIGHT_DISCIPLINE_STALL_PRESSURE_MS
-        || anticipatory_pressure;
-    let severe_pressure = recent_window_wait_ms
-        >= EXIT_RESPONSE_INFLIGHT_DISCIPLINE_STALL_SEVERE_MS
-        || (occupancy_near_window && ack_avg_ms > bootstrap_rtt_ms.saturating_mul(3) / 2);
-    let target = if severe_pressure {
-        hard_window_frames.saturating_sub(EXIT_RESPONSE_INFLIGHT_DISCIPLINE_REDUCE_STEP_FRAMES * 2)
-    } else if moderate_pressure {
-        hard_window_frames.saturating_sub(EXIT_RESPONSE_INFLIGHT_DISCIPLINE_REDUCE_STEP_FRAMES)
-    } else {
-        hard_window_frames
-    };
-    target.clamp(min_cap_frames, hard_window_frames)
+    let slow_ack_floor_ms = bootstrap_rtt_ms.saturating_mul(6) / 5;
+    let moderate_ack_tail_ms = bootstrap_rtt_ms.saturating_mul(5) / 4;
+    let severe_ack_tail_ms = bootstrap_rtt_ms.saturating_mul(3) / 2;
+
+    let slow_ack = ack_avg_ms >= slow_ack_floor_ms && ack_p95_ms >= moderate_ack_tail_ms;
+    let severe_slow_ack = ack_avg_ms >= slow_ack_floor_ms && ack_p95_ms >= severe_ack_tail_ms;
+
+    if occupancy_near_window
+        && recent_window_wait_ms >= EXIT_RESPONSE_INFLIGHT_DISCIPLINE_STALL_SEVERE_MS
+        && severe_slow_ack
+    {
+        return ResponseInflightPressureSignal {
+            level: ResponseInflightPressureLevel::Severe,
+            target_cap_frames: hard_window_frames
+                .saturating_sub(EXIT_RESPONSE_INFLIGHT_DISCIPLINE_REDUCE_STEP_FRAMES * 2)
+                .clamp(min_cap_frames, hard_window_frames),
+            reason: "severe_stall_with_slow_ack",
+        };
+    }
+
+    if occupancy_near_window
+        && recent_window_wait_ms >= EXIT_RESPONSE_INFLIGHT_DISCIPLINE_STALL_PRESSURE_MS
+        && slow_ack
+    {
+        return ResponseInflightPressureSignal {
+            level: ResponseInflightPressureLevel::Moderate,
+            target_cap_frames: hard_window_frames
+                .saturating_sub(EXIT_RESPONSE_INFLIGHT_DISCIPLINE_REDUCE_STEP_FRAMES)
+                .clamp(min_cap_frames, hard_window_frames),
+            reason: "stall_with_slow_ack",
+        };
+    }
+
+    ResponseInflightPressureSignal {
+        level: ResponseInflightPressureLevel::None,
+        target_cap_frames: hard_window_frames,
+        reason: "no_pressure",
+    }
 }
 
 fn response_inflight_restore_is_clean(
@@ -332,31 +400,61 @@ impl ResponseInflightDisciplineState {
         summary: AckLatencySummary,
         recent_window_wait_ms: u64,
         current_inflight: usize,
-    ) -> usize {
+    ) -> ResponseInflightDecision {
         let hard_window_frames = config.hard_window_frames.max(1);
         if !config.enabled {
             self.effective_cap_frames = hard_window_frames;
             self.sample_cap(hard_window_frames);
-            return hard_window_frames;
+            return ResponseInflightDecision {
+                previous_cap_frames: hard_window_frames,
+                effective_cap_frames: hard_window_frames,
+                pressure_level: ResponseInflightPressureLevel::None,
+                pressure_reason: "discipline_disabled",
+                pressure_streak: 0,
+                restore_clean_streak: 0,
+                action: ResponseInflightCapAction::None,
+            };
         }
 
         let current = self.current_cap(config);
-        let target = response_inflight_target_cap_frames(
+        let signal = response_inflight_pressure_signal(
             summary,
             config,
             recent_window_wait_ms,
             current_inflight,
         );
-        if target < current {
+        let mut action = ResponseInflightCapAction::None;
+        match signal.level {
+            ResponseInflightPressureLevel::None => {
+                self.pressure_streak = self.pressure_streak.saturating_sub(1);
+            }
+            ResponseInflightPressureLevel::Moderate | ResponseInflightPressureLevel::Severe => {
+                self.pressure_streak = self.pressure_streak.saturating_add(1);
+                self.max_pressure_streak = self.max_pressure_streak.max(self.pressure_streak);
+            }
+        }
+
+        let required_pressure_streak = match signal.level {
+            ResponseInflightPressureLevel::None => u32::MAX,
+            ResponseInflightPressureLevel::Moderate => {
+                EXIT_RESPONSE_INFLIGHT_DISCIPLINE_MODERATE_PRESSURE_STREAK_SAMPLES
+            }
+            ResponseInflightPressureLevel::Severe => {
+                EXIT_RESPONSE_INFLIGHT_DISCIPLINE_SEVERE_PRESSURE_STREAK_SAMPLES
+            }
+        };
+
+        if signal.level != ResponseInflightPressureLevel::None
+            && signal.target_cap_frames < current
+            && self.pressure_streak >= required_pressure_streak
+        {
             self.restore_clean_streak = 0;
             self.ack_pressure_events = self.ack_pressure_events.saturating_add(1);
-            let adjusted = target;
-            if adjusted < current {
-                self.effective_cap_frames = adjusted;
-                self.inflight_cap_reduced_count = self.inflight_cap_reduced_count.saturating_add(1);
-            }
+            self.effective_cap_frames = signal.target_cap_frames;
+            self.inflight_cap_reduced_count = self.inflight_cap_reduced_count.saturating_add(1);
+            action = ResponseInflightCapAction::Reduced;
         } else if current < hard_window_frames {
-            if target == hard_window_frames
+            if signal.level == ResponseInflightPressureLevel::None
                 && response_inflight_restore_is_clean(
                     summary,
                     config,
@@ -376,6 +474,7 @@ impl ResponseInflightDisciplineState {
                         self.effective_cap_frames = adjusted;
                         self.inflight_cap_restore_count =
                             self.inflight_cap_restore_count.saturating_add(1);
+                        action = ResponseInflightCapAction::Restored;
                     }
                     self.restore_clean_streak = 0;
                 }
@@ -384,7 +483,15 @@ impl ResponseInflightDisciplineState {
             }
         }
         self.sample_cap(self.effective_cap_frames);
-        self.effective_cap_frames
+        ResponseInflightDecision {
+            previous_cap_frames: current,
+            effective_cap_frames: self.effective_cap_frames,
+            pressure_level: signal.level,
+            pressure_reason: signal.reason,
+            pressure_streak: self.pressure_streak,
+            restore_clean_streak: self.restore_clean_streak,
+            action,
+        }
     }
 
     fn avg_cap_frames(&self) -> Option<u64> {
@@ -1211,6 +1318,8 @@ pub async fn run_exit(args: ExitArgs) -> Result<()> {
                 inflight_cap_restore_count: 0,
                 ack_pressure_events: 0,
                 send_blocked_by_effective_cap: 0,
+                pressure_streak: 0,
+                max_pressure_streak: 0,
                 restore_clean_streak: 0,
             };
             let mut recent_window_wait_ms: u64 = 0;
@@ -1405,15 +1514,14 @@ pub async fn run_exit(args: ExitArgs) -> Result<()> {
                                         (0usize, AckLatencySummary::default())
                                     }
                                 };
-                                let previous_effective_cap = inflight_discipline
-                                    .current_cap(response_inflight_discipline_config_for_task);
-                                let effective_cap = inflight_discipline.update(
+                                let decision = inflight_discipline.update(
                                     response_inflight_discipline_config_for_task,
                                     ack_summary,
                                     recent_window_wait_ms,
                                     current_inflight_for_cap,
                                 );
-                                if effective_cap < previous_effective_cap {
+                                let effective_cap = decision.effective_cap_frames;
+                                if decision.action == ResponseInflightCapAction::Reduced {
                                     emit_exit_stage(
                                         "effective_inflight_cap_reduced",
                                         json!({
@@ -1422,14 +1530,17 @@ pub async fn run_exit(args: ExitArgs) -> Result<()> {
                                             "route_len": routing.route.len(),
                                             "peer": peer.to_string(),
                                             "target_addr": target_addr.to_string(),
-                                            "previous_cap": previous_effective_cap,
+                                            "previous_cap": decision.previous_cap_frames,
                                             "effective_cap": effective_cap,
                                             "recent_window_wait_ms": recent_window_wait_ms,
                                             "ack_latency_ms_avg": ack_summary.avg_ms,
                                             "ack_latency_ms_p95": ack_summary.p95_ms,
+                                            "pressure_level": decision.pressure_level.as_str(),
+                                            "pressure_reason": decision.pressure_reason,
+                                            "pressure_streak": decision.pressure_streak,
                                         }),
                                     );
-                                } else if effective_cap > previous_effective_cap {
+                                } else if decision.action == ResponseInflightCapAction::Restored {
                                     emit_exit_stage(
                                         "effective_inflight_cap_restored",
                                         json!({
@@ -1438,11 +1549,15 @@ pub async fn run_exit(args: ExitArgs) -> Result<()> {
                                             "route_len": routing.route.len(),
                                             "peer": peer.to_string(),
                                             "target_addr": target_addr.to_string(),
-                                            "previous_cap": previous_effective_cap,
+                                            "previous_cap": decision.previous_cap_frames,
                                             "effective_cap": effective_cap,
                                             "recent_window_wait_ms": recent_window_wait_ms,
                                             "ack_latency_ms_avg": ack_summary.avg_ms,
                                             "ack_latency_ms_p95": ack_summary.p95_ms,
+                                            "pressure_level": decision.pressure_level.as_str(),
+                                            "pressure_reason": decision.pressure_reason,
+                                            "pressure_streak": decision.pressure_streak,
+                                            "restore_clean_streak": decision.restore_clean_streak,
                                         }),
                                     );
                                 }
@@ -1659,13 +1774,14 @@ pub async fn run_exit(args: ExitArgs) -> Result<()> {
                 };
                 let previous_effective_cap =
                     inflight_discipline.current_cap(response_inflight_discipline_config_for_task);
-                let effective_cap = inflight_discipline.update(
+                let decision = inflight_discipline.update(
                     response_inflight_discipline_config_for_task,
                     ack_summary,
                     recent_window_wait_ms,
                     current_inflight_for_cap,
                 );
-                if effective_cap < previous_effective_cap {
+                let effective_cap = decision.effective_cap_frames;
+                if matches!(decision.action, ResponseInflightCapAction::Reduced) {
                     emit_exit_stage(
                         "effective_inflight_cap_reduced",
                         json!({
@@ -1676,12 +1792,15 @@ pub async fn run_exit(args: ExitArgs) -> Result<()> {
                             "target_addr": target_addr.to_string(),
                             "previous_cap": previous_effective_cap,
                             "effective_cap": effective_cap,
+                            "pressure_level": decision.pressure_level.as_str(),
+                            "pressure_reason": decision.pressure_reason,
+                            "pressure_streak": decision.pressure_streak,
                             "recent_window_wait_ms": recent_window_wait_ms,
                             "ack_latency_ms_avg": ack_summary.avg_ms,
                             "ack_latency_ms_p95": ack_summary.p95_ms,
                         }),
                     );
-                } else if effective_cap > previous_effective_cap {
+                } else if matches!(decision.action, ResponseInflightCapAction::Restored) {
                     emit_exit_stage(
                         "effective_inflight_cap_restored",
                         json!({
@@ -1692,6 +1811,9 @@ pub async fn run_exit(args: ExitArgs) -> Result<()> {
                             "target_addr": target_addr.to_string(),
                             "previous_cap": previous_effective_cap,
                             "effective_cap": effective_cap,
+                            "pressure_level": decision.pressure_level.as_str(),
+                            "pressure_reason": decision.pressure_reason,
+                            "restore_clean_streak": decision.restore_clean_streak,
                             "recent_window_wait_ms": recent_window_wait_ms,
                             "ack_latency_ms_avg": ack_summary.avg_ms,
                             "ack_latency_ms_p95": ack_summary.p95_ms,
@@ -2049,6 +2171,7 @@ pub async fn run_exit(args: ExitArgs) -> Result<()> {
                 inflight_cap_reduced_count = inflight_discipline.inflight_cap_reduced_count,
                 inflight_cap_restore_count = inflight_discipline.inflight_cap_restore_count,
                 ack_pressure_events = inflight_discipline.ack_pressure_events,
+                max_pressure_streak = inflight_discipline.max_pressure_streak,
                 send_blocked_by_effective_cap = inflight_discipline.send_blocked_by_effective_cap,
                 frames_sent_total,
                 frames_acked_total,
@@ -2171,6 +2294,10 @@ pub async fn run_exit(args: ExitArgs) -> Result<()> {
             stream_complete_payload.insert(
                 "ack_pressure_events".to_string(),
                 json!(inflight_discipline.ack_pressure_events),
+            );
+            stream_complete_payload.insert(
+                "max_pressure_streak".to_string(),
+                json!(inflight_discipline.max_pressure_streak),
             );
             stream_complete_payload.insert(
                 "send_blocked_by_effective_cap".to_string(),
@@ -3275,13 +3402,13 @@ mod tests {
     }
 
     #[test]
-    fn response_inflight_target_cap_reduces_when_ack_tail_and_stall_rise() {
-        let cap = response_inflight_target_cap_frames(
+    fn response_inflight_pressure_signal_detects_severe_stall_with_slow_ack() {
+        let signal = response_inflight_pressure_signal(
             AckLatencySummary {
-                avg_ms: Some(220),
+                avg_ms: Some(260),
                 min_ms: Some(180),
-                p50_ms: Some(210),
-                p95_ms: Some(320),
+                p50_ms: Some(250),
+                p95_ms: Some(360),
                 max_ms: Some(360),
             },
             ResponseInflightDisciplineConfig {
@@ -3293,19 +3420,20 @@ mod tests {
             120,
             60,
         );
-        assert!(cap < 64);
-        assert!(cap >= 40);
+        assert_eq!(signal.level, ResponseInflightPressureLevel::Severe);
+        assert_eq!(signal.reason, "severe_stall_with_slow_ack");
+        assert_eq!(signal.target_cap_frames, 56);
     }
 
     #[test]
-    fn response_inflight_target_cap_restores_to_hard_window_on_clean_ack_flow() {
-        let cap = response_inflight_target_cap_frames(
+    fn response_inflight_pressure_signal_ignores_transient_fast_route_stall() {
+        let signal = response_inflight_pressure_signal(
             AckLatencySummary {
-                avg_ms: Some(160),
+                avg_ms: Some(189),
                 min_ms: Some(140),
-                p50_ms: Some(155),
-                p95_ms: Some(180),
-                max_ms: Some(210),
+                p50_ms: Some(182),
+                p95_ms: Some(202),
+                max_ms: Some(605),
             },
             ResponseInflightDisciplineConfig {
                 enabled: true,
@@ -3313,21 +3441,23 @@ mod tests {
                 bootstrap_rtt_ms: 200,
                 min_cap_frames: 40,
             },
-            0,
-            16,
+            410,
+            64,
         );
-        assert_eq!(cap, 64);
+        assert_eq!(signal.level, ResponseInflightPressureLevel::None);
+        assert_eq!(signal.reason, "no_pressure");
+        assert_eq!(signal.target_cap_frames, 64);
     }
 
     #[test]
-    fn response_inflight_target_cap_reduces_under_sustained_high_occupancy() {
-        let cap = response_inflight_target_cap_frames(
+    fn response_inflight_pressure_signal_detects_moderate_stall_with_slow_ack() {
+        let signal = response_inflight_pressure_signal(
             AckLatencySummary {
-                avg_ms: Some(280),
-                min_ms: Some(180),
-                p50_ms: Some(260),
-                p95_ms: Some(520),
-                max_ms: Some(640),
+                avg_ms: Some(243),
+                min_ms: Some(230),
+                p50_ms: Some(235),
+                p95_ms: Some(251),
+                max_ms: Some(366),
             },
             ResponseInflightDisciplineConfig {
                 enabled: true,
@@ -3335,33 +3465,22 @@ mod tests {
                 bootstrap_rtt_ms: 200,
                 min_cap_frames: 40,
             },
-            0,
+            24,
             61,
         );
-        assert!(cap < 64);
-        assert!(cap >= 40);
+        assert_eq!(signal.level, ResponseInflightPressureLevel::Moderate);
+        assert_eq!(signal.reason, "stall_with_slow_ack");
+        assert_eq!(signal.target_cap_frames, 60);
     }
 
     #[test]
-    fn response_inflight_state_reduces_directly_to_target_under_pressure() {
+    fn response_inflight_state_requires_sustained_pressure_before_reducing() {
         let config = ResponseInflightDisciplineConfig {
             enabled: true,
             hard_window_frames: 64,
             bootstrap_rtt_ms: 200,
             min_cap_frames: 40,
         };
-        let target = response_inflight_target_cap_frames(
-            AckLatencySummary {
-                avg_ms: Some(320),
-                min_ms: Some(260),
-                p50_ms: Some(300),
-                p95_ms: Some(420),
-                max_ms: Some(520),
-            },
-            config,
-            32,
-            61,
-        );
         let mut state = ResponseInflightDisciplineState {
             effective_cap_frames: 64,
             effective_cap_sum: 0,
@@ -3372,26 +3491,45 @@ mod tests {
             inflight_cap_restore_count: 0,
             ack_pressure_events: 0,
             send_blocked_by_effective_cap: 0,
+            pressure_streak: 0,
+            max_pressure_streak: 0,
             restore_clean_streak: 0,
         };
-        let next = state.update(
+        let first = state.update(
             config,
             AckLatencySummary {
-                avg_ms: Some(320),
-                min_ms: Some(260),
-                p50_ms: Some(300),
-                p95_ms: Some(420),
-                max_ms: Some(520),
+                avg_ms: Some(243),
+                min_ms: Some(230),
+                p50_ms: Some(235),
+                p95_ms: Some(251),
+                max_ms: Some(366),
             },
-            32,
+            24,
             61,
         );
-        assert_eq!(next, target);
+        assert_eq!(first.effective_cap_frames, 64);
+        assert_eq!(first.action, ResponseInflightCapAction::None);
+        assert_eq!(first.pressure_streak, 1);
+
+        let second = state.update(
+            config,
+            AckLatencySummary {
+                avg_ms: Some(245),
+                min_ms: Some(231),
+                p50_ms: Some(236),
+                p95_ms: Some(255),
+                max_ms: Some(370),
+            },
+            30,
+            61,
+        );
+        assert_eq!(second.effective_cap_frames, 60);
+        assert_eq!(second.action, ResponseInflightCapAction::Reduced);
         assert_eq!(state.inflight_cap_reduced_count, 1);
     }
 
     #[test]
-    fn response_inflight_state_restores_only_after_clean_streak() {
+    fn response_inflight_state_restores_after_shorter_clean_streak() {
         let config = ResponseInflightDisciplineConfig {
             enabled: true,
             hard_window_frames: 64,
@@ -3408,6 +3546,8 @@ mod tests {
             inflight_cap_restore_count: 0,
             ack_pressure_events: 0,
             send_blocked_by_effective_cap: 0,
+            pressure_streak: 0,
+            max_pressure_streak: 0,
             restore_clean_streak: 0,
         };
         let clean_summary = AckLatencySummary {
@@ -3419,15 +3559,16 @@ mod tests {
         };
 
         let cap_while_still_busy = state.update(config, clean_summary, 0, 52);
-        assert_eq!(cap_while_still_busy, 56);
+        assert_eq!(cap_while_still_busy.effective_cap_frames, 56);
         assert_eq!(state.inflight_cap_restore_count, 0);
 
         for _ in 0..(EXIT_RESPONSE_INFLIGHT_DISCIPLINE_RESTORE_STREAK_SAMPLES - 1) {
-            let cap = state.update(config, clean_summary, 0, 24);
-            assert_eq!(cap, 56);
+            let decision = state.update(config, clean_summary, 0, 24);
+            assert_eq!(decision.effective_cap_frames, 56);
         }
         let restored = state.update(config, clean_summary, 0, 24);
-        assert_eq!(restored, 58);
+        assert_eq!(restored.effective_cap_frames, 60);
+        assert_eq!(restored.action, ResponseInflightCapAction::Restored);
         assert_eq!(state.inflight_cap_restore_count, 1);
     }
 }

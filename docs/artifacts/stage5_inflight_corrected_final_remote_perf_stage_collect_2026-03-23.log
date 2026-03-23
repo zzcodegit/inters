@@ -1,0 +1,4 @@
+[collect_perf_stage_artifacts] 2026-03-23T20:05:34.8019715+03:00
+stage5_inflight_corrected | 32 kB |  32.0 kB/s | ETA: 00:01:13 |   1%stage5_inflight_corrected | 576 kB | 288.0 kB/s | ETA: 00:00:06 |  24%stage5_inflight_corrected | 1792 kB | 597.3 kB/s | ETA: 00:00:00 |  75%stage5_inflight_corrected | 2385 kB | 795.1 kB/s | ETA: 00:00:00 | 100%
+collected_exit_stage_log=docs/artifacts/stage5_inflight_corrected_final_remote_perf_stage_2026-03-23.exit.jsonl
+collected_direct_stage_log=docs/artifacts/stage5_inflight_corrected_final_remote_perf_stage_2026-03-23.direct.jsonl
