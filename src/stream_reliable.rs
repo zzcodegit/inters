@@ -135,7 +135,11 @@ impl ReliableStream {
 
     /// Apply cumulative ACK information and also return an approximate ACK latency.
     ///
-    /// The latency is computed as `now - first_sent` averaged over frames removed by this ACK.
+    /// The latency is computed as `now - last_sent` averaged over frames removed by this ACK.
+    ///
+    /// Stage 5: this intentionally tracks the peer's latest-send ACK RTT signal rather than
+    /// end-to-end frame age. Retransmitted frames can otherwise poison ACK summaries with
+    /// timeout/backoff time that should not feed pacing or retransmit interval decisions.
     pub fn apply_ack_with_latency(&mut self, ack_seq: u64) -> (usize, Option<u64>) {
         let details = self.apply_ack_with_latency_details(ack_seq);
         (details.acked_frames, details.avg_latency_ms)
@@ -181,7 +185,7 @@ impl ReliableStream {
             let removed_iter = self.unacked.range(..ack_seq);
             for (_seq, entry) in removed_iter {
                 acked += 1;
-                let latency_ms = now.duration_since(entry.first_sent).as_millis() as u64;
+                let latency_ms = now.duration_since(entry.last_sent).as_millis() as u64;
                 sum_latency_ms += latency_ms as u128;
                 observed_latencies_ms.push(latency_ms);
             }
@@ -506,5 +510,37 @@ mod tests {
         let older_ack = stream.apply_ack_with_latency_details(0);
         assert_eq!(older_ack.disposition, AckDisposition::Stale);
         assert_eq!(older_ack.acked_frames, 0);
+    }
+
+    #[test]
+    fn ack_latency_summary_uses_latest_send_for_retransmitted_frames() {
+        let mut stream = ReliableStream::new();
+        let base = Instant::now();
+
+        let first = stream.build_outgoing_frame(7, b"a".to_vec());
+        let second = stream.build_outgoing_frame(7, b"b".to_vec());
+
+        let first_entry = stream.unacked.get_mut(&first.frame_seq).unwrap();
+        first_entry.first_sent = base - Duration::from_millis(700);
+        first_entry.last_sent = base - Duration::from_millis(190);
+        first_entry.retransmit_count = 1;
+
+        let second_entry = stream.unacked.get_mut(&second.frame_seq).unwrap();
+        second_entry.first_sent = base - Duration::from_millis(710);
+        second_entry.last_sent = base - Duration::from_millis(185);
+        second_entry.retransmit_count = 1;
+
+        let details = stream.apply_ack_with_latency_details(2);
+        assert_eq!(details.acked_frames, 2);
+
+        let avg_ms = details.avg_latency_ms.unwrap();
+        assert!(
+            avg_ms < 300,
+            "ACK RTT should reflect the latest send attempt, got {avg_ms} ms"
+        );
+
+        let summary = stream.ack_latency_summary();
+        assert!(summary.avg_ms.unwrap() < 300);
+        assert!(summary.p95_ms.unwrap() < 300);
     }
 }

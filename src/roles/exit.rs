@@ -3309,7 +3309,7 @@ pub async fn run_exit(args: ExitArgs) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::stream_reliable::AckLatencySummary;
+    use crate::stream_reliable::{AckLatencySummary, ReliableStream};
 
     #[test]
     fn adaptive_retransmit_interval_uses_base_without_ack_samples() {
@@ -3399,6 +3399,57 @@ mod tests {
             },
         );
         assert_eq!(min_interval_ms, 2);
+    }
+
+    #[test]
+    fn response_inflight_discipline_ignores_short_path_retransmit_age_noise() {
+        let mut stream = ReliableStream::new();
+        let base = Instant::now();
+
+        for _ in 0..8 {
+            let frame = stream.build_outgoing_frame(7, vec![1; 1000]);
+            let entry = stream.unacked.get_mut(&frame.frame_seq).unwrap();
+            entry.first_sent = base - Duration::from_millis(760);
+            entry.last_sent = base - Duration::from_millis(185);
+            entry.retransmit_count = 1;
+        }
+
+        let details = stream.apply_ack_with_latency_details(8);
+        assert_eq!(details.acked_frames, 8);
+        let summary = stream.ack_latency_summary();
+        assert!(summary.avg_ms.unwrap() < 300);
+        assert!(summary.p95_ms.unwrap() < 300);
+
+        let pacing_interval_ms = response_pacing_interval_ms(
+            summary,
+            ResponsePacingConfig {
+                enabled: true,
+                window_frames: 64,
+                bootstrap_rtt_ms: 200,
+                min_interval_ms: 1,
+            },
+        );
+        assert_eq!(pacing_interval_ms, 3);
+
+        let retransmit_interval = adaptive_response_retransmit_interval(summary);
+        assert_eq!(
+            retransmit_interval,
+            Duration::from_millis(EXIT_RESPONSE_RETRANSMIT_BASE_MS)
+        );
+
+        let pressure = response_inflight_pressure_signal(
+            summary,
+            ResponseInflightDisciplineConfig {
+                enabled: true,
+                hard_window_frames: 64,
+                bootstrap_rtt_ms: 200,
+                min_cap_frames: 40,
+            },
+            0,
+            48,
+        );
+        assert_eq!(pressure.level, ResponseInflightPressureLevel::None);
+        assert_eq!(pressure.target_cap_frames, 64);
     }
 
     #[test]
