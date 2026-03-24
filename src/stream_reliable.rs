@@ -85,6 +85,13 @@ pub struct RetransmitBackoffSummary {
     pub rtt_ratio_avg: Option<f64>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct RetransmitPressureSnapshot {
+    pub retransmitting_frames: usize,
+    pub repeated_loss_frames: usize,
+    pub max_retransmit_count: u64,
+}
+
 pub struct UnackedEntry {
     pub payload: Vec<u8>,
     /// Marks explicit end-of-stream empty frame.
@@ -423,6 +430,26 @@ impl ReliableStream {
             early_count: self.retransmit_early_count,
             late_count: self.retransmit_late_count,
             rtt_ratio_avg,
+        }
+    }
+
+    pub fn retransmit_pressure_snapshot(&self) -> RetransmitPressureSnapshot {
+        let mut retransmitting_frames = 0usize;
+        let mut repeated_loss_frames = 0usize;
+        let mut max_retransmit_count = 0u64;
+        for entry in self.unacked.values() {
+            if entry.retransmit_count > 0 {
+                retransmitting_frames = retransmitting_frames.saturating_add(1);
+            }
+            if entry.retransmit_count > 1 {
+                repeated_loss_frames = repeated_loss_frames.saturating_add(1);
+            }
+            max_retransmit_count = max_retransmit_count.max(entry.retransmit_count);
+        }
+        RetransmitPressureSnapshot {
+            retransmitting_frames,
+            repeated_loss_frames,
+            max_retransmit_count,
         }
     }
 

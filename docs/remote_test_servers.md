@@ -36,14 +36,15 @@ What the file contains:
   - `155.212.143.112`
 - hostkeys for the new `155.212.*` relays
 - active remote deploy/reset labels
-- baseline/perf env for the current 5-hop topology
+- baseline/perf env for the current 7-hop topology
 
-Current active 5-hop chain from that bootstrap:
+Current active 7-hop chain from that bootstrap:
 
-- `client -> 45.197.133.115:30001 -> 185.144.28.95:30002 -> 155.212.135.200:30003 -> 155.212.135.95:30004 -> 31.192.232.26:30000 -> target`
+- `client -> 45.197.133.115:30001 -> 185.144.28.95:30002 -> 155.212.135.200:30003 -> 155.212.135.95:30004 -> 155.212.135.95:30006 -> 155.212.143.112:30005 -> 31.192.232.26:30000 -> target`
 
-Stored but not part of the current active chain:
+The final two relay hops intentionally use:
 
-- `155.212.143.112:30005`
+- `relay6`: `155.212.135.95:30006`
+- `relay5`: `155.212.143.112:30005`
 
-The bootstrap intentionally keeps `relay5` credentials available in the same file, but the default active topology remains `relay1,relay2,relay3,relay4,exit` so that the standard remote matrix stays at `1-hop / 2-hop / 3-hop / 5-hop`.
+The default managed topology from the bootstrap is `relay1,relay2,relay3,relay4,relay6,exit`; `relay5` remains part of the active route-chain and credentials stay in the same file, but the normal deploy/reset path does not touch it unless you explicitly override the label lists.

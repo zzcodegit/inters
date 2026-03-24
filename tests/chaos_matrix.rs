@@ -119,6 +119,13 @@ struct ExitStreamSummary {
     inflight_cap_restore_count: Option<u64>,
     ack_pressure_events: Option<u64>,
     send_blocked_by_effective_cap: Option<u64>,
+    congestion_state: Option<String>,
+    congestion_events: Option<u64>,
+    congestion_duration_ms: Option<u64>,
+    cap_reduction_due_to_congestion: Option<u64>,
+    pacing_increase_due_to_congestion: Option<u64>,
+    congestion_cap_limit: Option<u64>,
+    congestion_pacing_extra_ms: Option<u64>,
     http_code: Option<u64>,
 }
 
@@ -1072,6 +1079,82 @@ async fn response_inflight_discipline_avoids_transient_overtrigger_on_moderate_r
     Ok(())
 }
 
+#[tokio::test]
+async fn combined_chaos_preserves_congestion_summary_fields() -> anyhow::Result<()> {
+    support::prepare_baseline(BaselineMode::Local);
+
+    let config =
+        ChaosRunConfig::combined_regression("congestion-response-regression-test", 21_650, 3);
+    prepare_chaos_run(&config)?;
+    let ports = ports_from_base(config.base_port);
+    let mut exit = ExitConfigCli::default();
+    exit.response_pacing_enabled = true;
+    exit.response_inflight_discipline_enabled = true;
+    run_mode_scenario_with_exit_config(
+        &config,
+        RunMode::Exact3Hop,
+        ports,
+        true,
+        &config.exact_route_cache_path,
+        exit,
+    )
+    .await?;
+
+    let measurements = read_measurements(&config.raw_path())?;
+    assert_eq!(
+        measurements.len(),
+        config.profile.runs,
+        "congestion summary regression must produce one exact measurement per run"
+    );
+    assert!(
+        measurements.iter().all(|record| record.status_code == 200),
+        "congestion summary regression must keep HTTP 200"
+    );
+
+    let analysis = analyze_stage_trace(&config.stage_trace_path)?;
+    let streams: Vec<_> = analysis
+        .exact_streams
+        .iter()
+        .filter(|stream| stream.site.contains(&config.profile.profile_name))
+        .cloned()
+        .collect();
+
+    assert_eq!(
+        streams.len(),
+        config.profile.runs,
+        "congestion summary regression must emit one exact exit summary per run"
+    );
+
+    assert!(
+        streams.iter().all(|stream| stream.congestion_state.is_some()),
+        "congestion summary regression must record a congestion state on every exit summary"
+    );
+    assert!(
+        streams.iter().all(|stream| stream.congestion_events.is_some()),
+        "congestion summary regression must record congestion event counters"
+    );
+    assert!(
+        streams
+            .iter()
+            .all(|stream| stream.congestion_duration_ms.is_some()),
+        "congestion summary regression must record congestion duration"
+    );
+    assert!(
+        streams
+            .iter()
+            .all(|stream| stream.cap_reduction_due_to_congestion.is_some()),
+        "congestion summary regression must record cap reduction counters"
+    );
+    assert!(
+        streams
+            .iter()
+            .all(|stream| stream.pacing_increase_due_to_congestion.is_some()),
+        "congestion summary regression must record pacing-increase counters"
+    );
+
+    Ok(())
+}
+
 async fn run_mode_scenario(
     config: &ChaosRunConfig,
     mode: RunMode,
@@ -1555,6 +1638,28 @@ fn analyze_stage_trace(path: &Path) -> anyhow::Result<StageAnalysis> {
                     send_blocked_by_effective_cap: value
                         .get("send_blocked_by_effective_cap")
                         .and_then(Value::as_u64),
+                    congestion_state: value
+                        .get("congestion_state")
+                        .and_then(Value::as_str)
+                        .map(ToString::to_string),
+                    congestion_events: value
+                        .get("congestion_events")
+                        .and_then(Value::as_u64),
+                    congestion_duration_ms: value
+                        .get("congestion_duration_ms")
+                        .and_then(Value::as_u64),
+                    cap_reduction_due_to_congestion: value
+                        .get("cap_reduction_due_to_congestion")
+                        .and_then(Value::as_u64),
+                    pacing_increase_due_to_congestion: value
+                        .get("pacing_increase_due_to_congestion")
+                        .and_then(Value::as_u64),
+                    congestion_cap_limit: value
+                        .get("congestion_cap_limit")
+                        .and_then(Value::as_u64),
+                    congestion_pacing_extra_ms: value
+                        .get("congestion_pacing_extra_ms")
+                        .and_then(Value::as_u64),
                     http_code: value.get("http_code").and_then(Value::as_u64),
                 };
                 if site.starts_with("chaos-exact-3hop-run") {
@@ -1795,6 +1900,41 @@ fn format_exit_stream_block(label: &str, streams: &[ExitStreamSummary]) -> Strin
             .iter()
             .map(|stream| stream.send_blocked_by_effective_cap),
     );
+    let avg_congestion_events =
+        average_optional(streams.iter().map(|stream| stream.congestion_events));
+    let avg_congestion_duration =
+        average_optional(streams.iter().map(|stream| stream.congestion_duration_ms));
+    let avg_congestion_cap_reduction = average_optional(
+        streams
+            .iter()
+            .map(|stream| stream.cap_reduction_due_to_congestion),
+    );
+    let avg_congestion_pacing_increase = average_optional(
+        streams
+            .iter()
+            .map(|stream| stream.pacing_increase_due_to_congestion),
+    );
+    let avg_congestion_cap_limit =
+        average_optional(streams.iter().map(|stream| stream.congestion_cap_limit));
+    let avg_congestion_pacing_extra =
+        average_optional(streams.iter().map(|stream| stream.congestion_pacing_extra_ms));
+    let congestion_states = streams
+        .iter()
+        .filter_map(|stream| stream.congestion_state.as_deref())
+        .collect::<Vec<_>>();
+    let congestion_state_label = if congestion_states.is_empty() {
+        "n/a".to_string()
+    } else {
+        let mut counts = BTreeMap::new();
+        for state in congestion_states {
+            *counts.entry(state).or_insert(0usize) += 1;
+        }
+        counts
+            .iter()
+            .map(|(state, count)| format!("{state}x{count}"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
     let avg_max_inflight = average_optional(streams.iter().map(|stream| stream.max_inflight));
     let avg_total = average_optional(streams.iter().map(|stream| stream.stream_duration_ms));
     let avg_overlay_gap = average_optional(streams.iter().map(|stream| {
@@ -1815,7 +1955,7 @@ fn format_exit_stream_block(label: &str, streams: &[ExitStreamSummary]) -> Strin
         "mixed"
     };
     format!(
-        "### {label}\n\n- streams: {}\n- sites: {}\n- route lens: {}\n- http codes: {}\n- pacing: {}\n- avg ack avg ms: {}\n- avg ack p95 ms: {}\n- avg total retransmits: {}\n- avg retransmit rate: {}\n- avg retransmit ppm: {}\n- avg hard window wait ms: {}\n- avg effective cap wait ms: {}\n- avg pacing delay ms: {}\n- avg pacing interval ms: {}\n- avg burst prevented: {}\n- avg paced batches: {}\n- avg max send burst frames: {}\n- avg effective inflight cap: {}\n- avg inflight cap reduced count: {}\n- avg inflight cap restore count: {}\n- avg ack pressure events: {}\n- avg blocked by effective cap: {}\n- avg max inflight: {}\n- avg stream duration ms: {}\n- avg overlay first-send gap ms: {}\n",
+        "### {label}\n\n- streams: {}\n- sites: {}\n- route lens: {}\n- http codes: {}\n- pacing: {}\n- congestion states: {}\n- avg ack avg ms: {}\n- avg ack p95 ms: {}\n- avg total retransmits: {}\n- avg retransmit rate: {}\n- avg retransmit ppm: {}\n- avg hard window wait ms: {}\n- avg effective cap wait ms: {}\n- avg pacing delay ms: {}\n- avg pacing interval ms: {}\n- avg burst prevented: {}\n- avg paced batches: {}\n- avg max send burst frames: {}\n- avg effective inflight cap: {}\n- avg inflight cap reduced count: {}\n- avg inflight cap restore count: {}\n- avg ack pressure events: {}\n- avg blocked by effective cap: {}\n- avg congestion events: {}\n- avg congestion duration ms: {}\n- avg congestion cap reductions: {}\n- avg congestion pacing increases: {}\n- avg congestion cap limit: {}\n- avg congestion pacing extra ms: {}\n- avg max inflight: {}\n- avg stream duration ms: {}\n- avg overlay first-send gap ms: {}\n",
         streams.len(),
         streams
             .iter()
@@ -1833,6 +1973,7 @@ fn format_exit_stream_block(label: &str, streams: &[ExitStreamSummary]) -> Strin
             .collect::<Vec<_>>()
             .join(", "),
         pacing_label,
+        congestion_state_label,
         fmt_optional(avg_ack_avg),
         fmt_optional(avg_ack_p95),
         fmt_optional(avg_total_retransmits),
@@ -1852,6 +1993,12 @@ fn format_exit_stream_block(label: &str, streams: &[ExitStreamSummary]) -> Strin
         fmt_optional(avg_cap_restore),
         fmt_optional(avg_ack_pressure),
         fmt_optional(avg_blocked_by_cap),
+        fmt_optional(avg_congestion_events),
+        fmt_optional(avg_congestion_duration),
+        fmt_optional(avg_congestion_cap_reduction),
+        fmt_optional(avg_congestion_pacing_increase),
+        fmt_optional(avg_congestion_cap_limit),
+        fmt_optional(avg_congestion_pacing_extra),
         fmt_optional(avg_max_inflight),
         fmt_optional(avg_total),
         fmt_optional(avg_overlay_gap),

@@ -135,3 +135,13 @@ async fn remote_http_5hop_returns_200() -> anyhow::Result<()> {
     }
     run_remote_http_scenario("5hop", 5, scenario_listen(5), &scenario_cache(5)).await
 }
+
+#[tokio::test]
+async fn remote_http_7hop_returns_200() -> anyhow::Result<()> {
+    let base = RemoteBaselineConfig::from_env()?;
+    if base.route_length < 7 {
+        eprintln!("remote_http_7hop_returns_200 skipped: configured route_length < 7");
+        return Ok(());
+    }
+    run_remote_http_scenario("7hop", 7, scenario_listen(7), &scenario_cache(7)).await
+}

@@ -229,8 +229,8 @@ pub fn spawn_remote_client_process(config: &RemoteBaselineConfig) -> Result<Mana
 impl RemoteBaselineConfig {
     pub fn from_env() -> Result<Self> {
         let route_length = parse_env_or_default::<u8>("VPNNODE_BASELINE_REMOTE_ROUTE_LENGTH", 3)?;
-        if !(1..=5).contains(&route_length) {
-            bail!("VPNNODE_BASELINE_REMOTE_ROUTE_LENGTH must be in 1..=5; got {route_length}");
+        if !(1..=7).contains(&route_length) {
+            bail!("VPNNODE_BASELINE_REMOTE_ROUTE_LENGTH must be in 1..=7; got {route_length}");
         }
 
         let exit_addr = required_env("VPNNODE_BASELINE_REMOTE_EXIT_ADDR")?;
@@ -360,6 +360,11 @@ impl RemoteBaselineConfig {
             routes.push(5);
         } else if self.route_length == 4 {
             routes.push(4);
+        }
+        if self.route_length >= 7 {
+            routes.push(7);
+        } else if self.route_length == 6 {
+            routes.push(6);
         }
         routes.sort_unstable();
         routes.dedup();

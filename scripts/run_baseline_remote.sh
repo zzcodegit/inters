@@ -47,6 +47,9 @@ scenario_csv="remote_http_1hop_returns_200,remote_http_2hop_returns_200,remote_h
 if [[ "${VPNNODE_BASELINE_REMOTE_ROUTE_LENGTH}" -ge 5 ]]; then
   scenario_csv="${scenario_csv},remote_http_5hop_returns_200"
 fi
+if [[ "${VPNNODE_BASELINE_REMOTE_ROUTE_LENGTH}" -ge 7 ]]; then
+  scenario_csv="${scenario_csv},remote_http_7hop_returns_200"
+fi
 echo "scenarios=${scenario_csv}"
 
 scenarios=(
@@ -56,6 +59,9 @@ scenarios=(
 )
 if [[ "${VPNNODE_BASELINE_REMOTE_ROUTE_LENGTH}" -ge 5 ]]; then
   scenarios+=(remote_http_5hop_returns_200)
+fi
+if [[ "${VPNNODE_BASELINE_REMOTE_ROUTE_LENGTH}" -ge 7 ]]; then
+  scenarios+=(remote_http_7hop_returns_200)
 fi
 
 for scenario in "${scenarios[@]}"; do

@@ -154,6 +154,15 @@ if ($activeLabels -contains "relay5") {
         -Services @("vpnnode-relay5.service")
 }
 
+if ($activeLabels -contains "relay6") {
+    Restart-RemoteService -Label "relay-6" `
+        -RemoteHost (Get-RequiredEnv "VPNNODE_REMOTE_RELAY6_HOST") `
+        -User (Get-OptionalEnv "VPNNODE_REMOTE_RELAY6_USER" "root") `
+        -Password (Get-RequiredEnv "VPNNODE_REMOTE_RELAY6_PASSWORD") `
+        -HostKey (Get-OptionalEnv "VPNNODE_REMOTE_RELAY6_HOSTKEY" "") `
+        -Services @("vpnnode-relay6.service")
+}
+
 $exitHost = Get-RequiredEnv "VPNNODE_REMOTE_EXIT_HOST"
 $exitUser = Get-OptionalEnv "VPNNODE_REMOTE_EXIT_USER" "root"
 $exitPassword = Get-RequiredEnv "VPNNODE_REMOTE_EXIT_PASSWORD"

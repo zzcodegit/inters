@@ -313,6 +313,21 @@ for measurement in measurements:
         joined_row["send_blocked_by_effective_cap"] = stream_complete.get(
             "send_blocked_by_effective_cap"
         )
+        joined_row["congestion_state"] = stream_complete.get("congestion_state")
+        joined_row["congestion_events"] = stream_complete.get("congestion_events")
+        joined_row["congestion_duration_ms"] = stream_complete.get(
+            "congestion_duration_ms"
+        )
+        joined_row["cap_reduction_due_to_congestion"] = stream_complete.get(
+            "cap_reduction_due_to_congestion"
+        )
+        joined_row["pacing_increase_due_to_congestion"] = stream_complete.get(
+            "pacing_increase_due_to_congestion"
+        )
+        joined_row["congestion_cap_limit"] = stream_complete.get("congestion_cap_limit")
+        joined_row["congestion_pacing_extra_ms"] = stream_complete.get(
+            "congestion_pacing_extra_ms"
+        )
 
     joined_row["client_body_tail_ms"] = None
     if joined_row.get("total_time_ms") is not None and joined_row.get("ttfb_ms") is not None:
@@ -470,6 +485,24 @@ for scenario_name in scenario_names:
             "send_blocked_by_effective_cap": mean(
                 [row.get("send_blocked_by_effective_cap") for row in rows]
             ),
+            "congestion_events": mean(
+                [row.get("congestion_events") for row in rows]
+            ),
+            "congestion_duration_ms": mean(
+                [row.get("congestion_duration_ms") for row in rows]
+            ),
+            "cap_reduction_due_to_congestion": mean(
+                [row.get("cap_reduction_due_to_congestion") for row in rows]
+            ),
+            "pacing_increase_due_to_congestion": mean(
+                [row.get("pacing_increase_due_to_congestion") for row in rows]
+            ),
+            "congestion_cap_limit": mean(
+                [row.get("congestion_cap_limit") for row in rows]
+            ),
+            "congestion_pacing_extra_ms": mean(
+                [row.get("congestion_pacing_extra_ms") for row in rows]
+            ),
         }
     )
 
@@ -539,14 +572,14 @@ lines.append("")
 lines.append("## Scenario Averages")
 lines.append("")
 lines.append(
-    "| scenario | route | route ready ms | handshake ms | target connect ms | first target byte wait ms | exit first send delay ms | overlay first-send -> client ms | hard window stall ms | effective cap wait ms | exit/body tail ms | client total ms | retransmit rate | retx timeout avg ms | retx timeout p95 ms | retx triggers | retx early | retx late | retx/RTT ratio | ack avg ms | ack p95 ms | max burst frames | pacing interval ms | pacing delay ms | burst prevented | effective cap avg | cap reduced | blocked by cap | window frames |"
+    "| scenario | route | route ready ms | handshake ms | target connect ms | first target byte wait ms | exit first send delay ms | overlay first-send -> client ms | hard window stall ms | effective cap wait ms | exit/body tail ms | client total ms | retransmit rate | retx timeout avg ms | retx timeout p95 ms | retx triggers | retx early | retx late | retx/RTT ratio | ack avg ms | ack p95 ms | max burst frames | pacing interval ms | pacing delay ms | burst prevented | effective cap avg | cap reduced | blocked by cap | congestion events | congestion duration ms | congestion cap limit | congestion pacing extra ms | window frames |"
 )
 lines.append(
-    "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |"
+    "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |"
 )
 for row in scenarios:
     lines.append(
-        "| {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} |".format(
+        "| {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} |".format(
             row["scenario"],
             row["route_length"],
             fmt_ms(row.get("route_ready_ms")),
@@ -575,6 +608,10 @@ for row in scenarios:
             fmt_num(row.get("effective_inflight_cap_avg"), 0),
             fmt_num(row.get("inflight_cap_reduced_count"), 0),
             fmt_num(row.get("send_blocked_by_effective_cap"), 0),
+            fmt_num(row.get("congestion_events"), 0),
+            fmt_ms(row.get("congestion_duration_ms")),
+            fmt_num(row.get("congestion_cap_limit"), 0),
+            fmt_ms(row.get("congestion_pacing_extra_ms")),
             fmt_num(row.get("window_frames"), 0),
         )
     )
@@ -612,6 +649,9 @@ lines.append(
 )
 lines.append(
     "- `effective_inflight_cap_avg`, `inflight_cap_reduced_count`, `send_blocked_by_effective_cap`, and `effective_cap_wait_total_ms` expose whether the exit still drives the hard window directly or whether RTT/ACK pressure is actively shaping in-flight occupancy."
+)
+lines.append(
+    "- `congestion_events`, `congestion_duration_ms`, `congestion_cap_limit`, and `congestion_pacing_extra_ms` expose whether the lightweight congestion response actually entered a non-default state on the slower paths."
 )
 lines.append(
     "- One-time costs (`route_ready_ms`, `handshake_ms`) matter for cold start, but they are not the reason the steady-state per-request `TTFB` stays in the multi-second range."

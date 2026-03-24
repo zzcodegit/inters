@@ -155,6 +155,17 @@ if ($deployLabels -contains "relay5") {
         -RemoteBinary $remoteBinary
 }
 
+if ($deployLabels -contains "relay6") {
+    Deploy-Node -Label "relay-6" `
+        -RemoteHost (Get-RequiredEnv "VPNNODE_REMOTE_RELAY6_HOST") `
+        -User (Get-OptionalEnv "VPNNODE_REMOTE_RELAY6_USER" "root") `
+        -Password (Get-RequiredEnv "VPNNODE_REMOTE_RELAY6_PASSWORD") `
+        -HostKey (Get-OptionalEnv "VPNNODE_REMOTE_RELAY6_HOSTKEY" "") `
+        -Service "vpnnode-relay6.service" `
+        -LocalBinary $localBinary `
+        -RemoteBinary $remoteBinary
+}
+
 if ($deployLabels -contains "exit") {
     Deploy-Node -Label "exit" `
         -RemoteHost (Get-RequiredEnv "VPNNODE_REMOTE_EXIT_HOST") `
