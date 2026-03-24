@@ -1,0 +1,14 @@
+{
+  "profile_name": "combined",
+  "seed": 31,
+  "skip_packets": 24,
+  "loss_ppm": 1000,
+  "duplicate_ppm": 2000,
+  "reorder_ppm": 15000,
+  "base_delay_ms": 8,
+  "jitter_ms": 6,
+  "reorder_extra_delay_ms": 30,
+  "duplicate_delay_ms": 3,
+  "runs": 5,
+  "request_body_bytes": 32768
+}

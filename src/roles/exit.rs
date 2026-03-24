@@ -72,10 +72,14 @@ const EXIT_RESPONSE_CONGESTION_REPEATED_LOSS_SEVERE: usize = 2;
 const EXIT_RESPONSE_CONGESTION_SIGNAL_STREAK_SAMPLES: u32 = 2;
 const EXIT_RESPONSE_CONGESTION_CLEAN_STREAK_SAMPLES: u32 = 3;
 const EXIT_RESPONSE_CONGESTION_MILD_CAP_FRAMES: usize = 60;
-const EXIT_RESPONSE_CONGESTION_SEVERE_CAP_FRAMES: usize = 56;
+const EXIT_RESPONSE_CONGESTION_SEVERE_CAP_FRAMES: usize = 52;
 const EXIT_RESPONSE_CONGESTION_RESTORE_STEP_FRAMES: usize = 2;
 const EXIT_RESPONSE_CONGESTION_MILD_PACING_EXTRA_MS: u64 = 1;
 const EXIT_RESPONSE_CONGESTION_SEVERE_PACING_EXTRA_MS: u64 = 2;
+const EXIT_RESPONSE_CONGESTION_MIN_HOLD_MS: u64 = 100;
+const EXIT_RESPONSE_CONGESTION_MAX_HOLD_MS: u64 = 400;
+const EXIT_RESPONSE_CONGESTION_BASELINE_RISE_DIVISOR: u64 = 2;
+const EXIT_RESPONSE_CONGESTION_BASELINE_FALL_DIVISOR: u64 = 4;
 
 struct ExitStream {
     socket: TcpStream,
@@ -635,11 +639,38 @@ impl ResponseCongestionState {
         self.cap_limit_frames
     }
 
-    fn baseline_rtt_ms(&mut self, summary: AckLatencySummary, config: ResponseCongestionConfig) -> u64 {
+    fn baseline_rtt_ms(
+        &mut self,
+        summary: AckLatencySummary,
+        config: ResponseCongestionConfig,
+        total_retransmits: u64,
+        pressure: RetransmitPressureSnapshot,
+    ) -> u64 {
         let observed = response_congestion_baseline_sample_ms(summary, config.bootstrap_rtt_ms);
         let baseline = self
             .baseline_rtt_ms
-            .map(|current| current.min(observed))
+            .map(|current| {
+                if observed > current {
+                    if total_retransmits == 0
+                        && pressure.retransmitting_frames == 0
+                        && pressure.repeated_loss_frames == 0
+                    {
+                        let rise = (observed - current)
+                            .max(1)
+                            .div_ceil(EXIT_RESPONSE_CONGESTION_BASELINE_RISE_DIVISOR);
+                        current.saturating_add(rise).min(observed)
+                    } else {
+                        current
+                    }
+                } else if observed < current {
+                    let fall = (current - observed)
+                        .max(1)
+                        .div_ceil(EXIT_RESPONSE_CONGESTION_BASELINE_FALL_DIVISOR);
+                    current.saturating_sub(fall).max(observed)
+                } else {
+                    current
+                }
+            })
             .unwrap_or(observed);
         self.baseline_rtt_ms = Some(baseline);
         baseline
@@ -654,6 +685,19 @@ impl ResponseCongestionState {
             }
         }
         self.state_since = (next_level != ResponseCongestionLevel::None).then_some(now);
+    }
+
+    fn relief_hold_elapsed(&self, now: Instant, baseline_rtt_ms: u64) -> bool {
+        if self.level == ResponseCongestionLevel::None {
+            return true;
+        }
+        let hold_ms = (baseline_rtt_ms / 2).clamp(
+            EXIT_RESPONSE_CONGESTION_MIN_HOLD_MS,
+            EXIT_RESPONSE_CONGESTION_MAX_HOLD_MS,
+        );
+        self.state_since
+            .map(|state_since| now.duration_since(state_since) >= Duration::from_millis(hold_ms))
+            .unwrap_or(true)
     }
 
     fn update(
@@ -690,7 +734,7 @@ impl ResponseCongestionState {
         }
 
         let previous_level = self.level;
-        let baseline_rtt_ms = self.baseline_rtt_ms(summary, config);
+        let baseline_rtt_ms = self.baseline_rtt_ms(summary, config, total_retransmits, pressure);
         let signal = response_congestion_signal(
             summary,
             config,
@@ -707,7 +751,9 @@ impl ResponseCongestionState {
             self.last_signal_level = ResponseCongestionLevel::None;
             self.signal_streak = 0;
             self.clean_streak = self.clean_streak.saturating_add(1);
-            if self.clean_streak >= EXIT_RESPONSE_CONGESTION_CLEAN_STREAK_SAMPLES {
+            if self.clean_streak >= EXIT_RESPONSE_CONGESTION_CLEAN_STREAK_SAMPLES
+                && self.relief_hold_elapsed(now, baseline_rtt_ms)
+            {
                 let previous_cap = self.current_cap_limit(config);
                 if previous_cap < hard_window_frames {
                     let next_cap = previous_cap
@@ -4264,7 +4310,7 @@ mod tests {
         };
         let mut state = ResponseCongestionState {
             level: ResponseCongestionLevel::Severe,
-            state_since: Some(Instant::now()),
+            state_since: Some(Instant::now() - Duration::from_millis(250)),
             congestion_duration_ms: 0,
             congestion_events: 1,
             clean_streak: 0,
@@ -4301,6 +4347,54 @@ mod tests {
         );
         assert_eq!(state.pacing_extra_ms, 1);
 
+        for _ in 0..8 {
+            state.state_since = Some(Instant::now() - Duration::from_millis(250));
+            for _ in 0..EXIT_RESPONSE_CONGESTION_CLEAN_STREAK_SAMPLES {
+                state.update(
+                    config,
+                    clean,
+                    64,
+                    0,
+                    RetransmitPressureSnapshot::default(),
+                    24,
+                );
+            }
+        }
+
+        assert_eq!(state.level, ResponseCongestionLevel::None);
+        assert_eq!(state.cap_limit_frames, 64);
+        assert_eq!(state.pacing_extra_ms, 0);
+    }
+
+    #[test]
+    fn response_congestion_state_holds_reduction_for_minimum_rtt_window() {
+        let config = ResponseCongestionConfig {
+            enabled: true,
+            hard_window_frames: 64,
+            bootstrap_rtt_ms: 200,
+        };
+        let mut state = ResponseCongestionState {
+            level: ResponseCongestionLevel::Severe,
+            state_since: Some(Instant::now()),
+            congestion_duration_ms: 0,
+            congestion_events: 1,
+            clean_streak: 0,
+            signal_streak: 0,
+            cap_limit_frames: EXIT_RESPONSE_CONGESTION_SEVERE_CAP_FRAMES,
+            pacing_extra_ms: EXIT_RESPONSE_CONGESTION_SEVERE_PACING_EXTRA_MS,
+            cap_reduction_due_to_congestion: 1,
+            pacing_increase_due_to_congestion: 1,
+            baseline_rtt_ms: Some(320),
+            last_signal_level: ResponseCongestionLevel::Severe,
+        };
+        let clean = AckLatencySummary {
+            avg_ms: Some(318),
+            min_ms: Some(300),
+            p50_ms: Some(315),
+            p95_ms: Some(326),
+            max_ms: Some(340),
+        };
+
         for _ in 0..(EXIT_RESPONSE_CONGESTION_CLEAN_STREAK_SAMPLES * 3) {
             state.update(
                 config,
@@ -4312,9 +4406,91 @@ mod tests {
             );
         }
 
-        assert_eq!(state.level, ResponseCongestionLevel::None);
-        assert_eq!(state.cap_limit_frames, 64);
-        assert_eq!(state.pacing_extra_ms, 0);
+        assert_eq!(state.level, ResponseCongestionLevel::Severe);
+        assert_eq!(state.cap_limit_frames, EXIT_RESPONSE_CONGESTION_SEVERE_CAP_FRAMES);
+        assert_eq!(
+            state.pacing_extra_ms,
+            EXIT_RESPONSE_CONGESTION_SEVERE_PACING_EXTRA_MS
+        );
+
+        state.state_since = Some(Instant::now() - Duration::from_millis(250));
+        for _ in 0..EXIT_RESPONSE_CONGESTION_CLEAN_STREAK_SAMPLES {
+            state.update(
+                config,
+                clean,
+                64,
+                0,
+                RetransmitPressureSnapshot::default(),
+                24,
+            );
+        }
+
+        assert_eq!(
+            state.cap_limit_frames,
+            EXIT_RESPONSE_CONGESTION_SEVERE_CAP_FRAMES + EXIT_RESPONSE_CONGESTION_RESTORE_STEP_FRAMES
+        );
+        assert_eq!(state.pacing_extra_ms, 1);
+    }
+
+    #[test]
+    fn response_congestion_state_adapts_clean_long_path_before_triggering() {
+        let config = ResponseCongestionConfig {
+            enabled: true,
+            hard_window_frames: 64,
+            bootstrap_rtt_ms: 200,
+        };
+        let mut state = ResponseCongestionState {
+            level: ResponseCongestionLevel::None,
+            state_since: None,
+            congestion_duration_ms: 0,
+            congestion_events: 0,
+            clean_streak: 0,
+            signal_streak: 0,
+            cap_limit_frames: 64,
+            pacing_extra_ms: 0,
+            cap_reduction_due_to_congestion: 0,
+            pacing_increase_due_to_congestion: 0,
+            baseline_rtt_ms: None,
+            last_signal_level: ResponseCongestionLevel::None,
+        };
+        let clean_long_path = AckLatencySummary {
+            avg_ms: Some(318),
+            min_ms: Some(280),
+            p50_ms: Some(314),
+            p95_ms: Some(329),
+            max_ms: Some(341),
+        };
+
+        for _ in 0..8 {
+            let decision = state.update(
+                config,
+                clean_long_path,
+                64,
+                0,
+                RetransmitPressureSnapshot::default(),
+                63,
+            );
+            assert_eq!(decision.level, ResponseCongestionLevel::None);
+            assert_eq!(decision.cap_limit_frames, 64);
+            assert_eq!(decision.pacing_extra_ms, 0);
+        }
+
+        assert!(state.baseline_rtt_ms.unwrap_or(0) >= 300);
+        assert_eq!(state.congestion_events, 0);
+
+        let pressure = RetransmitPressureSnapshot {
+            retransmitting_frames: 8,
+            repeated_loss_frames: 2,
+            max_retransmit_count: 3,
+        };
+        state.update(config, clean_long_path, 64, 6, pressure, 63);
+        let severe = state.update(config, clean_long_path, 64, 8, pressure, 63);
+        assert_eq!(severe.level, ResponseCongestionLevel::Severe);
+        assert_eq!(severe.cap_limit_frames, EXIT_RESPONSE_CONGESTION_SEVERE_CAP_FRAMES);
+        assert_eq!(
+            severe.pacing_extra_ms,
+            EXIT_RESPONSE_CONGESTION_SEVERE_PACING_EXTRA_MS
+        );
     }
 
     #[test]

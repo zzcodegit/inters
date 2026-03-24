@@ -1,0 +1,20 @@
+   Compiling vpnnode v0.1.0 (C:\neinternet\vpnnode)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 7.14s
+     Running tests\remote_baseline.rs (target\debug\deps\remote_baseline-5879b8b4a197b6ef.exe)
+
+running 1 test
+test remote_http_7hop_returns_200 ... remote_scenario=7hop local_listen=127.0.0.1:19087 route_length=7 exact_route_only=true target_scheme=http expected_status=200 ready_timeout_secs=90 probe_attempt_timeout_secs=45 route_chain=client -> 45.197.133.115:30001 -> 185.144.28.95:30002 -> 155.212.135.200:30003 -> 155.212.135.95:30004 -> 155.212.135.95:30006 -> 155.212.143.112:30005 -> 31.192.232.26:30000 -> target http_host=remote-7hop
+Error: 7hop: local client TCP listener must come up
+
+Caused by:
+    timeout waiting for client TCP listener at 127.0.0.1:19087
+FAILED
+
+failures:
+
+failures:
+    remote_http_7hop_returns_200
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4 filtered out; finished in 30.45s
+
+error: test failed, to rerun pass `--test remote_baseline`

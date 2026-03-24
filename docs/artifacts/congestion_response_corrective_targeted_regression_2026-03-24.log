@@ -1,0 +1,12 @@
+   Compiling vpnnode v0.1.0 (C:\neinternet\vpnnode)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 6.92s
+     Running unittests src\lib.rs (target\debug\deps\vpnnode-a32e04d484554ec4.exe)
+
+running 4 tests
+test roles::exit::tests::response_congestion_signal_reduces_pressure ... ok
+test roles::exit::tests::response_congestion_state_adapts_clean_long_path_before_triggering ... ok
+test roles::exit::tests::response_congestion_state_holds_reduction_for_minimum_rtt_window ... ok
+test roles::exit::tests::response_congestion_state_restores_after_clean_streak ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 86 filtered out; finished in 0.00s
+

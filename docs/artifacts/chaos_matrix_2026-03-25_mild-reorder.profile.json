@@ -1,0 +1,14 @@
+{
+  "profile_name": "mild-reorder",
+  "seed": 23,
+  "skip_packets": 24,
+  "loss_ppm": 0,
+  "duplicate_ppm": 0,
+  "reorder_ppm": 20000,
+  "base_delay_ms": 0,
+  "jitter_ms": 0,
+  "reorder_extra_delay_ms": 40,
+  "duplicate_delay_ms": 2,
+  "runs": 5,
+  "request_body_bytes": 32768
+}
