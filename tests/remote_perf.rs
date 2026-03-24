@@ -33,11 +33,11 @@ struct PerfMatrixConfig {
 
 #[derive(Debug, Clone)]
 struct ScenarioSpec {
-    name: &'static str,
-    host_header: &'static str,
+    name: String,
+    host_header: String,
     route_length: Option<u8>,
     local_listen: Option<SocketAddr>,
-    route_cache_path: Option<&'static str>,
+    route_cache_path: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -88,50 +88,40 @@ async fn remote_perf_matrix_collects_measurements() -> anyhow::Result<()> {
     prepare_output_path(&config.report_output_path)?;
     fs::write(&config.raw_output_path, b"").context("truncate raw output file")?;
 
-    let scenarios = vec![
-        ScenarioSpec {
-            name: "direct",
-            host_header: "perf-direct",
-            route_length: None,
-            local_listen: None,
-            route_cache_path: None,
-        },
-        ScenarioSpec {
-            name: "remote-1hop",
-            host_header: "perf-1hop",
-            route_length: Some(1),
-            local_listen: Some("127.0.0.1:19181".parse().unwrap()),
-            route_cache_path: Some("route_cache_perf_1hop.json"),
-        },
-        ScenarioSpec {
-            name: "remote-2hop",
-            host_header: "perf-2hop",
-            route_length: Some(2),
-            local_listen: Some("127.0.0.1:19182".parse().unwrap()),
-            route_cache_path: Some("route_cache_perf_2hop.json"),
-        },
-        ScenarioSpec {
-            name: "remote-3hop",
-            host_header: "perf-3hop",
-            route_length: Some(3),
-            local_listen: Some("127.0.0.1:19183".parse().unwrap()),
-            route_cache_path: Some("route_cache_perf_3hop.json"),
-        },
-    ];
+    let mut scenarios = vec![ScenarioSpec {
+        name: "direct".to_string(),
+        host_header: "perf-direct".to_string(),
+        route_length: None,
+        local_listen: None,
+        route_cache_path: None,
+    }];
+    for route_length in config.remote.scenario_route_lengths() {
+        scenarios.push(ScenarioSpec {
+            name: format!("remote-{}hop", route_length),
+            host_header: format!("perf-{}hop", route_length),
+            route_length: Some(route_length),
+            local_listen: Some(
+                format!("127.0.0.1:1918{}", route_length)
+                    .parse()
+                    .expect("scenario listen addr"),
+            ),
+            route_cache_path: Some(format!("route_cache_perf_{}hop.json", route_length)),
+        });
+    }
 
     let mut all_records = Vec::new();
     let mut summaries = Vec::new();
 
     for scenario in scenarios {
         let started_at = Instant::now();
-        let request = support::http_get_request_path(scenario.host_header, &config.request_path);
+        let request = support::http_get_request_path(&scenario.host_header, &config.request_path);
         let summary = if let Some(route_length) = scenario.route_length {
             run_reset_if_configured()?;
             let remote_config = config.remote.for_scenario(
                 route_length,
                 scenario.local_listen.unwrap(),
-                scenario.route_cache_path.unwrap(),
-                scenario.host_header.to_string(),
+                scenario.route_cache_path.clone().unwrap(),
+                scenario.host_header.clone(),
             )?;
             let route_chain = remote_config.route_chain();
             let endpoint = remote_config.local_listen.to_string();
@@ -149,7 +139,7 @@ async fn remote_perf_matrix_collects_measurements() -> anyhow::Result<()> {
             let result = run_remote_perf_scenario(
                 &config,
                 &remote_config,
-                scenario.name,
+                &scenario.name,
                 &route_chain,
                 &request,
             )
@@ -162,7 +152,7 @@ async fn remote_perf_matrix_collects_measurements() -> anyhow::Result<()> {
                 "perf_scenario={} type=direct route_chain={} endpoint={} request_path={} runs={}",
                 scenario.name, route_chain, config.direct_addr, config.request_path, config.runs
             );
-            run_direct_perf_scenario(&config, scenario.name, &route_chain, &request).await?
+            run_direct_perf_scenario(&config, &scenario.name, &route_chain, &request).await?
         };
 
         for record in &summary.1 {

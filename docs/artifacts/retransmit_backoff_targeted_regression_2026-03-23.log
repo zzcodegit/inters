@@ -1,0 +1,133 @@
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on artifact directory
+   Compiling vpnnode v0.1.0 (C:\neinternet\vpnnode)
+warning: fields `avg_inflight`, `pacing_interval_ms_max`, `effective_inflight_cap_min`, and `effective_inflight_cap_max` are never read
+   --> tests\chaos_matrix.rs:98:5
+    |
+ 92 | struct ExitStreamSummary {
+    |        ----------------- fields in this struct
+...
+ 98 |     avg_inflight: Option<f64>,
+    |     ^^^^^^^^^^^^
+...
+111 |     pacing_interval_ms_max: Option<u64>,
+    |     ^^^^^^^^^^^^^^^^^^^^^^
+...
+116 |     effective_inflight_cap_min: Option<u64>,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^
+117 |     effective_inflight_cap_max: Option<u64>,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: `ExitStreamSummary` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: associated function `inflight_pressure_regression` is never used
+    --> tests\chaos_matrix.rs:2129:8
+     |
+1962 | impl ChaosRunConfig {
+     | ------------------- associated function in this implementation
+...
+2129 |     fn inflight_pressure_regression(profile_name: &str, base_port: u16, runs: usize) -> Self {
+     |        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: `vpnnode` (test "chaos_matrix") generated 2 warnings
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 29.68s
+     Running unittests src\lib.rs (target\debug\deps\vpnnode-a32e04d484554ec4.exe)
+
+running 1 test
+test roles::exit::tests::response_retransmit_backoff_matches_rtt ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 85 filtered out; finished in 0.00s
+
+     Running unittests src\bin\validate.rs (target\debug\deps\validate-caf3b458f0010e50.exe)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src\bin\validate_report.rs (target\debug\deps\validate_report-3a1089c09f5a4f14.exe)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src\main.rs (target\debug\deps\vpnnode-afd5380f92c6582c.exe)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests\baseline.rs (target\debug\deps\baseline-18a10cfd4cc7b25f.exe)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 9 filtered out; finished in 0.00s
+
+     Running tests\chaos_matrix.rs (target\debug\deps\chaos_matrix-3eab1b6ea173bdb9.exe)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 10 filtered out; finished in 0.00s
+
+     Running tests\discovery_store.rs (target\debug\deps\discovery_store-46848fdc1e2738fd.exe)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 4 filtered out; finished in 0.00s
+
+     Running tests\http_probe_ready.rs (target\debug\deps\http_probe_ready-27bf7af52161d901.exe)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s
+
+     Running tests\integration.rs (target\debug\deps\integration-d08b49bcf4b8fade.exe)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 9 filtered out; finished in 0.00s
+
+     Running tests\reliable_stream.rs (target\debug\deps\reliable_stream-df077bd1278e8242.exe)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 0.00s
+
+     Running tests\remote_baseline.rs (target\debug\deps\remote_baseline-5879b8b4a197b6ef.exe)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 4 filtered out; finished in 0.00s
+
+     Running tests\remote_perf.rs (target\debug\deps\remote_perf-7aca00160271adf9.exe)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s
+
+     Running tests\remote_perf_stages.rs (target\debug\deps\remote_perf_stages-aa5c5065a4a79a31.exe)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s
+
+     Running tests\remote_route_quality.rs (target\debug\deps\remote_route_quality-30e597e8cc779cf8.exe)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s
+
+     Running tests\route_quality_policy.rs (target\debug\deps\route_quality_policy-7d6fc432cdcb1ba0.exe)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s
+
+     Running tests\tun_logic.rs (target\debug\deps\tun_logic-1ab07e14fd083486.exe)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 0.00s
+

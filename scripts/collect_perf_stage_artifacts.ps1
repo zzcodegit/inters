@@ -23,6 +23,13 @@ function Get-OptionalEnv([string]$Name, [string]$Default) {
     return $value
 }
 
+function Invoke-CheckedExternal([scriptblock]$Action, [string]$FailureMessage) {
+    & $Action
+    if ($LASTEXITCODE -ne 0) {
+        throw "$FailureMessage (exit=$LASTEXITCODE)"
+    }
+}
+
 $exitHost = Get-RequiredEnv "VPNNODE_REMOTE_EXIT_HOST"
 $exitUser = Get-OptionalEnv "VPNNODE_REMOTE_EXIT_USER" "root"
 $exitPassword = Get-RequiredEnv "VPNNODE_REMOTE_EXIT_PASSWORD"
@@ -42,8 +49,12 @@ if (-not [string]::IsNullOrWhiteSpace($localDirectDir)) {
 }
 
 $remote = "$exitUser@$exitHost"
-& $pscp -batch -pw $exitPassword "${remote}:${exitStageLogPath}" $localExitPath
-& $pscp -batch -pw $exitPassword "${remote}:${forwardLogPath}" $localDirectPath
+Invoke-CheckedExternal -FailureMessage "failed to fetch exit stage log from $exitHost" -Action {
+    & $pscp -batch -pw $exitPassword "${remote}:${exitStageLogPath}" $localExitPath
+}
+Invoke-CheckedExternal -FailureMessage "failed to fetch direct stage log from $exitHost" -Action {
+    & $pscp -batch -pw $exitPassword "${remote}:${forwardLogPath}" $localDirectPath
+}
 
 Write-Host "collected_exit_stage_log=$localExitPath"
 Write-Host "collected_direct_stage_log=$localDirectPath"

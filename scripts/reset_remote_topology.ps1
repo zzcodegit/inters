@@ -23,22 +23,62 @@ function Get-OptionalEnv([string]$Name, [string]$Default) {
     return $value
 }
 
+function Get-OptionalCsvEnv([string]$Name, [string[]]$Default) {
+    $value = [Environment]::GetEnvironmentVariable($Name)
+    if ([string]::IsNullOrWhiteSpace($value)) {
+        return $Default
+    }
+    return $value.Split(",") | ForEach-Object { $_.Trim() } | Where-Object { $_ }
+}
+
+function New-SshArgs([string]$Password, [string]$HostKey) {
+    $args = @("-batch")
+    if (-not [string]::IsNullOrWhiteSpace($HostKey)) {
+        $args += @("-hostkey", $HostKey)
+    }
+    $args += @("-pw", $Password)
+    return $args
+}
+
+function Invoke-CheckedExternal([scriptblock]$Action, [string]$FailureMessage) {
+    & $Action
+    if ($LASTEXITCODE -ne 0) {
+        throw "$FailureMessage (exit=$LASTEXITCODE)"
+    }
+}
+
 function Restart-RemoteService(
     [string]$Label,
     [string]$RemoteHost,
     [string]$User,
     [string]$Password,
+    [string]$HostKey,
     [string[]]$Services
 ) {
     $restartList = ($Services | ForEach-Object { $_.Trim() }) -join " "
-    $statusChecks = $Services | ForEach-Object { "systemctl is-active $_" }
+    $statusChecks = $Services | ForEach-Object {
+        @'
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+  state=$(systemctl is-active __SERVICE__ 2>/dev/null || true)
+  if [ "$state" = "active" ]; then
+    echo active
+    break
+  fi
+  sleep 1
+done
+[ "$(systemctl is-active __SERVICE__ 2>/dev/null || true)" = "active" ]
+'@ -replace '__SERVICE__', $_
+    }
     $command = @(
         "systemctl restart $restartList"
         $statusChecks
-    ) -join " && "
+    ) -join "`n"
 
     Write-Host "reset_topology label=$Label host=$RemoteHost services=$restartList"
-    & $plink -batch -pw $Password "$User@$RemoteHost" $command
+    $sshArgs = New-SshArgs -Password $Password -HostKey $HostKey
+    Invoke-CheckedExternal -FailureMessage "failed to restart/verify $restartList on $Label ($RemoteHost)" -Action {
+        & $plink @sshArgs "$User@$RemoteHost" $command
+    }
 }
 
 function Assert-RemoteServiceActive(
@@ -46,25 +86,80 @@ function Assert-RemoteServiceActive(
     [string]$RemoteHost,
     [string]$User,
     [string]$Password,
+    [string]$HostKey,
     [string]$Service
 ) {
     Write-Host "check_service label=$Label host=$RemoteHost service=$Service"
-    & $plink -batch -pw $Password "$User@$RemoteHost" "systemctl is-active $Service"
+    $sshArgs = New-SshArgs -Password $Password -HostKey $HostKey
+    Invoke-CheckedExternal -FailureMessage "service $Service is not active on $Label ($RemoteHost)" -Action {
+        $command = @'
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+  state=$(systemctl is-active __SERVICE__ 2>/dev/null || true)
+  if [ "$state" = "active" ]; then
+    echo active
+    break
+  fi
+  sleep 1
+done
+[ "$(systemctl is-active __SERVICE__ 2>/dev/null || true)" = "active" ]
+'@ -replace '__SERVICE__', $Service
+        & $plink @sshArgs "$User@$RemoteHost" $command
+    }
 }
 
-$relay1Host = Get-RequiredEnv "VPNNODE_REMOTE_RELAY1_HOST"
-$relay1User = Get-OptionalEnv "VPNNODE_REMOTE_RELAY1_USER" "root"
-$relay1Password = Get-RequiredEnv "VPNNODE_REMOTE_RELAY1_PASSWORD"
+$activeLabels = Get-OptionalCsvEnv "VPNNODE_REMOTE_ACTIVE_LABELS" @("relay1", "relay2", "exit")
 
-$relay2Host = Get-RequiredEnv "VPNNODE_REMOTE_RELAY2_HOST"
-$relay2User = Get-OptionalEnv "VPNNODE_REMOTE_RELAY2_USER" "root"
-$relay2Password = Get-RequiredEnv "VPNNODE_REMOTE_RELAY2_PASSWORD"
+if ($activeLabels -contains "relay1") {
+    Restart-RemoteService -Label "relay-1" `
+        -RemoteHost (Get-RequiredEnv "VPNNODE_REMOTE_RELAY1_HOST") `
+        -User (Get-OptionalEnv "VPNNODE_REMOTE_RELAY1_USER" "root") `
+        -Password (Get-RequiredEnv "VPNNODE_REMOTE_RELAY1_PASSWORD") `
+        -HostKey (Get-OptionalEnv "VPNNODE_REMOTE_RELAY1_HOSTKEY" "") `
+        -Services @("vpnnode-relay1.service")
+}
+
+if ($activeLabels -contains "relay2") {
+    Restart-RemoteService -Label "relay-2" `
+        -RemoteHost (Get-RequiredEnv "VPNNODE_REMOTE_RELAY2_HOST") `
+        -User (Get-OptionalEnv "VPNNODE_REMOTE_RELAY2_USER" "root") `
+        -Password (Get-RequiredEnv "VPNNODE_REMOTE_RELAY2_PASSWORD") `
+        -HostKey (Get-OptionalEnv "VPNNODE_REMOTE_RELAY2_HOSTKEY" "") `
+        -Services @("vpnnode-relay2.service")
+}
+
+if ($activeLabels -contains "relay3") {
+    Restart-RemoteService -Label "relay-3" `
+        -RemoteHost (Get-RequiredEnv "VPNNODE_REMOTE_RELAY3_HOST") `
+        -User (Get-OptionalEnv "VPNNODE_REMOTE_RELAY3_USER" "root") `
+        -Password (Get-RequiredEnv "VPNNODE_REMOTE_RELAY3_PASSWORD") `
+        -HostKey (Get-OptionalEnv "VPNNODE_REMOTE_RELAY3_HOSTKEY" "") `
+        -Services @("vpnnode-relay3.service")
+}
+
+if ($activeLabels -contains "relay4") {
+    Restart-RemoteService -Label "relay-4" `
+        -RemoteHost (Get-RequiredEnv "VPNNODE_REMOTE_RELAY4_HOST") `
+        -User (Get-OptionalEnv "VPNNODE_REMOTE_RELAY4_USER" "root") `
+        -Password (Get-RequiredEnv "VPNNODE_REMOTE_RELAY4_PASSWORD") `
+        -HostKey (Get-OptionalEnv "VPNNODE_REMOTE_RELAY4_HOSTKEY" "") `
+        -Services @("vpnnode-relay4.service")
+}
+
+if ($activeLabels -contains "relay5") {
+    Restart-RemoteService -Label "relay-5" `
+        -RemoteHost (Get-RequiredEnv "VPNNODE_REMOTE_RELAY5_HOST") `
+        -User (Get-OptionalEnv "VPNNODE_REMOTE_RELAY5_USER" "root") `
+        -Password (Get-RequiredEnv "VPNNODE_REMOTE_RELAY5_PASSWORD") `
+        -HostKey (Get-OptionalEnv "VPNNODE_REMOTE_RELAY5_HOSTKEY" "") `
+        -Services @("vpnnode-relay5.service")
+}
 
 $exitHost = Get-RequiredEnv "VPNNODE_REMOTE_EXIT_HOST"
 $exitUser = Get-OptionalEnv "VPNNODE_REMOTE_EXIT_USER" "root"
 $exitPassword = Get-RequiredEnv "VPNNODE_REMOTE_EXIT_PASSWORD"
+$exitHostKey = Get-OptionalEnv "VPNNODE_REMOTE_EXIT_HOSTKEY" ""
 
-Restart-RemoteService -Label "relay-1" -RemoteHost $relay1Host -User $relay1User -Password $relay1Password -Services @("vpnnode-relay1.service")
-Restart-RemoteService -Label "relay-2" -RemoteHost $relay2Host -User $relay2User -Password $relay2Password -Services @("vpnnode-relay2.service")
-Restart-RemoteService -Label "exit" -RemoteHost $exitHost -User $exitUser -Password $exitPassword -Services @("vpnnode-exit.service")
-Assert-RemoteServiceActive -Label "exit-target-http" -RemoteHost $exitHost -User $exitUser -Password $exitPassword -Service "vpnnode-target-http.service"
+if ($activeLabels -contains "exit") {
+    Restart-RemoteService -Label "exit" -RemoteHost $exitHost -User $exitUser -Password $exitPassword -HostKey $exitHostKey -Services @("vpnnode-exit.service")
+}
+Assert-RemoteServiceActive -Label "exit-target-http" -RemoteHost $exitHost -User $exitUser -Password $exitPassword -HostKey $exitHostKey -Service "vpnnode-target-http.service"

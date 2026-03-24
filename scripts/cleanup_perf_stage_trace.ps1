@@ -23,6 +23,13 @@ function Get-OptionalEnv([string]$Name, [string]$Default) {
     return $value
 }
 
+function Invoke-CheckedExternal([scriptblock]$Action, [string]$FailureMessage) {
+    & $Action
+    if ($LASTEXITCODE -ne 0) {
+        throw "$FailureMessage (exit=$LASTEXITCODE)"
+    }
+}
+
 $exitHost = Get-RequiredEnv "VPNNODE_REMOTE_EXIT_HOST"
 $exitUser = Get-OptionalEnv "VPNNODE_REMOTE_EXIT_USER" "root"
 $exitPassword = Get-RequiredEnv "VPNNODE_REMOTE_EXIT_PASSWORD"
@@ -41,5 +48,7 @@ printf 'exit_service=%s\n' "$exit_status"
 printf 'public_service=%s\n' "$public_status"
 '@.Replace("__PUBLIC_SERVICE__", $publicServiceName)
 
-& $plink -batch -pw $exitPassword $remote $command
+Invoke-CheckedExternal -FailureMessage "failed to cleanup exit stage trace on $exitHost" -Action {
+    & $plink -batch -pw $exitPassword $remote $command
+}
 Write-Host "cleanup_status=done"

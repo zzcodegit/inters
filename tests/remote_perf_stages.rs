@@ -33,10 +33,10 @@ struct StagePerfConfig {
 
 #[derive(Debug, Clone)]
 struct ScenarioSpec {
-    name: &'static str,
+    name: String,
     route_length: Option<u8>,
     local_listen: Option<SocketAddr>,
-    route_cache_path: Option<&'static str>,
+    route_cache_path: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -94,32 +94,24 @@ async fn remote_perf_stage_matrix_collects_measurements() -> anyhow::Result<()> 
         config.client_stage_path.as_os_str(),
     );
 
-    let scenarios = vec![
-        ScenarioSpec {
-            name: "direct",
-            route_length: None,
-            local_listen: None,
-            route_cache_path: None,
-        },
-        ScenarioSpec {
-            name: "remote-1hop",
-            route_length: Some(1),
-            local_listen: Some("127.0.0.1:19281".parse().unwrap()),
-            route_cache_path: Some("route_cache_perf_stage_1hop.json"),
-        },
-        ScenarioSpec {
-            name: "remote-2hop",
-            route_length: Some(2),
-            local_listen: Some("127.0.0.1:19282".parse().unwrap()),
-            route_cache_path: Some("route_cache_perf_stage_2hop.json"),
-        },
-        ScenarioSpec {
-            name: "remote-3hop",
-            route_length: Some(3),
-            local_listen: Some("127.0.0.1:19283".parse().unwrap()),
-            route_cache_path: Some("route_cache_perf_stage_3hop.json"),
-        },
-    ];
+    let mut scenarios = vec![ScenarioSpec {
+        name: "direct".to_string(),
+        route_length: None,
+        local_listen: None,
+        route_cache_path: None,
+    }];
+    for route_length in config.remote.scenario_route_lengths() {
+        scenarios.push(ScenarioSpec {
+            name: format!("remote-{}hop", route_length),
+            route_length: Some(route_length),
+            local_listen: Some(
+                format!("127.0.0.1:1928{}", route_length)
+                    .parse()
+                    .expect("stage scenario listen addr"),
+            ),
+            route_cache_path: Some(format!("route_cache_perf_stage_{}hop.json", route_length)),
+        });
+    }
 
     for scenario in scenarios {
         if let Some(route_length) = scenario.route_length {
@@ -127,7 +119,7 @@ async fn remote_perf_stage_matrix_collects_measurements() -> anyhow::Result<()> 
             let remote_config = config.remote.for_scenario(
                 route_length,
                 scenario.local_listen.unwrap(),
-                scenario.route_cache_path.unwrap(),
+                scenario.route_cache_path.clone().unwrap(),
                 format!("stage-{}", scenario.name),
             )?;
             let route_chain = remote_config.route_chain();

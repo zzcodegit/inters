@@ -31,6 +31,10 @@ pub struct ClientConfigCli {
     /// Stage 5: second relay (for route-length 3). E.g. 127.0.0.1:30002
     #[arg(long)]
     pub relay2_addr: Option<String>,
+    /// Stage 5: additional relay hops after relay2, comma-delimited.
+    /// Used for route-length 4+ without changing the hard transport window.
+    #[arg(long, value_delimiter = ',')]
+    pub extra_relay_addrs: Option<Vec<String>>,
     /// When true, use only the configured route length and disable adaptive
     /// shorter-route fallback candidates.
     #[arg(long, default_value_t = false)]
@@ -159,6 +163,7 @@ impl Default for ClientConfigCli {
             exit_addr: "127.0.0.1:30001".to_string(),
             route_length: 2,
             relay2_addr: None,
+            extra_relay_addrs: None,
             exact_route_only: false,
             client_key_path: "client.key".to_string(),
             relay_pubkey_path: "relay.pub".to_string(),

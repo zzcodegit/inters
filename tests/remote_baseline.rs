@@ -83,13 +83,23 @@ async fn run_remote_http_scenario(
     Ok(())
 }
 
+fn scenario_listen(route_length: u8) -> SocketAddr {
+    format!("127.0.0.1:1908{}", route_length)
+        .parse()
+        .expect("scenario listen addr")
+}
+
+fn scenario_cache(route_length: u8) -> String {
+    format!("route_cache_remote_{}hop.json", route_length)
+}
+
 #[tokio::test]
 async fn remote_http_1hop_returns_200() -> anyhow::Result<()> {
     run_remote_http_scenario(
         "1hop",
         1,
-        "127.0.0.1:19081".parse().unwrap(),
-        "route_cache_remote_1hop.json",
+        scenario_listen(1),
+        &scenario_cache(1),
     )
     .await
 }
@@ -99,8 +109,8 @@ async fn remote_http_2hop_returns_200() -> anyhow::Result<()> {
     run_remote_http_scenario(
         "2hop",
         2,
-        "127.0.0.1:19082".parse().unwrap(),
-        "route_cache_remote_2hop.json",
+        scenario_listen(2),
+        &scenario_cache(2),
     )
     .await
 }
@@ -110,8 +120,18 @@ async fn remote_http_3hop_returns_200() -> anyhow::Result<()> {
     run_remote_http_scenario(
         "3hop",
         3,
-        "127.0.0.1:19083".parse().unwrap(),
-        "route_cache_remote_3hop.json",
+        scenario_listen(3),
+        &scenario_cache(3),
     )
     .await
+}
+
+#[tokio::test]
+async fn remote_http_5hop_returns_200() -> anyhow::Result<()> {
+    let base = RemoteBaselineConfig::from_env()?;
+    if base.route_length < 5 {
+        eprintln!("remote_http_5hop_returns_200 skipped: configured route_length < 5");
+        return Ok(());
+    }
+    run_remote_http_scenario("5hop", 5, scenario_listen(5), &scenario_cache(5)).await
 }

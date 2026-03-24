@@ -15,7 +15,9 @@ use crate::protocol::{
 };
 use crate::session::{classify_open_message_error, SessionCrypto, SessionOpenRejectKind};
 use crate::stage_trace;
-use crate::stream_reliable::{AckDisposition, AckFrame, AckLatencySummary, ReliableStream};
+use crate::stream_reliable::{
+    AckDisposition, AckFrame, AckLatencySummary, ReliableStream, RetransmitBackoffSummary,
+};
 use crate::transport::{Transport, UdpTransport};
 use crate::wire::{build_encrypted_packet, parse_routing_header, RoutingInfo};
 use anyhow::Result;
@@ -36,9 +38,13 @@ use tracing::{debug, error, info, warn};
 
 const MIN_EXIT_RESPONSE_WINDOW_FRAMES: usize = 8;
 const MAX_EXIT_RESPONSE_WINDOW_FRAMES: usize = 256;
-const EXIT_RESPONSE_RETRANSMIT_BASE_MS: u64 = 350;
-const EXIT_RESPONSE_RETRANSMIT_SAFETY_MARGIN_MS: u64 = 75;
-const EXIT_RESPONSE_RETRANSMIT_MAX_MS: u64 = 1500;
+const EXIT_RESPONSE_RETRANSMIT_TIMEOUT_MIN_MS: u64 = 50;
+const EXIT_RESPONSE_RETRANSMIT_TIMEOUT_MAX_MS: u64 = 1000;
+const EXIT_RESPONSE_RETRANSMIT_FACTOR_NORMAL: f64 = 1.5;
+const EXIT_RESPONSE_RETRANSMIT_FACTOR_SUSPECTED_LOSS: f64 = 2.0;
+const EXIT_RESPONSE_RETRANSMIT_FACTOR_REPEATED_LOSS: f64 = 2.5;
+const EXIT_RESPONSE_RETRANSMIT_FACTOR_REPEATED_STEP: f64 = 0.25;
+const EXIT_RESPONSE_RETRANSMIT_FACTOR_REPEATED_MAX: f64 = 3.5;
 const DEFAULT_EXIT_RESPONSE_PACING_BOOTSTRAP_RTT_MS: u64 = 200;
 const DEFAULT_EXIT_RESPONSE_PACING_MIN_INTERVAL_MS: u64 = 1;
 const EXIT_RESPONSE_PACING_BURST_CAP_FRAMES: f64 = 4.0;
@@ -63,20 +69,72 @@ fn clamp_response_window_frames(frames: usize) -> usize {
     )
 }
 
-fn adaptive_response_retransmit_interval(summary: AckLatencySummary) -> Duration {
-    let mut interval_ms = EXIT_RESPONSE_RETRANSMIT_BASE_MS;
-    if let Some(p95_ms) = summary.p95_ms {
-        interval_ms =
-            interval_ms.max(p95_ms.saturating_add(EXIT_RESPONSE_RETRANSMIT_SAFETY_MARGIN_MS));
-    } else if let Some(avg_ms) = summary.avg_ms {
-        interval_ms =
-            interval_ms.max(avg_ms.saturating_add(EXIT_RESPONSE_RETRANSMIT_SAFETY_MARGIN_MS));
-    } else if let Some(p50_ms) = summary.p50_ms {
-        interval_ms =
-            interval_ms.max(p50_ms.saturating_add(EXIT_RESPONSE_RETRANSMIT_SAFETY_MARGIN_MS));
-    }
+#[derive(Debug, Clone, Copy)]
+struct ResponseRetransmitDecision {
+    timeout_ms: u64,
+    rtt_ratio: f64,
+    early: bool,
+    late: bool,
+}
 
-    Duration::from_millis(interval_ms.min(EXIT_RESPONSE_RETRANSMIT_MAX_MS))
+fn response_retransmit_base_rtt_ms(summary: AckLatencySummary, bootstrap_rtt_ms: u64) -> u64 {
+    summary
+        .p50_ms
+        .or(summary.avg_ms)
+        .or(summary.p95_ms)
+        .filter(|value| *value > 0)
+        .unwrap_or(bootstrap_rtt_ms.max(1))
+}
+
+fn response_retransmit_factor(retransmit_count: u64) -> f64 {
+    match retransmit_count {
+        0 => EXIT_RESPONSE_RETRANSMIT_FACTOR_NORMAL,
+        1 => EXIT_RESPONSE_RETRANSMIT_FACTOR_SUSPECTED_LOSS,
+        _ => (EXIT_RESPONSE_RETRANSMIT_FACTOR_REPEATED_LOSS
+            + (retransmit_count.saturating_sub(2) as f64
+                * EXIT_RESPONSE_RETRANSMIT_FACTOR_REPEATED_STEP))
+            .min(EXIT_RESPONSE_RETRANSMIT_FACTOR_REPEATED_MAX),
+    }
+}
+
+fn response_retransmit_backoff_decision(
+    summary: AckLatencySummary,
+    retransmit_count: u64,
+    bootstrap_rtt_ms: u64,
+) -> ResponseRetransmitDecision {
+    let rtt_ms = response_retransmit_base_rtt_ms(summary, bootstrap_rtt_ms);
+    let factor = response_retransmit_factor(retransmit_count);
+    let timeout_ms = ((rtt_ms as f64) * factor)
+        .round()
+        .clamp(
+            EXIT_RESPONSE_RETRANSMIT_TIMEOUT_MIN_MS as f64,
+            EXIT_RESPONSE_RETRANSMIT_TIMEOUT_MAX_MS as f64,
+        ) as u64;
+    let rtt_ratio = timeout_ms as f64 / rtt_ms.max(1) as f64;
+
+    let (expected_factor, factor_margin) = match retransmit_count {
+        0 => (EXIT_RESPONSE_RETRANSMIT_FACTOR_NORMAL, 0.25),
+        1 => (EXIT_RESPONSE_RETRANSMIT_FACTOR_SUSPECTED_LOSS, 0.25),
+        _ => (response_retransmit_factor(retransmit_count), 0.35),
+    };
+    ResponseRetransmitDecision {
+        timeout_ms,
+        rtt_ratio,
+        early: rtt_ratio < (expected_factor - factor_margin),
+        late: rtt_ratio > (expected_factor + factor_margin),
+    }
+}
+
+#[cfg(test)]
+fn adaptive_response_retransmit_interval(
+    summary: AckLatencySummary,
+    retransmit_count: u64,
+    bootstrap_rtt_ms: u64,
+) -> Duration {
+    Duration::from_millis(
+        response_retransmit_backoff_decision(summary, retransmit_count, bootstrap_rtt_ms)
+            .timeout_ms,
+    )
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -2015,6 +2073,7 @@ pub async fn run_exit(args: ExitArgs) -> Result<()> {
                 ack_latency_p50_ms,
                 ack_latency_p95_ms,
                 ack_latency_max_ms,
+                retransmit_backoff,
             ) = {
                 let map = reliable_streams_for_task.lock().unwrap();
                 if let Some(rs) = map.get(&stream_id) {
@@ -2029,9 +2088,30 @@ pub async fn run_exit(args: ExitArgs) -> Result<()> {
                         ack_summary.p50_ms,
                         ack_summary.p95_ms,
                         ack_summary.max_ms,
+                        rs.retransmit_backoff_summary(),
                     )
                 } else {
-                    (0u64, 0u64, 0u64, None, None, None, None, None)
+                    (
+                        0u64,
+                        0u64,
+                        0u64,
+                        None,
+                        None,
+                        None,
+                        None,
+                        None,
+                        RetransmitBackoffSummary {
+                            timeout_ms_avg: None,
+                            timeout_ms_min: None,
+                            timeout_ms_p50: None,
+                            timeout_ms_p95: None,
+                            timeout_ms_max: None,
+                            trigger_count: 0,
+                            early_count: 0,
+                            late_count: 0,
+                            rtt_ratio_avg: None,
+                        },
+                    )
                 }
             };
 
@@ -2177,6 +2257,14 @@ pub async fn run_exit(args: ExitArgs) -> Result<()> {
                 frames_acked_total,
                 total_retransmits,
                 retransmit_rate,
+                retransmit_timeout_ms_avg = ?retransmit_backoff.timeout_ms_avg,
+                retransmit_timeout_ms_p50 = ?retransmit_backoff.timeout_ms_p50,
+                retransmit_timeout_ms_p95 = ?retransmit_backoff.timeout_ms_p95,
+                retransmit_timeout_ms_max = ?retransmit_backoff.timeout_ms_max,
+                retransmit_trigger_count = retransmit_backoff.trigger_count,
+                retransmit_early_count = retransmit_backoff.early_count,
+                retransmit_late_count = retransmit_backoff.late_count,
+                retransmit_rtt_ratio = ?retransmit_backoff.rtt_ratio_avg,
                 stream_duration_ms,
                 effective_throughput_bytes_per_s = effective_throughput,
                 ack_latency_ms_avg = ?ack_latency_avg_ms,
@@ -2310,6 +2398,42 @@ pub async fn run_exit(args: ExitArgs) -> Result<()> {
             stream_complete_payload
                 .insert("total_retransmits".to_string(), json!(total_retransmits));
             stream_complete_payload.insert("retransmit_rate".to_string(), json!(retransmit_rate));
+            stream_complete_payload.insert(
+                "retransmit_timeout_ms_avg".to_string(),
+                json!(retransmit_backoff.timeout_ms_avg),
+            );
+            stream_complete_payload.insert(
+                "retransmit_timeout_ms_min".to_string(),
+                json!(retransmit_backoff.timeout_ms_min),
+            );
+            stream_complete_payload.insert(
+                "retransmit_timeout_ms_p50".to_string(),
+                json!(retransmit_backoff.timeout_ms_p50),
+            );
+            stream_complete_payload.insert(
+                "retransmit_timeout_ms_p95".to_string(),
+                json!(retransmit_backoff.timeout_ms_p95),
+            );
+            stream_complete_payload.insert(
+                "retransmit_timeout_ms_max".to_string(),
+                json!(retransmit_backoff.timeout_ms_max),
+            );
+            stream_complete_payload.insert(
+                "retransmit_trigger_count".to_string(),
+                json!(retransmit_backoff.trigger_count),
+            );
+            stream_complete_payload.insert(
+                "retransmit_early_count".to_string(),
+                json!(retransmit_backoff.early_count),
+            );
+            stream_complete_payload.insert(
+                "retransmit_late_count".to_string(),
+                json!(retransmit_backoff.late_count),
+            );
+            stream_complete_payload.insert(
+                "retransmit_rtt_ratio".to_string(),
+                json!(retransmit_backoff.rtt_ratio_avg),
+            );
             stream_complete_payload.insert(
                 "ack_latency_ms_avg".to_string(),
                 json!(ack_latency_ms_avg_val),
@@ -2480,6 +2604,7 @@ pub async fn run_exit(args: ExitArgs) -> Result<()> {
         let shared_route_retx = shared_route.clone();
         let shared_peer_retx = shared_peer.clone();
         let reliable_streams_retx = reliable_streams.clone();
+        let response_pacing_config_retx = response_pacing_config;
         tokio::spawn(async move {
             let tick = Duration::from_millis(50);
             loop {
@@ -2504,9 +2629,47 @@ pub async fn run_exit(args: ExitArgs) -> Result<()> {
                     let mut map = reliable_streams_retx.lock().unwrap();
                     let mut out = Vec::new();
                     for (&sid, rs) in map.iter_mut() {
-                        let interval =
-                            adaptive_response_retransmit_interval(rs.ack_latency_summary());
-                        out.extend(rs.frames_for_retransmit(sid, now, interval, 16));
+                        let ack_summary = rs.ack_latency_summary();
+                        let ack_seq = rs.recv_next;
+                        let due: Vec<(u64, ResponseRetransmitDecision)> = rs
+                            .unacked
+                            .iter()
+                            .filter_map(|(&seq, entry)| {
+                                let decision = response_retransmit_backoff_decision(
+                                    ack_summary,
+                                    entry.retransmit_count,
+                                    response_pacing_config_retx.bootstrap_rtt_ms,
+                                );
+                                (now.duration_since(entry.last_sent)
+                                    >= Duration::from_millis(decision.timeout_ms))
+                                .then_some((seq, decision))
+                            })
+                            .take(16)
+                            .collect();
+                        for (seq, decision) in due {
+                            let payload = match rs.unacked.get_mut(&seq) {
+                                Some(entry) => {
+                                    entry.last_sent = now;
+                                    entry.retransmit_count =
+                                        entry.retransmit_count.saturating_add(1);
+                                    entry.payload.clone()
+                                }
+                                None => continue,
+                            };
+                            rs.total_retransmits = rs.total_retransmits.saturating_add(1);
+                            rs.record_retransmit_timeout_sample(
+                                decision.timeout_ms,
+                                decision.rtt_ratio,
+                                decision.early,
+                                decision.late,
+                            );
+                            out.push(StreamFrame {
+                                stream_id: sid,
+                                frame_seq: seq,
+                                ack_seq,
+                                payload,
+                            });
+                        }
                     }
                     out
                 };
@@ -3312,42 +3475,57 @@ mod tests {
     use crate::stream_reliable::{AckLatencySummary, ReliableStream};
 
     #[test]
-    fn adaptive_retransmit_interval_uses_base_without_ack_samples() {
-        let interval = adaptive_response_retransmit_interval(AckLatencySummary::default());
-        assert_eq!(
-            interval,
-            Duration::from_millis(EXIT_RESPONSE_RETRANSMIT_BASE_MS)
+    fn response_retransmit_backoff_matches_rtt() {
+        let short = response_retransmit_backoff_decision(
+            AckLatencySummary {
+                avg_ms: Some(180),
+                min_ms: Some(160),
+                p50_ms: Some(175),
+                p95_ms: Some(190),
+                max_ms: Some(220),
+            },
+            0,
+            200,
         );
+        assert_eq!(short.timeout_ms, 263);
+        assert!(!short.early);
+        assert!(!short.late);
+
+        let suspected_loss = response_retransmit_backoff_decision(
+            AckLatencySummary {
+                avg_ms: Some(220),
+                min_ms: Some(200),
+                p50_ms: Some(210),
+                p95_ms: Some(260),
+                max_ms: Some(280),
+            },
+            1,
+            200,
+        );
+        assert_eq!(suspected_loss.timeout_ms, 420);
+        assert!(!suspected_loss.early);
+        assert!(!suspected_loss.late);
+
+        let repeated_loss = response_retransmit_backoff_decision(
+            AckLatencySummary {
+                avg_ms: Some(420),
+                min_ms: Some(390),
+                p50_ms: Some(410),
+                p95_ms: Some(520),
+                max_ms: Some(560),
+            },
+            4,
+            200,
+        );
+        assert_eq!(repeated_loss.timeout_ms, 1000);
+        assert!(repeated_loss.rtt_ratio > 2.0);
     }
 
     #[test]
-    fn adaptive_retransmit_interval_tracks_high_ack_p95() {
-        let interval = adaptive_response_retransmit_interval(AckLatencySummary {
-            avg_ms: Some(260),
-            min_ms: Some(220),
-            p50_ms: Some(255),
-            p95_ms: Some(420),
-            max_ms: Some(460),
-        });
-        assert_eq!(
-            interval,
-            Duration::from_millis(420 + EXIT_RESPONSE_RETRANSMIT_SAFETY_MARGIN_MS)
-        );
-    }
-
-    #[test]
-    fn adaptive_retransmit_interval_is_clamped() {
-        let interval = adaptive_response_retransmit_interval(AckLatencySummary {
-            avg_ms: Some(1800),
-            min_ms: Some(1600),
-            p50_ms: Some(1700),
-            p95_ms: Some(1900),
-            max_ms: Some(2200),
-        });
-        assert_eq!(
-            interval,
-            Duration::from_millis(EXIT_RESPONSE_RETRANSMIT_MAX_MS)
-        );
+    fn adaptive_retransmit_interval_uses_bootstrap_without_ack_samples() {
+        let interval =
+            adaptive_response_retransmit_interval(AckLatencySummary::default(), 0, 200);
+        assert_eq!(interval, Duration::from_millis(300));
     }
 
     #[test]
@@ -3431,11 +3609,8 @@ mod tests {
         );
         assert_eq!(pacing_interval_ms, 3);
 
-        let retransmit_interval = adaptive_response_retransmit_interval(summary);
-        assert_eq!(
-            retransmit_interval,
-            Duration::from_millis(EXIT_RESPONSE_RETRANSMIT_BASE_MS)
-        );
+        let retransmit_interval = adaptive_response_retransmit_interval(summary, 0, 200);
+        assert_eq!(retransmit_interval, Duration::from_millis(278));
 
         let pressure = response_inflight_pressure_signal(
             summary,

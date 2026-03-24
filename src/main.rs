@@ -124,6 +124,20 @@ async fn run_from_config(path: &PathBuf, drain: bool) -> anyhow::Result<()> {
                     .get(1)
                     .and_then(|n| n.as_socket_addr())
                     .map(|a| a.to_string()),
+                extra_relay_addrs: if cfg.peers.len() > 3 {
+                    let extras = cfg.peers[2..cfg.peers.len().saturating_sub(1)]
+                        .iter()
+                        .filter_map(|n| n.as_socket_addr())
+                        .map(|a| a.to_string())
+                        .collect::<Vec<_>>();
+                    if extras.is_empty() {
+                        None
+                    } else {
+                        Some(extras)
+                    }
+                } else {
+                    None
+                },
                 exact_route_only: false,
                 client_key_path: "client.key".to_string(),
                 relay_pubkey_path: "relay.pub".to_string(),

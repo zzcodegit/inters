@@ -929,47 +929,65 @@ fn classify_anyhow_failure(e: &anyhow::Error) -> RouteFailureKind {
     RouteFailureKind::Unknown
 }
 
+fn configured_relay_chain(args: &ClientArgs) -> Result<Vec<String>> {
+    let required_relays = args.route_length.saturating_sub(1) as usize;
+    if required_relays == 0 {
+        return Ok(Vec::new());
+    }
+
+    let mut relays = Vec::with_capacity(required_relays);
+    relays.push(args.relay_addr.clone());
+    if required_relays >= 2 {
+        let relay2 = args
+            .relay2_addr
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("client: route-length 3+ requires --relay2-addr"))?;
+        relays.push(relay2.clone());
+    }
+    if required_relays >= 3 {
+        let extras = args.extra_relay_addrs.as_ref().ok_or_else(|| {
+            anyhow::anyhow!(
+                "client: route-length {} requires {} extra relay addr(s)",
+                args.route_length,
+                required_relays.saturating_sub(2)
+            )
+        })?;
+        if extras.len() < required_relays.saturating_sub(2) {
+            return Err(anyhow::anyhow!(
+                "client: route-length {} requires {} extra relay addr(s), got {}",
+                args.route_length,
+                required_relays.saturating_sub(2),
+                extras.len()
+            ));
+        }
+        relays.extend(
+            extras
+                .iter()
+                .take(required_relays.saturating_sub(2))
+                .cloned(),
+        );
+    }
+
+    Ok(relays)
+}
+
+async fn resolve_udp_hop(addr: &str, label: &str) -> Result<NodeAddr> {
+    let mut addrs = tokio::net::lookup_host(addr).await?;
+    let resolved = addrs
+        .next()
+        .ok_or_else(|| anyhow::anyhow!("client: could not resolve {label} address"))?;
+    Ok(NodeAddr::from(resolved))
+}
+
 /// Stage 5: Build route from CLI args. Resolves all addresses.
 async fn build_route(args: &ClientArgs) -> Result<Route> {
     let len = args.route_length.clamp(1, 16);
     let mut hops = Vec::with_capacity(len as usize);
-    match len {
-        1 => {
-            let mut addrs = tokio::net::lookup_host(args.exit_addr.clone()).await?;
-            let a = addrs
-                .next()
-                .ok_or_else(|| anyhow::anyhow!("client: could not resolve exit address"))?;
-            hops.push(NodeAddr::from(a));
-        }
-        2 => {
-            let mut r = tokio::net::lookup_host(args.relay_addr.clone()).await?;
-            hops.push(NodeAddr::from(r.next().ok_or_else(|| {
-                anyhow::anyhow!("client: could not resolve relay address")
-            })?));
-            let mut e = tokio::net::lookup_host(args.exit_addr.clone()).await?;
-            hops.push(NodeAddr::from(e.next().ok_or_else(|| {
-                anyhow::anyhow!("client: could not resolve exit address")
-            })?));
-        }
-        _ => {
-            let mut r1 = tokio::net::lookup_host(args.relay_addr.clone()).await?;
-            hops.push(NodeAddr::from(r1.next().ok_or_else(|| {
-                anyhow::anyhow!("client: could not resolve relay address")
-            })?));
-            let r2_addr = args
-                .relay2_addr
-                .as_ref()
-                .ok_or_else(|| anyhow::anyhow!("client: route-length 3 requires --relay2-addr"))?;
-            let mut r2 = tokio::net::lookup_host(r2_addr).await?;
-            hops.push(NodeAddr::from(r2.next().ok_or_else(|| {
-                anyhow::anyhow!("client: could not resolve relay2 address")
-            })?));
-            let mut e = tokio::net::lookup_host(args.exit_addr.clone()).await?;
-            hops.push(NodeAddr::from(e.next().ok_or_else(|| {
-                anyhow::anyhow!("client: could not resolve exit address")
-            })?));
-        }
+    for relay in configured_relay_chain(args)? {
+        hops.push(resolve_udp_hop(&relay, "relay").await?);
     }
+    let exit = resolve_udp_hop(&args.exit_addr, "exit").await?;
+    hops.push(exit);
     let route = Route { hops };
     let path_str = route
         .hops
@@ -991,43 +1009,33 @@ async fn build_initial_routes(args: &ClientArgs) -> Result<(Route, Vec<Route>)> 
     }
     let max_len = primary.len().max(args.route_length as usize);
 
-    // Resolve exit/relay/relay2 once to avoid repeated DNS work.
-    let mut exit_addrs = tokio::net::lookup_host(args.exit_addr.clone()).await?;
-    let exit = exit_addrs
-        .next()
-        .ok_or_else(|| anyhow::anyhow!("client: could not resolve exit address"))?;
+    let exit = resolve_udp_hop(&args.exit_addr, "exit").await?;
+    let relays = configured_relay_chain(args)?
+        .into_iter()
+        .map(|relay| async move { resolve_udp_hop(&relay, "relay").await })
+        .collect::<Vec<_>>();
+    let mut resolved_relays = Vec::new();
+    for relay in relays {
+        resolved_relays.push(relay.await?);
+    }
 
     let mut candidates: Vec<Route> = Vec::new();
 
-    // 1-hop: client -> exit
-    candidates.push(Route {
-        hops: vec![NodeAddr::from(exit)],
-    });
-
-    // 2-hop: client -> relay -> exit
-    if max_len >= 2 {
-        let mut relay_addrs = tokio::net::lookup_host(args.relay_addr.clone()).await?;
-        if let Some(relay1) = relay_addrs.next() {
+    for candidate_len in 1..=max_len {
+        if candidate_len == 1 {
             candidates.push(Route {
-                hops: vec![NodeAddr::from(relay1), NodeAddr::from(exit)],
+                hops: vec![exit.clone()],
             });
-
-            // 3-hop: client -> relay1 -> relay2 -> exit (if provided)
-            if max_len >= 3 {
-                if let Some(r2s) = args.relay2_addr.as_ref() {
-                    let mut relay2_addrs = tokio::net::lookup_host(r2s).await?;
-                    if let Some(relay2) = relay2_addrs.next() {
-                        candidates.push(Route {
-                            hops: vec![
-                                NodeAddr::from(relay1),
-                                NodeAddr::from(relay2),
-                                NodeAddr::from(exit),
-                            ],
-                        });
-                    }
-                }
-            }
+            continue;
         }
+
+        let relay_count = candidate_len.saturating_sub(1);
+        if resolved_relays.len() < relay_count {
+            break;
+        }
+        let mut hops = resolved_relays[..relay_count].to_vec();
+        hops.push(exit.clone());
+        candidates.push(Route { hops });
     }
 
     // Ensure primary is present (and unique set).

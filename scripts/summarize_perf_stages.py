@@ -109,6 +109,16 @@ def first_by_stage(events):
     return {stage: items[0] for stage, items in by_stage.items() if items}
 
 
+def scenario_sort_key(scenario_name: str):
+    if scenario_name == "direct":
+        return (0, 0, scenario_name)
+    if scenario_name.startswith("remote-") and scenario_name.endswith("hop"):
+        middle = scenario_name[len("remote-") : -len("hop")]
+        if middle.isdigit():
+            return (1, int(middle), scenario_name)
+    return (2, 0, scenario_name)
+
+
 local_rows = read_jsonl(LOCAL_RAW_PATH)
 client_stage_rows = read_jsonl(CLIENT_STAGE_PATH)
 exit_stage_rows = read_jsonl(EXIT_STAGE_PATH)
@@ -228,6 +238,31 @@ for measurement in measurements:
         joined_row["exit_stream_complete_ms"] = stream_complete.get("stream_duration_ms")
         joined_row["retransmit_rate"] = stream_complete.get("retransmit_rate")
         joined_row["total_retransmits"] = stream_complete.get("total_retransmits")
+        joined_row["retransmit_timeout_ms_avg"] = stream_complete.get(
+            "retransmit_timeout_ms_avg"
+        )
+        joined_row["retransmit_timeout_ms_min"] = stream_complete.get(
+            "retransmit_timeout_ms_min"
+        )
+        joined_row["retransmit_timeout_ms_p50"] = stream_complete.get(
+            "retransmit_timeout_ms_p50"
+        )
+        joined_row["retransmit_timeout_ms_p95"] = stream_complete.get(
+            "retransmit_timeout_ms_p95"
+        )
+        joined_row["retransmit_timeout_ms_max"] = stream_complete.get(
+            "retransmit_timeout_ms_max"
+        )
+        joined_row["retransmit_trigger_count"] = stream_complete.get(
+            "retransmit_trigger_count"
+        )
+        joined_row["retransmit_early_count"] = stream_complete.get(
+            "retransmit_early_count"
+        )
+        joined_row["retransmit_late_count"] = stream_complete.get(
+            "retransmit_late_count"
+        )
+        joined_row["retransmit_rtt_ratio"] = stream_complete.get("retransmit_rtt_ratio")
         joined_row["ack_latency_ms_avg"] = stream_complete.get("ack_latency_ms_avg")
         joined_row["ack_latency_ms_min"] = stream_complete.get("ack_latency_ms_min")
         joined_row["ack_latency_ms_p50"] = stream_complete.get("ack_latency_ms_p50")
@@ -326,7 +361,8 @@ with JOINED_PATH.open("w", encoding="utf-8") as handle:
         handle.write("\n")
 
 scenarios = []
-for scenario_name in ["direct", "remote-1hop", "remote-2hop", "remote-3hop"]:
+scenario_names = sorted({row["scenario"] for row in joined}, key=scenario_sort_key)
+for scenario_name in scenario_names:
     rows = [row for row in joined if row["scenario"] == scenario_name]
     if not rows:
         continue
@@ -376,6 +412,24 @@ for scenario_name in ["direct", "remote-1hop", "remote-2hop", "remote-3hop"]:
                 [row.get("effective_cap_wait_events") for row in rows]
             ),
             "retransmit_rate": mean([row.get("retransmit_rate") for row in rows]),
+            "retransmit_timeout_ms_avg": mean(
+                [row.get("retransmit_timeout_ms_avg") for row in rows]
+            ),
+            "retransmit_timeout_ms_p95": mean(
+                [row.get("retransmit_timeout_ms_p95") for row in rows]
+            ),
+            "retransmit_trigger_count": mean(
+                [row.get("retransmit_trigger_count") for row in rows]
+            ),
+            "retransmit_early_count": mean(
+                [row.get("retransmit_early_count") for row in rows]
+            ),
+            "retransmit_late_count": mean(
+                [row.get("retransmit_late_count") for row in rows]
+            ),
+            "retransmit_rtt_ratio": mean(
+                [row.get("retransmit_rtt_ratio") for row in rows]
+            ),
             "ack_latency_ms_avg": mean([row.get("ack_latency_ms_avg") for row in rows]),
             "ack_latency_ms_p95": mean([row.get("ack_latency_ms_p95") for row in rows]),
             "avg_inflight": mean([row.get("avg_inflight") for row in rows]),
@@ -485,14 +539,14 @@ lines.append("")
 lines.append("## Scenario Averages")
 lines.append("")
 lines.append(
-    "| scenario | route | route ready ms | handshake ms | target connect ms | first target byte wait ms | exit first send delay ms | overlay first-send -> client ms | hard window stall ms | effective cap wait ms | exit/body tail ms | client total ms | retransmit rate | ack avg ms | ack p95 ms | max burst frames | pacing interval ms | pacing delay ms | burst prevented | effective cap avg | cap reduced | blocked by cap | window frames |"
+    "| scenario | route | route ready ms | handshake ms | target connect ms | first target byte wait ms | exit first send delay ms | overlay first-send -> client ms | hard window stall ms | effective cap wait ms | exit/body tail ms | client total ms | retransmit rate | retx timeout avg ms | retx timeout p95 ms | retx triggers | retx early | retx late | retx/RTT ratio | ack avg ms | ack p95 ms | max burst frames | pacing interval ms | pacing delay ms | burst prevented | effective cap avg | cap reduced | blocked by cap | window frames |"
 )
 lines.append(
-    "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |"
+    "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |"
 )
 for row in scenarios:
     lines.append(
-        "| {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} |".format(
+        "| {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} |".format(
             row["scenario"],
             row["route_length"],
             fmt_ms(row.get("route_ready_ms")),
@@ -506,6 +560,12 @@ for row in scenarios:
             fmt_ms(row.get("exit_body_tail_ms")),
             fmt_ms(row.get("total_avg_ms")),
             fmt_num(row.get("retransmit_rate"), 4),
+            fmt_ms(row.get("retransmit_timeout_ms_avg")),
+            fmt_ms(row.get("retransmit_timeout_ms_p95")),
+            fmt_num(row.get("retransmit_trigger_count"), 0),
+            fmt_num(row.get("retransmit_early_count"), 0),
+            fmt_num(row.get("retransmit_late_count"), 0),
+            fmt_num(row.get("retransmit_rtt_ratio"), 2),
             fmt_ms(row.get("ack_latency_ms_avg")),
             fmt_ms(row.get("ack_latency_ms_p95")),
             fmt_num(row.get("max_send_burst_frames"), 0),

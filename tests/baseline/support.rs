@@ -42,8 +42,7 @@ pub struct LocalBaselineSpec<'a> {
 #[derive(Debug, Clone)]
 pub struct RemoteBaselineConfig {
     pub local_listen: SocketAddr,
-    pub relay1_addr: String,
-    pub relay2_addr: Option<String>,
+    pub relay_addrs: Vec<String>,
     pub exit_addr: String,
     pub route_length: u8,
     pub exact_route_only: bool,
@@ -168,6 +167,7 @@ pub fn local_client_args(spec: &LocalBaselineSpec<'_>) -> ClientConfigCli {
         exit_addr: spec.exit_udp.to_string(),
         route_length: spec.route_length,
         relay2_addr,
+        extra_relay_addrs: None,
         client_key_path: "client.key".to_string(),
         relay_pubkey_path: "relay.pub".to_string(),
         route_cache_path: spec.route_cache_path.to_string(),
@@ -229,28 +229,46 @@ pub fn spawn_remote_client_process(config: &RemoteBaselineConfig) -> Result<Mana
 impl RemoteBaselineConfig {
     pub fn from_env() -> Result<Self> {
         let route_length = parse_env_or_default::<u8>("VPNNODE_BASELINE_REMOTE_ROUTE_LENGTH", 3)?;
-        if !(1..=3).contains(&route_length) {
-            bail!("VPNNODE_BASELINE_REMOTE_ROUTE_LENGTH must be 1, 2, or 3; got {route_length}");
+        if !(1..=5).contains(&route_length) {
+            bail!("VPNNODE_BASELINE_REMOTE_ROUTE_LENGTH must be in 1..=5; got {route_length}");
         }
 
         let exit_addr = required_env("VPNNODE_BASELINE_REMOTE_EXIT_ADDR")?;
         reject_loopback("VPNNODE_BASELINE_REMOTE_EXIT_ADDR", &exit_addr)?;
 
-        let relay1_addr = if route_length >= 2 {
+        let mut relay_addrs = Vec::new();
+        if route_length >= 2 {
             let value = required_env("VPNNODE_BASELINE_REMOTE_RELAY1_ADDR")?;
             reject_loopback("VPNNODE_BASELINE_REMOTE_RELAY1_ADDR", &value)?;
-            value
-        } else {
-            "127.0.0.1:1".to_string()
-        };
-
-        let relay2_addr = if route_length >= 3 {
+            relay_addrs.push(value);
+        }
+        if route_length >= 3 {
             let value = required_env("VPNNODE_BASELINE_REMOTE_RELAY2_ADDR")?;
             reject_loopback("VPNNODE_BASELINE_REMOTE_RELAY2_ADDR", &value)?;
-            Some(value)
-        } else {
-            None
-        };
+            relay_addrs.push(value);
+        }
+        if route_length >= 4 {
+            let extras_raw = required_env("VPNNODE_BASELINE_REMOTE_EXTRA_RELAY_ADDRS")?;
+            let extras = extras_raw
+                .split(',')
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(|value| value.to_string())
+                .collect::<Vec<_>>();
+            if extras.len() < route_length.saturating_sub(3) as usize {
+                bail!(
+                    "VPNNODE_BASELINE_REMOTE_EXTRA_RELAY_ADDRS must provide at least {} relay addr(s) for route_length={route_length}",
+                    route_length.saturating_sub(3)
+                );
+            }
+            for (idx, value) in extras.into_iter().enumerate() {
+                reject_loopback(
+                    &format!("VPNNODE_BASELINE_REMOTE_EXTRA_RELAY_ADDRS[{idx}]"),
+                    &value,
+                )?;
+                relay_addrs.push(value);
+            }
+        }
 
         Ok(Self {
             local_listen: parse_env_or_default(
@@ -259,8 +277,7 @@ impl RemoteBaselineConfig {
                     .parse()
                     .expect("default remote local listen"),
             )?,
-            relay1_addr,
-            relay2_addr,
+            relay_addrs,
             exit_addr,
             route_length,
             exact_route_only: parse_env_or_default(
@@ -295,28 +312,30 @@ impl RemoteBaselineConfig {
         route_cache_path: impl Into<String>,
         http_host: impl Into<String>,
     ) -> Result<Self> {
-        if !(1..=3).contains(&route_length) {
-            bail!("remote scenario route length must be 1, 2, or 3; got {route_length}");
+        if !(1..=self.route_length.max(1)).contains(&route_length) {
+            bail!(
+                "remote scenario route length must be in 1..={}; got {route_length}",
+                self.route_length
+            );
         }
-        if route_length >= 2 && self.relay1_addr == "127.0.0.1:1" {
-            bail!("relay1 is required for remote route length {route_length}");
-        }
-        if route_length >= 3 && self.relay2_addr.is_none() {
-            bail!("relay2 is required for remote route length 3");
+        let relay_count = route_length.saturating_sub(1) as usize;
+        if self.relay_addrs.len() < relay_count {
+            bail!(
+                "remote route length {} requires {} relay addr(s), but only {} are configured",
+                route_length,
+                relay_count,
+                self.relay_addrs.len()
+            );
         }
 
         Ok(Self {
             local_listen,
-            relay1_addr: if route_length >= 2 {
-                self.relay1_addr.clone()
-            } else {
-                "127.0.0.1:1".to_string()
-            },
-            relay2_addr: if route_length >= 3 {
-                self.relay2_addr.clone()
-            } else {
-                None
-            },
+            relay_addrs: self
+                .relay_addrs
+                .iter()
+                .take(relay_count)
+                .cloned()
+                .collect(),
             exit_addr: self.exit_addr.clone(),
             route_length,
             exact_route_only: self.exact_route_only,
@@ -329,19 +348,38 @@ impl RemoteBaselineConfig {
         })
     }
 
+    pub fn scenario_route_lengths(&self) -> Vec<u8> {
+        let mut routes = vec![1];
+        if self.route_length >= 2 {
+            routes.push(2);
+        }
+        if self.route_length >= 3 {
+            routes.push(3);
+        }
+        if self.route_length >= 5 {
+            routes.push(5);
+        } else if self.route_length == 4 {
+            routes.push(4);
+        }
+        routes.sort_unstable();
+        routes.dedup();
+        routes
+    }
+
     pub fn client_args(&self) -> ClientConfigCli {
         ClientConfigCli {
             local_listen: self.local_listen,
             mode: "tcp".to_string(),
-            relay_addr: if self.route_length == 1 {
-                "127.0.0.1:1".to_string()
-            } else {
-                self.relay1_addr.clone()
-            },
+            relay_addr: self
+                .relay_addrs
+                .first()
+                .cloned()
+                .unwrap_or_else(|| "127.0.0.1:1".to_string()),
             exit_addr: self.exit_addr.clone(),
             route_length: self.route_length,
-            relay2_addr: if self.route_length >= 3 {
-                self.relay2_addr.clone()
+            relay2_addr: self.relay_addrs.get(1).cloned(),
+            extra_relay_addrs: if self.relay_addrs.len() > 2 {
+                Some(self.relay_addrs[2..].to_vec())
             } else {
                 None
             },
@@ -362,12 +400,7 @@ impl RemoteBaselineConfig {
 
     pub fn route_chain(&self) -> String {
         let mut hops = vec!["client".to_string()];
-        if self.route_length >= 2 {
-            hops.push(self.relay1_addr.clone());
-        }
-        if let Some(relay2_addr) = &self.relay2_addr {
-            hops.push(relay2_addr.clone());
-        }
+        hops.extend(self.relay_addrs.iter().cloned());
         hops.push(self.exit_addr.clone());
         hops.push("target".to_string());
         hops.join(" -> ")
@@ -428,6 +461,12 @@ fn client_cli_args(args: &ClientConfigCli) -> Vec<String> {
     if let Some(relay2_addr) = &args.relay2_addr {
         cli_args.push("--relay2-addr".to_string());
         cli_args.push(relay2_addr.clone());
+    }
+    if let Some(extra_relays) = &args.extra_relay_addrs {
+        if !extra_relays.is_empty() {
+            cli_args.push("--extra-relay-addrs".to_string());
+            cli_args.push(extra_relays.join(","));
+        }
     }
     if args.exact_route_only {
         cli_args.push("--exact-route-only".to_string());

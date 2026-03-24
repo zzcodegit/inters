@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use crate::protocol::StreamFrame;
 
 const ACK_LATENCY_SAMPLE_CAP: usize = 4096;
+const RETRANSMIT_TIMEOUT_SAMPLE_CAP: usize = 4096;
 
 /// ACK-only control message payload (carried inside `TunnelMessage`).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -51,6 +52,14 @@ pub struct ReliableStream {
     pub total_ack_latency_ms_sum: u128,
     pub total_ack_latency_samples: u64,
     pub ack_latency_samples_ms: Vec<u64>,
+    pub total_retransmit_timeout_ms_sum: u128,
+    pub total_retransmit_timeout_samples: u64,
+    pub retransmit_timeout_samples_ms: Vec<u64>,
+    pub total_retransmit_rtt_ratio_sum: f64,
+    pub total_retransmit_rtt_ratio_samples: u64,
+    pub retransmit_trigger_count: u64,
+    pub retransmit_early_count: u64,
+    pub retransmit_late_count: u64,
     pub highest_ack_seq_seen: u64,
 }
 
@@ -61,6 +70,19 @@ pub struct AckLatencySummary {
     pub p50_ms: Option<u64>,
     pub p95_ms: Option<u64>,
     pub max_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct RetransmitBackoffSummary {
+    pub timeout_ms_avg: Option<u64>,
+    pub timeout_ms_min: Option<u64>,
+    pub timeout_ms_p50: Option<u64>,
+    pub timeout_ms_p95: Option<u64>,
+    pub timeout_ms_max: Option<u64>,
+    pub trigger_count: u64,
+    pub early_count: u64,
+    pub late_count: u64,
+    pub rtt_ratio_avg: Option<f64>,
 }
 
 pub struct UnackedEntry {
@@ -88,6 +110,14 @@ impl ReliableStream {
             total_ack_latency_ms_sum: 0,
             total_ack_latency_samples: 0,
             ack_latency_samples_ms: Vec::new(),
+            total_retransmit_timeout_ms_sum: 0,
+            total_retransmit_timeout_samples: 0,
+            retransmit_timeout_samples_ms: Vec::new(),
+            total_retransmit_rtt_ratio_sum: 0.0,
+            total_retransmit_rtt_ratio_samples: 0,
+            retransmit_trigger_count: 0,
+            retransmit_early_count: 0,
+            retransmit_late_count: 0,
             highest_ack_seq_seen: 0,
         }
     }
@@ -320,6 +350,80 @@ impl ReliableStream {
             self.total_frames_acked,
             self.total_retransmits,
         )
+    }
+
+    pub fn record_retransmit_timeout_sample(
+        &mut self,
+        timeout_ms: u64,
+        rtt_ratio: f64,
+        early: bool,
+        late: bool,
+    ) {
+        self.retransmit_trigger_count = self.retransmit_trigger_count.saturating_add(1);
+        self.total_retransmit_timeout_ms_sum = self
+            .total_retransmit_timeout_ms_sum
+            .saturating_add(timeout_ms as u128);
+        self.total_retransmit_timeout_samples =
+            self.total_retransmit_timeout_samples.saturating_add(1);
+        let remaining_capacity =
+            RETRANSMIT_TIMEOUT_SAMPLE_CAP.saturating_sub(self.retransmit_timeout_samples_ms.len());
+        if remaining_capacity > 0 {
+            self.retransmit_timeout_samples_ms.push(timeout_ms);
+        }
+        self.total_retransmit_rtt_ratio_sum += rtt_ratio;
+        self.total_retransmit_rtt_ratio_samples =
+            self.total_retransmit_rtt_ratio_samples.saturating_add(1);
+        if early {
+            self.retransmit_early_count = self.retransmit_early_count.saturating_add(1);
+        }
+        if late {
+            self.retransmit_late_count = self.retransmit_late_count.saturating_add(1);
+        }
+    }
+
+    pub fn retransmit_backoff_summary(&self) -> RetransmitBackoffSummary {
+        let timeout_ms_avg = if self.total_retransmit_timeout_samples == 0 {
+            None
+        } else {
+            Some(
+                (self.total_retransmit_timeout_ms_sum / self.total_retransmit_timeout_samples as u128)
+                    as u64,
+            )
+        };
+        let rtt_ratio_avg = if self.total_retransmit_rtt_ratio_samples == 0 {
+            None
+        } else {
+            Some(
+                self.total_retransmit_rtt_ratio_sum
+                    / self.total_retransmit_rtt_ratio_samples as f64,
+            )
+        };
+        if self.retransmit_timeout_samples_ms.is_empty() {
+            return RetransmitBackoffSummary {
+                timeout_ms_avg,
+                timeout_ms_min: None,
+                timeout_ms_p50: None,
+                timeout_ms_p95: None,
+                timeout_ms_max: None,
+                trigger_count: self.retransmit_trigger_count,
+                early_count: self.retransmit_early_count,
+                late_count: self.retransmit_late_count,
+                rtt_ratio_avg,
+            };
+        }
+        let mut samples = self.retransmit_timeout_samples_ms.clone();
+        samples.sort_unstable();
+        RetransmitBackoffSummary {
+            timeout_ms_avg,
+            timeout_ms_min: samples.first().copied(),
+            timeout_ms_p50: quantile_from_sorted_samples(&samples, 0.50),
+            timeout_ms_p95: quantile_from_sorted_samples(&samples, 0.95),
+            timeout_ms_max: samples.last().copied(),
+            trigger_count: self.retransmit_trigger_count,
+            early_count: self.retransmit_early_count,
+            late_count: self.retransmit_late_count,
+            rtt_ratio_avg,
+        }
     }
 
     /// Whether we can send a new frame without exceeding the window.
