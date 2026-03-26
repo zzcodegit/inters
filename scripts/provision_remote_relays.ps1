@@ -55,24 +55,15 @@ function Provision-Relay(
     [string]$HostKey,
     [string]$ConfigName,
     [string]$ServiceName,
-    [string]$ListenPort,
-    [string]$DownstreamAddr
+    [string]$ListenPort
 ) {
     $remote = "$User@$RemoteHost"
     $sshArgs = New-SshArgs -Password $Password -HostKey $HostKey
-    $downstreamParts = $DownstreamAddr.Split(":")
-    if ($downstreamParts.Count -ne 2) {
-        throw "DownstreamAddr must be host:port, got $DownstreamAddr"
-    }
-    $downstreamHost = $downstreamParts[0]
-    $downstreamPort = $downstreamParts[1]
     $configContent = @"
 role = "relay"
 bind_ip = "0.0.0.0"
 bind_port = $ListenPort
-peers = [
-  { ip = "$downstreamHost", port = $downstreamPort, protocol = "Udp" },
-]
+peers = []
 ants_enabled = false
 drain_timeout_sec = 20
 health_enabled = true
@@ -96,27 +87,44 @@ WantedBy=multi-user.target
 "@
     $configB64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($configContent))
     $unitB64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($unitContent))
-    $command = @'
-install -d -m 755 /etc/vpnnode /opt/vpnnode /opt/vpnnode/bin
-printf '%s' '__CONFIG_B64__' | base64 -d > /etc/vpnnode/__CONFIG_NAME__
-printf '%s' '__UNIT_B64__' | base64 -d > /etc/systemd/system/__SERVICE_NAME__
-systemctl daemon-reload
-systemctl enable __SERVICE_NAME__
-systemctl restart __SERVICE_NAME__
-systemctl is-active __SERVICE_NAME__
-'@
-    $command = $command `
-        -replace '__CONFIG_NAME__', $ConfigName `
-        -replace '__SERVICE_NAME__', $ServiceName `
-        -replace '__CONFIG_B64__', $configB64 `
-        -replace '__UNIT_B64__', $unitB64
+    $command = @(
+        'install -d -m 755 /etc/vpnnode /opt/vpnnode /opt/vpnnode/bin',
+        "printf '%s' '$configB64' | base64 -d > /etc/vpnnode/$ConfigName",
+        "printf '%s' '$unitB64' | base64 -d > /etc/systemd/system/$ServiceName",
+        "systemctl daemon-reload",
+        "systemctl enable $ServiceName",
+        "systemctl restart $ServiceName",
+        "systemctl is-active $ServiceName"
+    ) -join "; "
     Invoke-CheckedExternal -FailureMessage "failed to provision $Label on $RemoteHost" -Action {
         & $plink @sshArgs $remote $command
     }
-    Write-Host "provisioned label=$Label host=$RemoteHost service=$ServiceName listen_port=$ListenPort downstream=$DownstreamAddr"
+    Write-Host "provisioned label=$Label host=$RemoteHost service=$ServiceName listen_port=$ListenPort exact_route_mode=header_driven"
 }
 
-$labels = Get-OptionalCsvEnv "VPNNODE_REMOTE_PROVISION_RELAYS" @("relay3", "relay4")
+$labels = Get-OptionalCsvEnv "VPNNODE_REMOTE_PROVISION_RELAYS" @("relay1", "relay2", "relay3", "relay4", "relay5", "relay6")
+
+if ($labels -contains "relay1") {
+    Provision-Relay -Label "relay-1" `
+        -RemoteHost (Get-RequiredEnv "VPNNODE_REMOTE_RELAY1_HOST") `
+        -User (Get-OptionalEnv "VPNNODE_REMOTE_RELAY1_USER" "root") `
+        -Password (Get-RequiredEnv "VPNNODE_REMOTE_RELAY1_PASSWORD") `
+        -HostKey (Get-OptionalEnv "VPNNODE_REMOTE_RELAY1_HOSTKEY" "") `
+        -ConfigName "relay1.toml" `
+        -ServiceName "vpnnode-relay1.service" `
+        -ListenPort (Get-OptionalEnv "VPNNODE_REMOTE_RELAY1_PORT" "30001")
+}
+
+if ($labels -contains "relay2") {
+    Provision-Relay -Label "relay-2" `
+        -RemoteHost (Get-RequiredEnv "VPNNODE_REMOTE_RELAY2_HOST") `
+        -User (Get-OptionalEnv "VPNNODE_REMOTE_RELAY2_USER" "root") `
+        -Password (Get-RequiredEnv "VPNNODE_REMOTE_RELAY2_PASSWORD") `
+        -HostKey (Get-OptionalEnv "VPNNODE_REMOTE_RELAY2_HOSTKEY" "") `
+        -ConfigName "relay2.toml" `
+        -ServiceName "vpnnode-relay2.service" `
+        -ListenPort (Get-OptionalEnv "VPNNODE_REMOTE_RELAY2_PORT" "30002")
+}
 
 if ($labels -contains "relay3") {
     Provision-Relay -Label "relay-3" `
@@ -126,8 +134,7 @@ if ($labels -contains "relay3") {
         -HostKey (Get-OptionalEnv "VPNNODE_REMOTE_RELAY3_HOSTKEY" "") `
         -ConfigName "relay3.toml" `
         -ServiceName "vpnnode-relay3.service" `
-        -ListenPort (Get-OptionalEnv "VPNNODE_REMOTE_RELAY3_PORT" "30003") `
-        -DownstreamAddr (Get-OptionalEnv "VPNNODE_REMOTE_RELAY3_DOWNSTREAM" (Get-RequiredEnv "VPNNODE_BASELINE_REMOTE_EXIT_ADDR"))
+        -ListenPort (Get-OptionalEnv "VPNNODE_REMOTE_RELAY3_PORT" "30003")
 }
 
 if ($labels -contains "relay4") {
@@ -138,8 +145,7 @@ if ($labels -contains "relay4") {
         -HostKey (Get-OptionalEnv "VPNNODE_REMOTE_RELAY4_HOSTKEY" "") `
         -ConfigName "relay4.toml" `
         -ServiceName "vpnnode-relay4.service" `
-        -ListenPort (Get-OptionalEnv "VPNNODE_REMOTE_RELAY4_PORT" "30004") `
-        -DownstreamAddr (Get-OptionalEnv "VPNNODE_REMOTE_RELAY4_DOWNSTREAM" (Get-RequiredEnv "VPNNODE_BASELINE_REMOTE_EXIT_ADDR"))
+        -ListenPort (Get-OptionalEnv "VPNNODE_REMOTE_RELAY4_PORT" "30004")
 }
 
 if ($labels -contains "relay5") {
@@ -150,6 +156,16 @@ if ($labels -contains "relay5") {
         -HostKey (Get-OptionalEnv "VPNNODE_REMOTE_RELAY5_HOSTKEY" "") `
         -ConfigName "relay5.toml" `
         -ServiceName "vpnnode-relay5.service" `
-        -ListenPort (Get-OptionalEnv "VPNNODE_REMOTE_RELAY5_PORT" "30005") `
-        -DownstreamAddr (Get-OptionalEnv "VPNNODE_REMOTE_RELAY5_DOWNSTREAM" (Get-RequiredEnv "VPNNODE_BASELINE_REMOTE_EXIT_ADDR"))
+        -ListenPort (Get-OptionalEnv "VPNNODE_REMOTE_RELAY5_PORT" "30005")
+}
+
+if ($labels -contains "relay6") {
+    Provision-Relay -Label "relay-6" `
+        -RemoteHost (Get-RequiredEnv "VPNNODE_REMOTE_RELAY6_HOST") `
+        -User (Get-OptionalEnv "VPNNODE_REMOTE_RELAY6_USER" "root") `
+        -Password (Get-RequiredEnv "VPNNODE_REMOTE_RELAY6_PASSWORD") `
+        -HostKey (Get-OptionalEnv "VPNNODE_REMOTE_RELAY6_HOSTKEY" "") `
+        -ConfigName "relay6.toml" `
+        -ServiceName "vpnnode-relay6.service" `
+        -ListenPort (Get-OptionalEnv "VPNNODE_REMOTE_RELAY6_PORT" "30006")
 }

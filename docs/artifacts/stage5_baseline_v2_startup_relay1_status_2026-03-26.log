@@ -1,0 +1,20 @@
+﻿● vpnnode-relay1.service - vpnnode relay-1 node
+     Loaded: loaded (/etc/systemd/system/vpnnode-relay1.service; enabled; vendor preset: enabled)
+     Active: active (running) since Thu 2026-03-26 18:35:36 GMT; 11min ago
+   Main PID: 208354 (vpnnode)
+      Tasks: 2 (limit: 1012)
+     Memory: 684.0K
+        CPU: 18ms
+     CGroup: /system.slice/vpnnode-relay1.service
+             └─208354 /opt/vpnnode/bin/vpnnode run --config /etc/vpnnode/relay1.toml
+
+Mar 26 18:43:39 i1.pserver.space vpnnode[208354]: 2026-03-26T18:43:39.767441Z  INFO vpnnode::roles::relay: relay reverse path (first hop) forwarding to client at idx=0 from=Udp://31.192.232.26:30000 to=Udp://46.242.13.60:2058 idx=0
+Mar 26 18:43:39 i1.pserver.space vpnnode[208354]: 2026-03-26T18:43:39.804533Z  INFO vpnnode::roles::relay: relay reverse path (first hop) forwarding to client at idx=0 from=Udp://31.192.232.26:30000 to=Udp://46.242.13.60:2058 idx=0
+Mar 26 18:43:39 i1.pserver.space vpnnode[208354]: 2026-03-26T18:43:39.809348Z  INFO vpnnode::roles::relay: relay reverse path (first hop) forwarding to client at idx=0 from=Udp://31.192.232.26:30000 to=Udp://46.242.13.60:2058 idx=0
+Mar 26 18:43:39 i1.pserver.space vpnnode[208354]: 2026-03-26T18:43:39.832596Z  INFO vpnnode::roles::relay: relay forward path forwarding from idx=1 to downstream from=Udp://46.242.13.60:2058 to=Udp://31.192.232.26:30000 idx=0
+Mar 26 18:43:39 i1.pserver.space vpnnode[208354]: 2026-03-26T18:43:39.832802Z  INFO vpnnode::roles::relay: relay forward path forwarding from idx=1 to downstream from=Udp://46.242.13.60:2058 to=Udp://31.192.232.26:30000 idx=0
+Mar 26 18:43:39 i1.pserver.space vpnnode[208354]: 2026-03-26T18:43:39.833076Z  INFO vpnnode::roles::relay: relay forward path forwarding from idx=1 to downstream from=Udp://46.242.13.60:2058 to=Udp://31.192.232.26:30000 idx=0
+Mar 26 18:43:39 i1.pserver.space vpnnode[208354]: 2026-03-26T18:43:39.833559Z  INFO vpnnode::roles::relay: relay forward path forwarding from idx=1 to downstream from=Udp://46.242.13.60:2058 to=Udp://31.192.232.26:30000 idx=0
+Mar 26 18:43:39 i1.pserver.space vpnnode[208354]: 2026-03-26T18:43:39.915000Z  INFO vpnnode::roles::relay: relay reverse path (first hop) forwarding to client at idx=0 from=Udp://31.192.232.26:30000 to=Udp://46.242.13.60:2058 idx=0
+Mar 26 18:43:39 i1.pserver.space vpnnode[208354]: 2026-03-26T18:43:39.915803Z  INFO vpnnode::roles::relay: relay reverse path (first hop) forwarding to client at idx=0 from=Udp://31.192.232.26:30000 to=Udp://46.242.13.60:2058 idx=0
+Mar 26 18:43:39 i1.pserver.space vpnnode[208354]: 2026-03-26T18:43:39.915907Z  INFO vpnnode::roles::relay: relay reverse path (first hop) forwarding to client at idx=0 from=Udp://31.192.232.26:30000 to=Udp://46.242.13.60:2058 idx=0

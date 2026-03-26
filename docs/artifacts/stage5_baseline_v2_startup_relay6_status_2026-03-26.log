@@ -1,0 +1,15 @@
+﻿● vpnnode-relay6.service - vpnnode relay-6 node
+     Loaded: loaded (/etc/systemd/system/vpnnode-relay6.service; enabled; preset: enabled)
+     Active: active (running) since Thu 2026-03-26 18:41:52 UTC; 5min ago
+   Main PID: 9682 (vpnnode)
+      Tasks: 2 (limit: 1106)
+     Memory: 700.0K (peak: 952.0K)
+        CPU: 5ms
+     CGroup: /system.slice/vpnnode-relay6.service
+             └─9682 /opt/vpnnode/bin/vpnnode run --config /etc/vpnnode/relay6.toml
+
+Mar 26 18:41:52 snrtjbcyce systemd[1]: Started vpnnode-relay6.service - vpnnode relay-6 node.
+Mar 26 18:41:52 snrtjbcyce vpnnode[9682]: 2026-03-26T18:41:52.039047Z  INFO vpnnode: startup build=vpnnode v0.1.0 build_ts_ms=1774546772792
+Mar 26 18:41:52 snrtjbcyce vpnnode[9682]: 2026-03-26T18:41:52.041133Z  INFO vpnnode: loaded config role=Relay bind=0.0.0.0:30006 peers=0 ants=false
+Mar 26 18:41:52 snrtjbcyce vpnnode[9682]: 2026-03-26T18:41:52.041193Z  INFO vpnnode::roles::relay: relay listening (hop-by-hop) addr=0.0.0.0:30006
+Mar 26 18:41:52 snrtjbcyce vpnnode[9682]: 2026-03-26T18:41:52.041198Z  INFO vpnnode::roles::relay: node ready role="relay" addr=0.0.0.0:30006

@@ -1,0 +1,22 @@
+﻿● vpnnode-exit.service - vpnnode exit node
+     Loaded: loaded (/etc/systemd/system/vpnnode-exit.service; enabled; vendor preset: enabled)
+    Drop-In: /etc/systemd/system/vpnnode-exit.service.d
+             └─20-stage-trace.conf
+     Active: active (running) since Thu 2026-03-26 11:43:25 PDT; 4min 8s ago
+   Main PID: 241998 (vpnnode)
+      Tasks: 2 (limit: 1012)
+     Memory: 732.0K
+        CPU: 719ms
+     CGroup: /system.slice/vpnnode-exit.service
+             └─241998 /opt/vpnnode/bin/vpnnode run --config /etc/vpnnode/exit.toml
+
+Mar 26 11:43:50 i2.pserver.space vpnnode[241998]: 2026-03-26T18:43:50.057484Z  INFO vpnnode::roles::exit: VALIDATION_ARTIFACT,stream_id=2,site=remote-2hop,exit=Udp://31.192.232.26:30000,route=2,resp_bytes=188,frames_sent=1,avg_inflight=2.000,max_inflight=2,time_at_inflight_1_ms=0,retransmit_rate=0.000000,stream_duration_ms=150,throughput_bps=1253,ack_latency_ms_avg=0,http_code=200,is_final=0,mode=overlay
+Mar 26 11:43:50 i2.pserver.space vpnnode[241998]: 2026-03-26T18:43:50.057582Z  INFO vpnnode::roles::exit: VALIDATION_ARTIFACT_FINAL,stream_id=2,site=remote-2hop,exit=Udp://31.192.232.26:30000,route=2,resp_bytes=188,frames_sent=1,bursts_count=1,avg_inflight=2.000,max_inflight=2,time_at_inflight_1_ms=0,retransmit_rate=0.000000,stream_duration_ms=150,throughput_bps=1253,ack_latency_ms_avg=0,http_code=200,is_final=1,mode=overlay
+Mar 26 11:43:50 i2.pserver.space vpnnode[241998]: 2026-03-26T18:43:50.101587Z  INFO vpnnode::roles::exit: received via transport protocol=Udp from=Udp://45.197.133.115:30001 len=106
+Mar 26 11:43:50 i2.pserver.space vpnnode[241998]: 2026-03-26T18:43:50.101642Z  INFO vpnnode::roles::exit: exit reached final hop hop_index=1 route_len=2
+Mar 26 11:43:50 i2.pserver.space vpnnode[241998]: 2026-03-26T18:43:50.101942Z  INFO vpnnode::roles::exit: received via transport protocol=Udp from=Udp://45.197.133.115:30001 len=106
+Mar 26 11:43:50 i2.pserver.space vpnnode[241998]: 2026-03-26T18:43:50.101956Z  INFO vpnnode::roles::exit: exit reached final hop hop_index=1 route_len=2
+Mar 26 11:43:50 i2.pserver.space vpnnode[241998]: 2026-03-26T18:43:50.102038Z  INFO vpnnode::roles::exit: received via transport protocol=Udp from=Udp://45.197.133.115:30001 len=106
+Mar 26 11:43:50 i2.pserver.space vpnnode[241998]: 2026-03-26T18:43:50.102050Z  INFO vpnnode::roles::exit: exit reached final hop hop_index=1 route_len=2
+Mar 26 11:43:50 i2.pserver.space vpnnode[241998]: 2026-03-26T18:43:50.102239Z  INFO vpnnode::roles::exit: received via transport protocol=Udp from=Udp://45.197.133.115:30001 len=106
+Mar 26 11:43:50 i2.pserver.space vpnnode[241998]: 2026-03-26T18:43:50.102261Z  INFO vpnnode::roles::exit: exit reached final hop hop_index=1 route_len=2

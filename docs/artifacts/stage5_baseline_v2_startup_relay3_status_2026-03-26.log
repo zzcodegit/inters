@@ -1,0 +1,15 @@
+﻿● vpnnode-relay3.service - vpnnode relay-3 node
+     Loaded: loaded (/etc/systemd/system/vpnnode-relay3.service; enabled; preset: enabled)
+     Active: active (running) since Thu 2026-03-26 18:38:49 UTC; 8min ago
+   Main PID: 11786 (vpnnode)
+      Tasks: 2 (limit: 1106)
+     Memory: 704.0K (peak: 956.0K)
+        CPU: 5ms
+     CGroup: /system.slice/vpnnode-relay3.service
+             └─11786 /opt/vpnnode/bin/vpnnode run --config /etc/vpnnode/relay3.toml
+
+Mar 26 18:38:49 ymozeufnrt systemd[1]: Started vpnnode-relay3.service - vpnnode relay-3 node.
+Mar 26 18:38:49 ymozeufnrt vpnnode[11786]: 2026-03-26T18:38:49.437207Z  INFO vpnnode: startup build=vpnnode v0.1.0 build_ts_ms=1774546772792
+Mar 26 18:38:49 ymozeufnrt vpnnode[11786]: 2026-03-26T18:38:49.440135Z  INFO vpnnode: loaded config role=Relay bind=0.0.0.0:30003 peers=0 ants=false
+Mar 26 18:38:49 ymozeufnrt vpnnode[11786]: 2026-03-26T18:38:49.440207Z  INFO vpnnode::roles::relay: relay listening (hop-by-hop) addr=0.0.0.0:30003
+Mar 26 18:38:49 ymozeufnrt vpnnode[11786]: 2026-03-26T18:38:49.440213Z  INFO vpnnode::roles::relay: node ready role="relay" addr=0.0.0.0:30003

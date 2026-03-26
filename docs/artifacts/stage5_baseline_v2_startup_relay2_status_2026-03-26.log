@@ -1,0 +1,15 @@
+﻿● vpnnode-relay2.service - vpnnode relay-2 node
+     Loaded: loaded (/etc/systemd/system/vpnnode-relay2.service; enabled; vendor preset: enabled)
+     Active: active (running) since Thu 2026-03-26 19:37:18 CET; 10min ago
+   Main PID: 174838 (vpnnode)
+      Tasks: 2 (limit: 1012)
+     Memory: 676.0K
+        CPU: 8ms
+     CGroup: /system.slice/vpnnode-relay2.service
+             └─174838 /opt/vpnnode/bin/vpnnode run --config /etc/vpnnode/relay2.toml
+
+Mar 26 19:37:18 i.pserver.space systemd[1]: Started vpnnode relay-2 node.
+Mar 26 19:37:18 i.pserver.space vpnnode[174838]: 2026-03-26T18:37:18.350925Z  INFO vpnnode: startup build=vpnnode v0.1.0 build_ts_ms=1774546772792
+Mar 26 19:37:18 i.pserver.space vpnnode[174838]: 2026-03-26T18:37:18.360026Z  INFO vpnnode: loaded config role=Relay bind=0.0.0.0:30002 peers=0 ants=false
+Mar 26 19:37:18 i.pserver.space vpnnode[174838]: 2026-03-26T18:37:18.362687Z  INFO vpnnode::roles::relay: relay listening (hop-by-hop) addr=0.0.0.0:30002
+Mar 26 19:37:18 i.pserver.space vpnnode[174838]: 2026-03-26T18:37:18.368944Z  INFO vpnnode::roles::relay: node ready role="relay" addr=0.0.0.0:30002

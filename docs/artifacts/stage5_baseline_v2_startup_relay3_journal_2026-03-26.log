@@ -1,0 +1,40 @@
+﻿2026-03-26T18:10:26+00:00 ymozeufnrt vpnnode[11296]: 2026-03-26T18:10:26.941026Z  INFO vpnnode::roles::relay: relay listening (hop-by-hop) addr=0.0.0.0:30003
+2026-03-26T18:10:26+00:00 ymozeufnrt vpnnode[11296]: 2026-03-26T18:10:26.941031Z  INFO vpnnode::roles::relay: node ready role="relay" addr=0.0.0.0:30003
+2026-03-26T18:19:09+00:00 ymozeufnrt systemd[1]: Stopping vpnnode-relay3.service - vpnnode relay-3 node...
+2026-03-26T18:19:09+00:00 ymozeufnrt vpnnode[11296]: 2026-03-26T18:19:09.675962Z  INFO vpnnode::ops::drain: [drain] activated timeout_sec=20 deadline_ms=1774549169675
+2026-03-26T18:20:39+00:00 ymozeufnrt systemd[1]: vpnnode-relay3.service: State 'stop-sigterm' timed out. Killing.
+2026-03-26T18:20:39+00:00 ymozeufnrt systemd[1]: vpnnode-relay3.service: Killing process 11296 (vpnnode) with signal SIGKILL.
+2026-03-26T18:20:39+00:00 ymozeufnrt systemd[1]: vpnnode-relay3.service: Main process exited, code=killed, status=9/KILL
+2026-03-26T18:20:39+00:00 ymozeufnrt systemd[1]: vpnnode-relay3.service: Failed with result 'timeout'.
+2026-03-26T18:20:39+00:00 ymozeufnrt systemd[1]: Stopped vpnnode-relay3.service - vpnnode relay-3 node.
+2026-03-26T18:20:39+00:00 ymozeufnrt systemd[1]: Started vpnnode-relay3.service - vpnnode relay-3 node.
+2026-03-26T18:20:39+00:00 ymozeufnrt vpnnode[11436]: 2026-03-26T18:20:39.939306Z  INFO vpnnode: startup build=vpnnode v0.1.0 build_ts_ms=1774546772792
+2026-03-26T18:20:39+00:00 ymozeufnrt vpnnode[11436]: 2026-03-26T18:20:39.942251Z  INFO vpnnode: loaded config role=Relay bind=0.0.0.0:30003 peers=0 ants=false
+2026-03-26T18:20:39+00:00 ymozeufnrt vpnnode[11436]: 2026-03-26T18:20:39.942318Z  INFO vpnnode::roles::relay: relay listening (hop-by-hop) addr=0.0.0.0:30003
+2026-03-26T18:20:39+00:00 ymozeufnrt vpnnode[11436]: 2026-03-26T18:20:39.942323Z  INFO vpnnode::roles::relay: node ready role="relay" addr=0.0.0.0:30003
+2026-03-26T18:25:37+00:00 ymozeufnrt vpnnode[11436]: 2026-03-26T18:25:37.988137Z  INFO vpnnode::ops::drain: [drain] activated timeout_sec=20 deadline_ms=1774549557988
+2026-03-26T18:25:37+00:00 ymozeufnrt systemd[1]: Stopping vpnnode-relay3.service - vpnnode relay-3 node...
+2026-03-26T18:27:08+00:00 ymozeufnrt systemd[1]: vpnnode-relay3.service: State 'stop-sigterm' timed out. Killing.
+2026-03-26T18:27:08+00:00 ymozeufnrt systemd[1]: vpnnode-relay3.service: Killing process 11436 (vpnnode) with signal SIGKILL.
+2026-03-26T18:27:08+00:00 ymozeufnrt systemd[1]: vpnnode-relay3.service: Failed to kill control group /system.slice/vpnnode-relay3.service, ignoring: Invalid argument
+2026-03-26T18:27:08+00:00 ymozeufnrt systemd[1]: vpnnode-relay3.service: Main process exited, code=killed, status=9/KILL
+2026-03-26T18:27:08+00:00 ymozeufnrt systemd[1]: vpnnode-relay3.service: Failed with result 'timeout'.
+2026-03-26T18:27:08+00:00 ymozeufnrt systemd[1]: Stopped vpnnode-relay3.service - vpnnode relay-3 node.
+2026-03-26T18:27:08+00:00 ymozeufnrt systemd[1]: Started vpnnode-relay3.service - vpnnode relay-3 node.
+2026-03-26T18:27:08+00:00 ymozeufnrt vpnnode[11532]: 2026-03-26T18:27:08.194959Z  INFO vpnnode: startup build=vpnnode v0.1.0 build_ts_ms=1774546772792
+2026-03-26T18:27:08+00:00 ymozeufnrt vpnnode[11532]: 2026-03-26T18:27:08.198046Z  INFO vpnnode: loaded config role=Relay bind=0.0.0.0:30003 peers=0 ants=false
+2026-03-26T18:27:08+00:00 ymozeufnrt vpnnode[11532]: 2026-03-26T18:27:08.198139Z  INFO vpnnode::roles::relay: relay listening (hop-by-hop) addr=0.0.0.0:30003
+2026-03-26T18:27:08+00:00 ymozeufnrt vpnnode[11532]: 2026-03-26T18:27:08.198147Z  INFO vpnnode::roles::relay: node ready role="relay" addr=0.0.0.0:30003
+2026-03-26T18:37:19+00:00 ymozeufnrt vpnnode[11532]: 2026-03-26T18:37:19.273564Z  INFO vpnnode::ops::drain: [drain] activated timeout_sec=20 deadline_ms=1774550259273
+2026-03-26T18:37:19+00:00 ymozeufnrt systemd[1]: Stopping vpnnode-relay3.service - vpnnode relay-3 node...
+2026-03-26T18:38:49+00:00 ymozeufnrt systemd[1]: vpnnode-relay3.service: State 'stop-sigterm' timed out. Killing.
+2026-03-26T18:38:49+00:00 ymozeufnrt systemd[1]: vpnnode-relay3.service: Killing process 11532 (vpnnode) with signal SIGKILL.
+2026-03-26T18:38:49+00:00 ymozeufnrt systemd[1]: vpnnode-relay3.service: Failed to kill control group /system.slice/vpnnode-relay3.service, ignoring: Invalid argument
+2026-03-26T18:38:49+00:00 ymozeufnrt systemd[1]: vpnnode-relay3.service: Main process exited, code=killed, status=9/KILL
+2026-03-26T18:38:49+00:00 ymozeufnrt systemd[1]: vpnnode-relay3.service: Failed with result 'timeout'.
+2026-03-26T18:38:49+00:00 ymozeufnrt systemd[1]: Stopped vpnnode-relay3.service - vpnnode relay-3 node.
+2026-03-26T18:38:49+00:00 ymozeufnrt systemd[1]: Started vpnnode-relay3.service - vpnnode relay-3 node.
+2026-03-26T18:38:49+00:00 ymozeufnrt vpnnode[11786]: 2026-03-26T18:38:49.437207Z  INFO vpnnode: startup build=vpnnode v0.1.0 build_ts_ms=1774546772792
+2026-03-26T18:38:49+00:00 ymozeufnrt vpnnode[11786]: 2026-03-26T18:38:49.440135Z  INFO vpnnode: loaded config role=Relay bind=0.0.0.0:30003 peers=0 ants=false
+2026-03-26T18:38:49+00:00 ymozeufnrt vpnnode[11786]: 2026-03-26T18:38:49.440207Z  INFO vpnnode::roles::relay: relay listening (hop-by-hop) addr=0.0.0.0:30003
+2026-03-26T18:38:49+00:00 ymozeufnrt vpnnode[11786]: 2026-03-26T18:38:49.440213Z  INFO vpnnode::roles::relay: node ready role="relay" addr=0.0.0.0:30003

@@ -1,0 +1,5 @@
+   Compiling vpnnode v0.1.0 (C:\neinternet\vpnnode_stage5_baseline_v2_exact_route)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 7.33s
+     Running tests\remote_baseline.rs (target\debug\deps\remote_baseline-5879b8b4a197b6ef.exe)
+remote_scenario=1hop local_listen=127.0.0.1:19081 route_length=1 exact_route_only=true target_scheme=http expected_status=200 ready_timeout_secs=90 probe_attempt_timeout_secs=45 route_chain=client -> 31.192.232.26:30000 -> target http_host=remote-1hop
+remote_scenario=1hop observed_status=200 response_bytes=188 duration_ms=1365 route_chain=client -> 31.192.232.26:30000 -> target http_host=remote-1hop

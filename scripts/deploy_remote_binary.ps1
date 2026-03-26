@@ -79,13 +79,13 @@ function Deploy-Node(
     Invoke-CheckedExternal -FailureMessage "failed to copy binary to $Label ($RemoteHost)" -Action {
         & $pscp @sshArgs $LocalBinary "${remote}:${remoteTmp}"
     }
-    $command = @"
-install -d -m 755 "$remoteDir"
-install -D -m 755 "$remoteTmp" "$RemoteBinary"
-rm -f "$remoteTmp"
-systemctl restart $Service
-systemctl is-active $Service
-"@
+    $command = @(
+        "install -d -m 755 `"$remoteDir`"",
+        "install -D -m 755 `"$remoteTmp`" `"$RemoteBinary`"",
+        "rm -f `"$remoteTmp`"",
+        "systemctl restart $Service",
+        "systemctl is-active $Service"
+    ) -join "; "
     Invoke-CheckedExternal -FailureMessage "failed to install/restart $Service on $Label ($RemoteHost)" -Action {
         & $plink @sshArgs $remote $command
     }
@@ -98,7 +98,7 @@ if (-not (Test-Path $localBinary)) {
 }
 
 $remoteBinary = Get-OptionalEnv "VPNNODE_REMOTE_BINARY_PATH" "/opt/vpnnode/bin/vpnnode"
-$deployLabels = Get-OptionalCsvEnv "VPNNODE_REMOTE_DEPLOY_LABELS" @("relay1", "relay2", "exit")
+$deployLabels = Get-OptionalCsvEnv "VPNNODE_REMOTE_DEPLOY_LABELS" @("relay1", "relay2", "relay3", "relay4", "relay5", "relay6", "exit")
 
 if ($deployLabels -contains "relay1") {
     Deploy-Node -Label "relay-1" `
@@ -151,6 +151,17 @@ if ($deployLabels -contains "relay5") {
         -Password (Get-RequiredEnv "VPNNODE_REMOTE_RELAY5_PASSWORD") `
         -HostKey (Get-OptionalEnv "VPNNODE_REMOTE_RELAY5_HOSTKEY" "") `
         -Service "vpnnode-relay5.service" `
+        -LocalBinary $localBinary `
+        -RemoteBinary $remoteBinary
+}
+
+if ($deployLabels -contains "relay6") {
+    Deploy-Node -Label "relay-6" `
+        -RemoteHost (Get-RequiredEnv "VPNNODE_REMOTE_RELAY6_HOST") `
+        -User (Get-OptionalEnv "VPNNODE_REMOTE_RELAY6_USER" "root") `
+        -Password (Get-RequiredEnv "VPNNODE_REMOTE_RELAY6_PASSWORD") `
+        -HostKey (Get-OptionalEnv "VPNNODE_REMOTE_RELAY6_HOSTKEY" "") `
+        -Service "vpnnode-relay6.service" `
         -LocalBinary $localBinary `
         -RemoteBinary $remoteBinary
 }

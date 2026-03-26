@@ -1,0 +1,40 @@
+﻿2026-03-26T19:08:55+0100 i.pserver.space vpnnode[174596]: 2026-03-26T18:08:55.860627Z  INFO vpnnode::roles::relay: node ready role="relay" addr=0.0.0.0:30002
+2026-03-26T19:17:38+0100 i.pserver.space vpnnode[174596]: 2026-03-26T18:17:38.557135Z  INFO vpnnode::ops::drain: [drain] activated timeout_sec=20 deadline_ms=1774549078556
+2026-03-26T19:17:38+0100 i.pserver.space systemd[1]: Stopping vpnnode relay-2 node...
+2026-03-26T19:19:08+0100 i.pserver.space systemd[1]: vpnnode-relay2.service: State 'stop-sigterm' timed out. Killing.
+2026-03-26T19:19:08+0100 i.pserver.space systemd[1]: vpnnode-relay2.service: Killing process 174596 (vpnnode) with signal SIGKILL.
+2026-03-26T19:19:08+0100 i.pserver.space systemd[1]: vpnnode-relay2.service: Killing process 174599 (tokio-rt-worker) with signal SIGKILL.
+2026-03-26T19:19:08+0100 i.pserver.space systemd[1]: vpnnode-relay2.service: Main process exited, code=killed, status=9/KILL
+2026-03-26T19:19:08+0100 i.pserver.space systemd[1]: vpnnode-relay2.service: Failed with result 'timeout'.
+2026-03-26T19:19:08+0100 i.pserver.space systemd[1]: Stopped vpnnode relay-2 node.
+2026-03-26T19:19:08+0100 i.pserver.space systemd[1]: Started vpnnode relay-2 node.
+2026-03-26T19:19:08+0100 i.pserver.space vpnnode[174664]: 2026-03-26T18:19:08.851266Z  INFO vpnnode: startup build=vpnnode v0.1.0 build_ts_ms=1774546772792
+2026-03-26T19:19:08+0100 i.pserver.space vpnnode[174664]: 2026-03-26T18:19:08.854062Z  INFO vpnnode: loaded config role=Relay bind=0.0.0.0:30002 peers=0 ants=false
+2026-03-26T19:19:08+0100 i.pserver.space vpnnode[174664]: 2026-03-26T18:19:08.860704Z  INFO vpnnode::roles::relay: relay listening (hop-by-hop) addr=0.0.0.0:30002
+2026-03-26T19:19:08+0100 i.pserver.space vpnnode[174664]: 2026-03-26T18:19:08.861274Z  INFO vpnnode::roles::relay: node ready role="relay" addr=0.0.0.0:30002
+2026-03-26T19:24:06+0100 i.pserver.space vpnnode[174664]: 2026-03-26T18:24:06.851317Z  INFO vpnnode::ops::drain: [drain] activated timeout_sec=20 deadline_ms=1774549466851
+2026-03-26T19:24:06+0100 i.pserver.space systemd[1]: Stopping vpnnode relay-2 node...
+2026-03-26T19:25:37+0100 i.pserver.space systemd[1]: vpnnode-relay2.service: State 'stop-sigterm' timed out. Killing.
+2026-03-26T19:25:37+0100 i.pserver.space systemd[1]: vpnnode-relay2.service: Killing process 174664 (vpnnode) with signal SIGKILL.
+2026-03-26T19:25:37+0100 i.pserver.space systemd[1]: vpnnode-relay2.service: Killing process 174667 (tokio-rt-worker) with signal SIGKILL.
+2026-03-26T19:25:37+0100 i.pserver.space systemd[1]: vpnnode-relay2.service: Main process exited, code=killed, status=9/KILL
+2026-03-26T19:25:37+0100 i.pserver.space systemd[1]: vpnnode-relay2.service: Failed with result 'timeout'.
+2026-03-26T19:25:37+0100 i.pserver.space systemd[1]: Stopped vpnnode relay-2 node.
+2026-03-26T19:25:37+0100 i.pserver.space systemd[1]: Started vpnnode relay-2 node.
+2026-03-26T19:25:37+0100 i.pserver.space vpnnode[174716]: 2026-03-26T18:25:37.094164Z  INFO vpnnode: startup build=vpnnode v0.1.0 build_ts_ms=1774546772792
+2026-03-26T19:25:37+0100 i.pserver.space vpnnode[174716]: 2026-03-26T18:25:37.107653Z  INFO vpnnode: loaded config role=Relay bind=0.0.0.0:30002 peers=0 ants=false
+2026-03-26T19:25:37+0100 i.pserver.space vpnnode[174716]: 2026-03-26T18:25:37.108236Z  INFO vpnnode::roles::relay: relay listening (hop-by-hop) addr=0.0.0.0:30002
+2026-03-26T19:25:37+0100 i.pserver.space vpnnode[174716]: 2026-03-26T18:25:37.108565Z  INFO vpnnode::roles::relay: node ready role="relay" addr=0.0.0.0:30002
+2026-03-26T19:35:48+0100 i.pserver.space vpnnode[174716]: 2026-03-26T18:35:48.113817Z  INFO vpnnode::ops::drain: [drain] activated timeout_sec=20 deadline_ms=1774550168113
+2026-03-26T19:35:48+0100 i.pserver.space systemd[1]: Stopping vpnnode relay-2 node...
+2026-03-26T19:37:18+0100 i.pserver.space systemd[1]: vpnnode-relay2.service: State 'stop-sigterm' timed out. Killing.
+2026-03-26T19:37:18+0100 i.pserver.space systemd[1]: vpnnode-relay2.service: Killing process 174716 (vpnnode) with signal SIGKILL.
+2026-03-26T19:37:18+0100 i.pserver.space systemd[1]: vpnnode-relay2.service: Killing process 174719 (tokio-rt-worker) with signal SIGKILL.
+2026-03-26T19:37:18+0100 i.pserver.space systemd[1]: vpnnode-relay2.service: Main process exited, code=killed, status=9/KILL
+2026-03-26T19:37:18+0100 i.pserver.space systemd[1]: vpnnode-relay2.service: Failed with result 'timeout'.
+2026-03-26T19:37:18+0100 i.pserver.space systemd[1]: Stopped vpnnode relay-2 node.
+2026-03-26T19:37:18+0100 i.pserver.space systemd[1]: Started vpnnode relay-2 node.
+2026-03-26T19:37:18+0100 i.pserver.space vpnnode[174838]: 2026-03-26T18:37:18.350925Z  INFO vpnnode: startup build=vpnnode v0.1.0 build_ts_ms=1774546772792
+2026-03-26T19:37:18+0100 i.pserver.space vpnnode[174838]: 2026-03-26T18:37:18.360026Z  INFO vpnnode: loaded config role=Relay bind=0.0.0.0:30002 peers=0 ants=false
+2026-03-26T19:37:18+0100 i.pserver.space vpnnode[174838]: 2026-03-26T18:37:18.362687Z  INFO vpnnode::roles::relay: relay listening (hop-by-hop) addr=0.0.0.0:30002
+2026-03-26T19:37:18+0100 i.pserver.space vpnnode[174838]: 2026-03-26T18:37:18.368944Z  INFO vpnnode::roles::relay: node ready role="relay" addr=0.0.0.0:30002

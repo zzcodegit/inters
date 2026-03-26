@@ -1,0 +1,40 @@
+﻿2026-03-26T18:11:58+00:00 snrtjbcyce vpnnode[8979]: 2026-03-26T18:11:58.038260Z  INFO vpnnode: loaded config role=Relay bind=0.0.0.0:30004 peers=0 ants=false
+2026-03-26T18:11:58+00:00 snrtjbcyce vpnnode[8979]: 2026-03-26T18:11:58.038343Z  INFO vpnnode::roles::relay: relay listening (hop-by-hop) addr=0.0.0.0:30004
+2026-03-26T18:11:58+00:00 snrtjbcyce vpnnode[8979]: 2026-03-26T18:11:58.038349Z  INFO vpnnode::roles::relay: node ready role="relay" addr=0.0.0.0:30004
+2026-03-26T18:20:40+00:00 snrtjbcyce vpnnode[8979]: 2026-03-26T18:20:40.806007Z  INFO vpnnode::ops::drain: [drain] activated timeout_sec=20 deadline_ms=1774549260805
+2026-03-26T18:20:40+00:00 snrtjbcyce systemd[1]: Stopping vpnnode-relay4.service - vpnnode relay-4 node...
+2026-03-26T18:22:11+00:00 snrtjbcyce systemd[1]: vpnnode-relay4.service: State 'stop-sigterm' timed out. Killing.
+2026-03-26T18:22:11+00:00 snrtjbcyce systemd[1]: vpnnode-relay4.service: Killing process 8979 (vpnnode) with signal SIGKILL.
+2026-03-26T18:22:11+00:00 snrtjbcyce systemd[1]: vpnnode-relay4.service: Failed to kill control group /system.slice/vpnnode-relay4.service, ignoring: Invalid argument
+2026-03-26T18:22:11+00:00 snrtjbcyce systemd[1]: vpnnode-relay4.service: Main process exited, code=killed, status=9/KILL
+2026-03-26T18:22:11+00:00 snrtjbcyce systemd[1]: vpnnode-relay4.service: Failed with result 'timeout'.
+2026-03-26T18:22:11+00:00 snrtjbcyce systemd[1]: Stopped vpnnode-relay4.service - vpnnode relay-4 node.
+2026-03-26T18:22:11+00:00 snrtjbcyce systemd[1]: Started vpnnode-relay4.service - vpnnode relay-4 node.
+2026-03-26T18:22:11+00:00 snrtjbcyce vpnnode[9187]: 2026-03-26T18:22:11.032613Z  INFO vpnnode: startup build=vpnnode v0.1.0 build_ts_ms=1774546772792
+2026-03-26T18:22:11+00:00 snrtjbcyce vpnnode[9187]: 2026-03-26T18:22:11.034563Z  INFO vpnnode: loaded config role=Relay bind=0.0.0.0:30004 peers=0 ants=false
+2026-03-26T18:22:11+00:00 snrtjbcyce vpnnode[9187]: 2026-03-26T18:22:11.035655Z  INFO vpnnode::roles::relay: relay listening (hop-by-hop) addr=0.0.0.0:30004
+2026-03-26T18:22:11+00:00 snrtjbcyce vpnnode[9187]: 2026-03-26T18:22:11.035953Z  INFO vpnnode::roles::relay: node ready role="relay" addr=0.0.0.0:30004
+2026-03-26T18:27:09+00:00 snrtjbcyce systemd[1]: Stopping vpnnode-relay4.service - vpnnode relay-4 node...
+2026-03-26T18:27:09+00:00 snrtjbcyce vpnnode[9187]: 2026-03-26T18:27:09.034365Z  INFO vpnnode::ops::drain: [drain] activated timeout_sec=20 deadline_ms=1774549649034
+2026-03-26T18:28:39+00:00 snrtjbcyce systemd[1]: vpnnode-relay4.service: State 'stop-sigterm' timed out. Killing.
+2026-03-26T18:28:39+00:00 snrtjbcyce systemd[1]: vpnnode-relay4.service: Killing process 9187 (vpnnode) with signal SIGKILL.
+2026-03-26T18:28:39+00:00 snrtjbcyce systemd[1]: vpnnode-relay4.service: Main process exited, code=killed, status=9/KILL
+2026-03-26T18:28:39+00:00 snrtjbcyce systemd[1]: vpnnode-relay4.service: Failed with result 'timeout'.
+2026-03-26T18:28:39+00:00 snrtjbcyce systemd[1]: Stopped vpnnode-relay4.service - vpnnode relay-4 node.
+2026-03-26T18:28:39+00:00 snrtjbcyce systemd[1]: Started vpnnode-relay4.service - vpnnode relay-4 node.
+2026-03-26T18:28:39+00:00 snrtjbcyce vpnnode[9296]: 2026-03-26T18:28:39.284740Z  INFO vpnnode: startup build=vpnnode v0.1.0 build_ts_ms=1774546772792
+2026-03-26T18:28:39+00:00 snrtjbcyce vpnnode[9296]: 2026-03-26T18:28:39.286281Z  INFO vpnnode: loaded config role=Relay bind=0.0.0.0:30004 peers=0 ants=false
+2026-03-26T18:28:39+00:00 snrtjbcyce vpnnode[9296]: 2026-03-26T18:28:39.286339Z  INFO vpnnode::roles::relay: relay listening (hop-by-hop) addr=0.0.0.0:30004
+2026-03-26T18:28:39+00:00 snrtjbcyce vpnnode[9296]: 2026-03-26T18:28:39.286344Z  INFO vpnnode::roles::relay: node ready role="relay" addr=0.0.0.0:30004
+2026-03-26T18:38:50+00:00 snrtjbcyce systemd[1]: Stopping vpnnode-relay4.service - vpnnode relay-4 node...
+2026-03-26T18:38:50+00:00 snrtjbcyce vpnnode[9296]: 2026-03-26T18:38:50.933079Z  INFO vpnnode::ops::drain: [drain] activated timeout_sec=20 deadline_ms=1774550350933
+2026-03-26T18:40:21+00:00 snrtjbcyce systemd[1]: vpnnode-relay4.service: State 'stop-sigterm' timed out. Killing.
+2026-03-26T18:40:21+00:00 snrtjbcyce systemd[1]: vpnnode-relay4.service: Killing process 9296 (vpnnode) with signal SIGKILL.
+2026-03-26T18:40:21+00:00 snrtjbcyce systemd[1]: vpnnode-relay4.service: Main process exited, code=killed, status=9/KILL
+2026-03-26T18:40:21+00:00 snrtjbcyce systemd[1]: vpnnode-relay4.service: Failed with result 'timeout'.
+2026-03-26T18:40:21+00:00 snrtjbcyce systemd[1]: Stopped vpnnode-relay4.service - vpnnode relay-4 node.
+2026-03-26T18:40:21+00:00 snrtjbcyce systemd[1]: Started vpnnode-relay4.service - vpnnode relay-4 node.
+2026-03-26T18:40:21+00:00 snrtjbcyce vpnnode[9615]: 2026-03-26T18:40:21.035270Z  INFO vpnnode: startup build=vpnnode v0.1.0 build_ts_ms=1774546772792
+2026-03-26T18:40:21+00:00 snrtjbcyce vpnnode[9615]: 2026-03-26T18:40:21.037586Z  INFO vpnnode: loaded config role=Relay bind=0.0.0.0:30004 peers=0 ants=false
+2026-03-26T18:40:21+00:00 snrtjbcyce vpnnode[9615]: 2026-03-26T18:40:21.039035Z  INFO vpnnode::roles::relay: relay listening (hop-by-hop) addr=0.0.0.0:30004
+2026-03-26T18:40:21+00:00 snrtjbcyce vpnnode[9615]: 2026-03-26T18:40:21.039049Z  INFO vpnnode::roles::relay: node ready role="relay" addr=0.0.0.0:30004

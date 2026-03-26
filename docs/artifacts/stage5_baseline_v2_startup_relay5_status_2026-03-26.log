@@ -1,0 +1,7 @@
+﻿plink.exe : Access denied
+At line:18 char:5
++     & $plink -batch -pw $n.Pw ("root@{0}" -f $n.Host) ("systemctl sta ...
++     ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (Access denied:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
