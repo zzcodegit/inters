@@ -150,9 +150,6 @@ impl NodeConfig {
         }
         match self.role {
             NodeRole::Relay => {
-                if self.peers.is_empty() {
-                    anyhow::bail!("relay requires at least one peer (exit addr) in peers[]");
-                }
                 if self.peers.iter().any(|p| p.protocol != Protocol::Udp) {
                     anyhow::bail!("relay peers must be UDP for this stage");
                 }
@@ -242,7 +239,6 @@ role = "relay"
 bind_ip = "127.0.0.1"
 bind_port = 30000
 drain_timeout_sec = 0
-peers = [{ ip = "127.0.0.1", port = 30001, protocol = "Udp" }]
 "#,
         )
         .unwrap();
@@ -257,7 +253,6 @@ peers = [{ ip = "127.0.0.1", port = 30001, protocol = "Udp" }]
 role = "relay"
 bind_ip = "127.0.0.1"
 bind_port = 30000
-peers = [{ ip = "127.0.0.1", port = 30001, protocol = "Udp" }]
 discovery_max_entries = 0
 discovery_advertise_ttl_sec = 0
 "#,
@@ -328,5 +323,19 @@ exit_response_inflight_discipline_enabled = false
         )
         .unwrap();
         assert!(!cfg.exit_response_inflight_discipline_enabled);
+    }
+
+    #[test]
+    fn relay_without_peers_is_valid_for_exact_route_forwarding() {
+        let cfg: NodeConfig = toml::from_str(
+            r#"
+role = "relay"
+bind_ip = "0.0.0.0"
+bind_port = 30001
+peers = []
+"#,
+        )
+        .unwrap();
+        cfg.validate().unwrap();
     }
 }

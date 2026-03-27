@@ -163,9 +163,6 @@ async fn run_from_config(path: &PathBuf, drain: bool) -> anyhow::Result<()> {
             roles::client::run_client(args).await
         }
         NodeRole::Relay => {
-            let exit = cfg.peers[0]
-                .as_socket_addr()
-                .ok_or_else(|| anyhow::anyhow!("relay peer must be UDP socket addr"))?;
             let discovery_bootstrap_peers: Vec<_> = cfg
                 .peers
                 .iter()
@@ -173,7 +170,12 @@ async fn run_from_config(path: &PathBuf, drain: bool) -> anyhow::Result<()> {
                 .collect();
             let args = config::RelayConfigCli {
                 listen: cfg.bind_addr(),
-                exit_addr: exit.to_string(),
+                exit_addr: cfg
+                    .peers
+                    .first()
+                    .and_then(|n| n.as_socket_addr())
+                    .map(|addr| addr.to_string())
+                    .unwrap_or_else(|| "127.0.0.1:30001".to_string()),
                 relay_key_path: "relay.key".to_string(),
 
                 discovery_enabled: cfg.discovery_enabled,

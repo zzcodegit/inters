@@ -58,7 +58,6 @@ role = "relay"
 bind_ip = "127.0.0.1"
 bind_port = {}
 drain_timeout_sec = 20
-peers = [{{ ip = "127.0.0.1", port = 30001, protocol = "Udp" }}]
 "#,
                 bound.port()
             ),

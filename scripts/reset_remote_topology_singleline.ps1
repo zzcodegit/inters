@@ -150,3 +150,16 @@ if ($activeLabels -contains "exit") {
     Restart-RemoteService -Label "exit" -RemoteHost $exitHost -User $exitUser -Password $exitPassword -HostKey $exitHostKey -Services @("vpnnode-exit.service")
 }
 Assert-RemoteServiceActive -Label "exit-target-http" -RemoteHost $exitHost -User $exitUser -Password $exitPassword -HostKey $exitHostKey -Service "vpnnode-target-http.service"
+
+$settleSeconds = [Environment]::GetEnvironmentVariable("VPNNODE_REMOTE_RESET_SETTLE_SECS")
+if ([string]::IsNullOrWhiteSpace($settleSeconds)) {
+    $settleSeconds = "15"
+}
+$settle = 0
+if (-not [int]::TryParse($settleSeconds, [ref]$settle)) {
+    throw "VPNNODE_REMOTE_RESET_SETTLE_SECS must be an integer, got '$settleSeconds'"
+}
+Write-Host "reset_settle_secs=$settle"
+if ($settle -gt 0) {
+    Start-Sleep -Seconds $settle
+}

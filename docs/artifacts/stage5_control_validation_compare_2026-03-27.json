@@ -1,0 +1,157 @@
+{
+  "verdict": "REJECTED",
+  "reasons": [
+    "1-hop total_time_ms regressed by more than 5% or is unavailable",
+    "3-hop total_time_ms is worse than baseline"
+  ],
+  "routes": {
+    "1hop": {
+      "baseline": {
+        "runs": 5,
+        "total_avg_ms": 1105.14076,
+        "total_p95_ms": 1109.61768,
+        "total_max_ms": 1110.5762,
+        "ack_p95_ms": 185.2,
+        "retransmit_rate": 0.0,
+        "avg_inflight": 56.6,
+        "max_inflight": 62,
+        "pacing_interval_ms_avg": 3,
+        "effective_inflight_cap_avg": 64,
+        "congestion_events": 0,
+        "blocked_by_cap": 0,
+        "window_wait_total_ms": 9.2
+      },
+      "control": {
+        "runs": 5,
+        "total_avg_ms": 1256.8052599999999,
+        "total_p95_ms": 1698.67002,
+        "total_max_ms": 1843.5537,
+        "ack_p95_ms": 191.8,
+        "retransmit_rate": 0.037370242214532876,
+        "avg_inflight": 53.490476190476194,
+        "max_inflight": 64,
+        "pacing_interval_ms_avg": 3,
+        "effective_inflight_cap_avg": 64,
+        "congestion_events": 1,
+        "blocked_by_cap": 6,
+        "window_wait_total_ms": 95.6
+      },
+      "delta_total_pct": 13.723545949024615,
+      "total_class": "worse",
+      "ack_class": "worse",
+      "retransmit_class": "worse",
+      "stall_class": "worse"
+    },
+    "2hop": {
+      "baseline": {
+        "runs": 5,
+        "total_avg_ms": 1203.99042,
+        "total_p95_ms": 1387.73942,
+        "total_max_ms": 1406.2961,
+        "ack_p95_ms": 192.8,
+        "retransmit_rate": 0.0,
+        "avg_inflight": 56.00476190476191,
+        "max_inflight": 64,
+        "pacing_interval_ms_avg": 3,
+        "effective_inflight_cap_avg": 64,
+        "congestion_events": 0,
+        "blocked_by_cap": 0,
+        "window_wait_total_ms": 58
+      },
+      "control": {
+        "runs": 5,
+        "total_avg_ms": 1113.3053400000001,
+        "total_p95_ms": 1128.14942,
+        "total_max_ms": 1131.0171,
+        "ack_p95_ms": 189.6,
+        "retransmit_rate": 0.0,
+        "avg_inflight": 54.2047619047619,
+        "max_inflight": 64,
+        "pacing_interval_ms_avg": 3,
+        "effective_inflight_cap_avg": 64,
+        "congestion_events": 0,
+        "blocked_by_cap": 0,
+        "window_wait_total_ms": 30.8
+      },
+      "delta_total_pct": -7.532043319746677,
+      "total_class": "better",
+      "ack_class": "better",
+      "retransmit_class": "neutral",
+      "stall_class": "better"
+    },
+    "3hop": {
+      "baseline": {
+        "runs": 5,
+        "total_avg_ms": 1386.3593,
+        "total_p95_ms": 1394.31924,
+        "total_max_ms": 1396.671,
+        "ack_p95_ms": 245.6,
+        "retransmit_rate": 0.0,
+        "avg_inflight": 54.9,
+        "max_inflight": 63,
+        "pacing_interval_ms_avg": 4,
+        "effective_inflight_cap_avg": 64,
+        "congestion_events": 0,
+        "blocked_by_cap": 0,
+        "window_wait_total_ms": 17
+      },
+      "control": {
+        "runs": 5,
+        "total_avg_ms": 1475.5521999999999,
+        "total_p95_ms": 1708.74066,
+        "total_max_ms": 1783.8096,
+        "ack_p95_ms": 267.2,
+        "retransmit_rate": 0.15501730103806227,
+        "avg_inflight": 53.0322192513369,
+        "max_inflight": 64,
+        "pacing_interval_ms_avg": 4,
+        "effective_inflight_cap_avg": 64,
+        "congestion_events": 2,
+        "blocked_by_cap": 11,
+        "window_wait_total_ms": 207.4
+      },
+      "delta_total_pct": 6.433606352985101,
+      "total_class": "worse",
+      "ack_class": "worse",
+      "retransmit_class": "worse",
+      "stall_class": "worse"
+    },
+    "5hop": {
+      "baseline": {
+        "runs": 5,
+        "total_avg_ms": 1772.9757000000002,
+        "total_p95_ms": 1779.40818,
+        "total_max_ms": 1780.4608,
+        "ack_p95_ms": 324.6,
+        "retransmit_rate": 0.01522491349480969,
+        "avg_inflight": 58.74,
+        "max_inflight": 64,
+        "pacing_interval_ms_avg": 4,
+        "effective_inflight_cap_avg": 64,
+        "congestion_events": 0,
+        "blocked_by_cap": 0,
+        "window_wait_total_ms": 597
+      },
+      "control": {
+        "runs": 5,
+        "total_avg_ms": 2282.37842,
+        "total_p95_ms": 2678.64182,
+        "total_max_ms": 2732.2177,
+        "ack_p95_ms": 296,
+        "retransmit_rate": 0.2795847750865052,
+        "avg_inflight": 52.81212121212121,
+        "max_inflight": 64,
+        "pacing_interval_ms_avg": 4.4,
+        "effective_inflight_cap_avg": 64,
+        "congestion_events": 2,
+        "blocked_by_cap": 173,
+        "window_wait_total_ms": 93.4
+      },
+      "delta_total_pct": 28.73151166144013,
+      "total_class": "worse",
+      "ack_class": "better",
+      "retransmit_class": "worse",
+      "stall_class": "better"
+    }
+  }
+}

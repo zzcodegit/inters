@@ -1,0 +1,70 @@
+   Compiling vpnnode v0.1.0 (C:\neinternet\vpnnode_stage5_baseline_v2_exact_route)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 10.63s
+     Running tests\remote_perf_stages.rs (target\debug\deps\remote_perf_stages-aa5c5065a4a79a31.exe)
+
+running 1 test
+reset_topology label=relay-1 host=45.197.133.115 services=vpnnode-relay1.service
+test remote_perf_stage_matrix_collects_measurements has been running for over 60 seconds
+active
+reset_topology label=relay-2 host=185.144.28.95 services=vpnnode-relay2.service
+active
+reset_topology label=relay-3 host=155.212.135.200 services=vpnnode-relay3.service
+active
+reset_topology label=relay-4 host=155.212.135.95 services=vpnnode-relay4.service
+active
+reset_topology label=relay-6 host=155.212.135.95 services=vpnnode-relay6.service
+active
+reset_topology label=exit host=31.192.232.26 services=vpnnode-exit.service
+active
+check_service label=exit-target-http host=31.192.232.26 service=vpnnode-target-http.service
+active
+reset_settle_secs=15
+reset_topology label=relay-1 host=45.197.133.115 services=vpnnode-relay1.service
+active
+reset_topology label=relay-2 host=185.144.28.95 services=vpnnode-relay2.service
+active
+reset_topology label=relay-3 host=155.212.135.200 services=vpnnode-relay3.service
+active
+reset_topology label=relay-4 host=155.212.135.95 services=vpnnode-relay4.service
+active
+reset_topology label=relay-6 host=155.212.135.95 services=vpnnode-relay6.service
+active
+reset_topology label=exit host=31.192.232.26 services=vpnnode-exit.service
+active
+check_service label=exit-target-http host=31.192.232.26 service=vpnnode-target-http.service
+active
+reset_settle_secs=15
+reset_topology label=relay-1 host=45.197.133.115 services=vpnnode-relay1.service
+active
+reset_topology label=relay-2 host=185.144.28.95 services=vpnnode-relay2.service
+active
+reset_topology label=relay-3 host=155.212.135.200 services=vpnnode-relay3.service
+active
+reset_topology label=relay-4 host=155.212.135.95 services=vpnnode-relay4.service
+active
+reset_topology label=relay-6 host=155.212.135.95 services=vpnnode-relay6.service
+active
+reset_topology label=exit host=31.192.232.26 services=vpnnode-exit.service
+active
+check_service label=exit-target-http host=31.192.232.26 service=vpnnode-target-http.service
+active
+reset_settle_secs=15
+reset_topology label=relay-1 host=45.197.133.115 services=vpnnode-relay1.service
+active
+reset_topology label=relay-2 host=185.144.28.95 services=vpnnode-relay2.service
+active
+reset_topology label=relay-3 host=155.212.135.200 services=vpnnode-relay3.service
+active
+reset_topology label=relay-4 host=155.212.135.95 services=vpnnode-relay4.service
+active
+reset_topology label=relay-6 host=155.212.135.95 services=vpnnode-relay6.service
+active
+reset_topology label=exit host=31.192.232.26 services=vpnnode-exit.service
+active
+check_service label=exit-target-http host=31.192.232.26 service=vpnnode-target-http.service
+active
+reset_settle_secs=15
+test remote_perf_stage_matrix_collects_measurements ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2306.75s
+
