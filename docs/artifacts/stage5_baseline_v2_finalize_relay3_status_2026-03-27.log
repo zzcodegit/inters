@@ -1,0 +1,20 @@
+? vpnnode-relay3.service - vpnnode relay-3 node
+     Loaded: loaded (/etc/systemd/system/vpnnode-relay3.service; enabled; preset: enabled)
+     Active: active (running) since Thu 2026-03-26 22:37:45 UTC; 21min ago
+   Main PID: 15324 (vpnnode)
+      Tasks: 2 (limit: 1106)
+     Memory: 712.0K (peak: 1.0M)
+        CPU: 294ms
+     CGroup: /system.slice/vpnnode-relay3.service
+             L-15324 /opt/vpnnode/bin/vpnnode run --config /etc/vpnnode/relay3.toml
+
+Mar 26 22:40:21 ymozeufnrt vpnnode[15324]: 2026-03-26T22:40:21.954164Z  INFO vpnnode::roles::relay: relay forward path forwarding from idx=3 to downstream from=Udp://185.144.28.95:30002 to=Udp://155.212.135.95:30004 idx=2
+Mar 26 22:40:21 ymozeufnrt vpnnode[15324]: 2026-03-26T22:40:21.954273Z  INFO vpnnode::roles::relay: relay forward path forwarding from idx=3 to downstream from=Udp://185.144.28.95:30002 to=Udp://155.212.135.95:30004 idx=2
+Mar 26 22:40:21 ymozeufnrt vpnnode[15324]: 2026-03-26T22:40:21.954616Z  INFO vpnnode::roles::relay: relay forward path forwarding from idx=3 to downstream from=Udp://185.144.28.95:30002 to=Udp://155.212.135.95:30004 idx=2
+Mar 26 22:40:21 ymozeufnrt vpnnode[15324]: 2026-03-26T22:40:21.954651Z  INFO vpnnode::roles::relay: relay forward path forwarding from idx=3 to downstream from=Udp://185.144.28.95:30002 to=Udp://155.212.135.95:30004 idx=2
+Mar 26 22:40:21 ymozeufnrt vpnnode[15324]: 2026-03-26T22:40:21.958563Z  INFO vpnnode::roles::relay: relay forward path forwarding from idx=3 to downstream from=Udp://185.144.28.95:30002 to=Udp://155.212.135.95:30004 idx=2
+Mar 26 22:40:21 ymozeufnrt vpnnode[15324]: 2026-03-26T22:40:21.958650Z  INFO vpnnode::roles::relay: relay forward path forwarding from idx=3 to downstream from=Udp://185.144.28.95:30002 to=Udp://155.212.135.95:30004 idx=2
+Mar 26 22:40:21 ymozeufnrt vpnnode[15324]: 2026-03-26T22:40:21.995263Z  INFO vpnnode::roles::relay: relay forward path forwarding from idx=3 to downstream from=Udp://185.144.28.95:30002 to=Udp://155.212.135.95:30004 idx=2
+Mar 26 22:40:21 ymozeufnrt vpnnode[15324]: 2026-03-26T22:40:21.995874Z  INFO vpnnode::roles::relay: relay forward path forwarding from idx=3 to downstream from=Udp://185.144.28.95:30002 to=Udp://155.212.135.95:30004 idx=2
+Mar 26 22:40:21 ymozeufnrt vpnnode[15324]: 2026-03-26T22:40:21.996187Z  INFO vpnnode::roles::relay: relay forward path forwarding from idx=3 to downstream from=Udp://185.144.28.95:30002 to=Udp://155.212.135.95:30004 idx=2
+Mar 26 22:40:21 ymozeufnrt vpnnode[15324]: 2026-03-26T22:40:21.996602Z  INFO vpnnode::roles::relay: relay forward path forwarding from idx=3 to downstream from=Udp://185.144.28.95:30002 to=Udp://155.212.135.95:30004 idx=2

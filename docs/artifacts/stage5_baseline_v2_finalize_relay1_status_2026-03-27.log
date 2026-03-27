@@ -1,0 +1,20 @@
+? vpnnode-relay1.service - vpnnode relay-1 node
+     Loaded: loaded (/etc/systemd/system/vpnnode-relay1.service; enabled; vendor preset: enabled)
+     Active: active (running) since Thu 2026-03-26 22:34:32 GMT; 24min ago
+   Main PID: 210200 (vpnnode)
+      Tasks: 2 (limit: 1012)
+     Memory: 680.0K
+        CPU: 800ms
+     CGroup: /system.slice/vpnnode-relay1.service
+             L-210200 /opt/vpnnode/bin/vpnnode run --config /etc/vpnnode/relay1.toml
+
+Mar 26 22:40:11 i1.pserver.space vpnnode[210200]: 2026-03-26T22:40:11.511693Z  INFO vpnnode::roles::relay: relay forward path forwarding from idx=1 to downstream from=Udp://46.242.13.60:2115 to=Udp://185.144.28.95:30002 idx=0
+Mar 26 22:40:11 i1.pserver.space vpnnode[210200]: 2026-03-26T22:40:11.511963Z  INFO vpnnode::roles::relay: relay forward path forwarding from idx=1 to downstream from=Udp://46.242.13.60:2115 to=Udp://185.144.28.95:30002 idx=0
+Mar 26 22:40:11 i1.pserver.space vpnnode[210200]: 2026-03-26T22:40:11.512088Z  INFO vpnnode::roles::relay: relay forward path forwarding from idx=1 to downstream from=Udp://46.242.13.60:2115 to=Udp://185.144.28.95:30002 idx=0
+Mar 26 22:40:11 i1.pserver.space vpnnode[210200]: 2026-03-26T22:40:11.512202Z  INFO vpnnode::roles::relay: relay forward path forwarding from idx=1 to downstream from=Udp://46.242.13.60:2115 to=Udp://185.144.28.95:30002 idx=0
+Mar 26 22:40:11 i1.pserver.space vpnnode[210200]: 2026-03-26T22:40:11.515354Z  INFO vpnnode::roles::relay: relay forward path forwarding from idx=1 to downstream from=Udp://46.242.13.60:2115 to=Udp://185.144.28.95:30002 idx=0
+Mar 26 22:40:11 i1.pserver.space vpnnode[210200]: 2026-03-26T22:40:11.515486Z  INFO vpnnode::roles::relay: relay forward path forwarding from idx=1 to downstream from=Udp://46.242.13.60:2115 to=Udp://185.144.28.95:30002 idx=0
+Mar 26 22:40:11 i1.pserver.space vpnnode[210200]: 2026-03-26T22:40:11.552549Z  INFO vpnnode::roles::relay: relay forward path forwarding from idx=1 to downstream from=Udp://46.242.13.60:2115 to=Udp://185.144.28.95:30002 idx=0
+Mar 26 22:40:11 i1.pserver.space vpnnode[210200]: 2026-03-26T22:40:11.553352Z  INFO vpnnode::roles::relay: relay forward path forwarding from idx=1 to downstream from=Udp://46.242.13.60:2115 to=Udp://185.144.28.95:30002 idx=0
+Mar 26 22:40:11 i1.pserver.space vpnnode[210200]: 2026-03-26T22:40:11.554088Z  INFO vpnnode::roles::relay: relay forward path forwarding from idx=1 to downstream from=Udp://46.242.13.60:2115 to=Udp://185.144.28.95:30002 idx=0
+Mar 26 22:40:11 i1.pserver.space vpnnode[210200]: 2026-03-26T22:40:11.554448Z  INFO vpnnode::roles::relay: relay forward path forwarding from idx=1 to downstream from=Udp://46.242.13.60:2115 to=Udp://185.144.28.95:30002 idx=0

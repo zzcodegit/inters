@@ -1,0 +1,22 @@
+? vpnnode-exit.service - vpnnode exit node
+     Loaded: loaded (/etc/systemd/system/vpnnode-exit.service; enabled; vendor preset: enabled)
+    Drop-In: /etc/systemd/system/vpnnode-exit.service.d
+             L-20-stage-trace.conf
+     Active: active (running) since Thu 2026-03-26 15:38:31 PDT; 20min ago
+   Main PID: 245188 (vpnnode)
+      Tasks: 2 (limit: 1012)
+     Memory: 1.6M
+        CPU: 4.868s
+     CGroup: /system.slice/vpnnode-exit.service
+             L-245188 /opt/vpnnode/bin/vpnnode run --config /etc/vpnnode/exit.toml
+
+Mar 26 15:40:22 i2.pserver.space vpnnode[245188]: 2026-03-26T22:40:22.065357Z  INFO vpnnode::roles::exit: received via transport protocol=Udp from=Udp://155.212.135.95:30004 len=148
+Mar 26 15:40:22 i2.pserver.space vpnnode[245188]: 2026-03-26T22:40:22.065476Z  INFO vpnnode::roles::exit: exit reached final hop hop_index=4 route_len=5
+Mar 26 15:40:22 i2.pserver.space vpnnode[245188]: 2026-03-26T22:40:22.101846Z  INFO vpnnode::roles::exit: received via transport protocol=Udp from=Udp://155.212.135.95:30004 len=148
+Mar 26 15:40:22 i2.pserver.space vpnnode[245188]: 2026-03-26T22:40:22.101885Z  INFO vpnnode::roles::exit: exit reached final hop hop_index=4 route_len=5
+Mar 26 15:40:22 i2.pserver.space vpnnode[245188]: 2026-03-26T22:40:22.102035Z  INFO vpnnode::roles::exit: received via transport protocol=Udp from=Udp://155.212.135.95:30004 len=148
+Mar 26 15:40:22 i2.pserver.space vpnnode[245188]: 2026-03-26T22:40:22.102047Z  INFO vpnnode::roles::exit: exit reached final hop hop_index=4 route_len=5
+Mar 26 15:40:22 i2.pserver.space vpnnode[245188]: 2026-03-26T22:40:22.102330Z  INFO vpnnode::roles::exit: received via transport protocol=Udp from=Udp://155.212.135.95:30004 len=148
+Mar 26 15:40:22 i2.pserver.space vpnnode[245188]: 2026-03-26T22:40:22.102343Z  INFO vpnnode::roles::exit: exit reached final hop hop_index=4 route_len=5
+Mar 26 15:40:22 i2.pserver.space vpnnode[245188]: 2026-03-26T22:40:22.102782Z  INFO vpnnode::roles::exit: received via transport protocol=Udp from=Udp://155.212.135.95:30004 len=148
+Mar 26 15:40:22 i2.pserver.space vpnnode[245188]: 2026-03-26T22:40:22.102795Z  INFO vpnnode::roles::exit: exit reached final hop hop_index=4 route_len=5

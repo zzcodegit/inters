@@ -1,0 +1,22 @@
+Looking up host "155.212.143.112" for SSH connection
+Connecting to 155.212.143.112 port 22
+We claim version: SSH-2.0-PuTTY_Release_0.81
+Connected to 155.212.143.112
+Remote version: SSH-2.0-OpenSSH_9.6p1 Ubuntu-3ubuntu13.15
+Using SSH protocol version 2
+No GSSAPI security context available
+Enabling strict key exchange semantics
+Doing NTRU Prime / Curve25519 hybrid key exchange, using hash SHA-512 (unaccelerated)
+Server also has ecdsa-sha2-nistp256/rsa-sha2-512/rsa-sha2-256 host keys, but we don't know any of them
+Host key fingerprint is:
+ssh-ed25519 255 SHA256:RIRIn1NZfzaQiX2+bnFGMTvZ/34OdzObB/PL9lXfAz0
+Initialised AES-256 SDCTR (AES-NI accelerated) outbound encryption
+Initialised HMAC-SHA-256 (SHA-NI accelerated) outbound MAC algorithm
+Initialised AES-256 SDCTR (AES-NI accelerated) inbound encryption
+Initialised HMAC-SHA-256 (SHA-NI accelerated) inbound MAC algorithm
+Using username "root".
+Sent password
+Password authentication failed
+Access denied
+Configured password was not accepted
+FATAL ERROR: Configured password was not accepted

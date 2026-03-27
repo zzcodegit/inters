@@ -1,0 +1,20 @@
+? vpnnode-relay4.service - vpnnode relay-4 node
+     Loaded: loaded (/etc/systemd/system/vpnnode-relay4.service; enabled; preset: enabled)
+     Active: active (running) since Thu 2026-03-26 22:38:49 UTC; 20min ago
+   Main PID: 14709 (vpnnode)
+      Tasks: 2 (limit: 1106)
+     Memory: 704.0K (peak: 996.0K)
+        CPU: 286ms
+     CGroup: /system.slice/vpnnode-relay4.service
+             L-14709 /opt/vpnnode/bin/vpnnode run --config /etc/vpnnode/relay4.toml
+
+Mar 26 22:40:21 snrtjbcyce vpnnode[14709]: 2026-03-26T22:40:21.955813Z  INFO vpnnode::roles::relay: relay forward path forwarding from idx=4 to downstream from=Udp://155.212.135.200:30003 to=Udp://31.192.232.26:30000 idx=3
+Mar 26 22:40:21 snrtjbcyce vpnnode[14709]: 2026-03-26T22:40:21.956107Z  INFO vpnnode::roles::relay: relay forward path forwarding from idx=4 to downstream from=Udp://155.212.135.200:30003 to=Udp://31.192.232.26:30000 idx=3
+Mar 26 22:40:21 snrtjbcyce vpnnode[14709]: 2026-03-26T22:40:21.956254Z  INFO vpnnode::roles::relay: relay forward path forwarding from idx=4 to downstream from=Udp://155.212.135.200:30003 to=Udp://31.192.232.26:30000 idx=3
+Mar 26 22:40:21 snrtjbcyce vpnnode[14709]: 2026-03-26T22:40:21.956295Z  INFO vpnnode::roles::relay: relay forward path forwarding from idx=4 to downstream from=Udp://155.212.135.200:30003 to=Udp://31.192.232.26:30000 idx=3
+Mar 26 22:40:21 snrtjbcyce vpnnode[14709]: 2026-03-26T22:40:21.960363Z  INFO vpnnode::roles::relay: relay forward path forwarding from idx=4 to downstream from=Udp://155.212.135.200:30003 to=Udp://31.192.232.26:30000 idx=3
+Mar 26 22:40:21 snrtjbcyce vpnnode[14709]: 2026-03-26T22:40:21.960436Z  INFO vpnnode::roles::relay: relay forward path forwarding from idx=4 to downstream from=Udp://155.212.135.200:30003 to=Udp://31.192.232.26:30000 idx=3
+Mar 26 22:40:21 snrtjbcyce vpnnode[14709]: 2026-03-26T22:40:21.997155Z  INFO vpnnode::roles::relay: relay forward path forwarding from idx=4 to downstream from=Udp://155.212.135.200:30003 to=Udp://31.192.232.26:30000 idx=3
+Mar 26 22:40:21 snrtjbcyce vpnnode[14709]: 2026-03-26T22:40:21.997558Z  INFO vpnnode::roles::relay: relay forward path forwarding from idx=4 to downstream from=Udp://155.212.135.200:30003 to=Udp://31.192.232.26:30000 idx=3
+Mar 26 22:40:21 snrtjbcyce vpnnode[14709]: 2026-03-26T22:40:21.997843Z  INFO vpnnode::roles::relay: relay forward path forwarding from idx=4 to downstream from=Udp://155.212.135.200:30003 to=Udp://31.192.232.26:30000 idx=3
+Mar 26 22:40:21 snrtjbcyce vpnnode[14709]: 2026-03-26T22:40:21.998280Z  INFO vpnnode::roles::relay: relay forward path forwarding from idx=4 to downstream from=Udp://155.212.135.200:30003 to=Udp://31.192.232.26:30000 idx=3
