@@ -58,28 +58,26 @@ const EXIT_RESPONSE_INFLIGHT_DISCIPLINE_RESTORE_STREAK_SAMPLES: u32 = 3;
 const EXIT_RESPONSE_INFLIGHT_DISCIPLINE_RESTORE_HEADROOM_FRAMES: usize = 4;
 const EXIT_RESPONSE_INFLIGHT_DISCIPLINE_MODERATE_PRESSURE_STREAK_SAMPLES: u32 = 2;
 const EXIT_RESPONSE_INFLIGHT_DISCIPLINE_SEVERE_PRESSURE_STREAK_SAMPLES: u32 = 2;
-const EXIT_RESPONSE_CONGESTION_MIN_FRAMES_SENT: u64 = 32;
-const EXIT_RESPONSE_CONGESTION_NEAR_WINDOW_HEADROOM_FRAMES: usize = 4;
-const EXIT_RESPONSE_CONGESTION_ACK_GROWTH_MILD_NUM: u64 = 13;
-const EXIT_RESPONSE_CONGESTION_ACK_GROWTH_MILD_DEN: u64 = 10;
-const EXIT_RESPONSE_CONGESTION_ACK_GROWTH_SEVERE_NUM: u64 = 16;
-const EXIT_RESPONSE_CONGESTION_ACK_GROWTH_SEVERE_DEN: u64 = 10;
-const EXIT_RESPONSE_CONGESTION_RETRANSMIT_RATE_MILD: f64 = 0.05;
-const EXIT_RESPONSE_CONGESTION_RETRANSMIT_RATE_SEVERE: f64 = 0.10;
-const EXIT_RESPONSE_CONGESTION_RETRANSMIT_BURST_MILD: usize = 4;
-const EXIT_RESPONSE_CONGESTION_RETRANSMIT_BURST_SEVERE: usize = 8;
-const EXIT_RESPONSE_CONGESTION_REPEATED_LOSS_SEVERE: usize = 2;
-const EXIT_RESPONSE_CONGESTION_SIGNAL_STREAK_SAMPLES: u32 = 2;
-const EXIT_RESPONSE_CONGESTION_CLEAN_STREAK_SAMPLES: u32 = 3;
-const EXIT_RESPONSE_CONGESTION_MILD_CAP_FRAMES: usize = 60;
-const EXIT_RESPONSE_CONGESTION_SEVERE_CAP_FRAMES: usize = 52;
-const EXIT_RESPONSE_CONGESTION_RESTORE_STEP_FRAMES: usize = 2;
-const EXIT_RESPONSE_CONGESTION_MILD_PACING_EXTRA_MS: u64 = 1;
-const EXIT_RESPONSE_CONGESTION_SEVERE_PACING_EXTRA_MS: u64 = 2;
-const EXIT_RESPONSE_CONGESTION_MIN_HOLD_MS: u64 = 100;
-const EXIT_RESPONSE_CONGESTION_MAX_HOLD_MS: u64 = 400;
-const EXIT_RESPONSE_CONGESTION_BASELINE_RISE_DIVISOR: u64 = 2;
-const EXIT_RESPONSE_CONGESTION_BASELINE_FALL_DIVISOR: u64 = 4;
+const EXIT_RESPONSE_RECOVERY_CONTROL_MIN_FRAMES_SENT: u64 = 32;
+const EXIT_RESPONSE_RECOVERY_CONTROL_NEAR_WINDOW_HEADROOM_FRAMES: usize = 4;
+const EXIT_RESPONSE_RECOVERY_GUARD_CAP_FRAMES: usize = 62;
+const EXIT_RESPONSE_RECOVERY_GUARD_PACING_EXTRA_MS: u64 = 0;
+const EXIT_RESPONSE_RECOVERY_GUARD_MIN_HOLD_MS: u64 = 40;
+const EXIT_RESPONSE_RECOVERY_GUARD_MAX_HOLD_MS: u64 = 120;
+const EXIT_RESPONSE_RECOVERY_GUARD_CLEAN_STREAK_SAMPLES: u32 = 1;
+const EXIT_RESPONSE_RECOVERY_SUSTAINED_BASE_RESERVE_FRAMES: usize = 8;
+const EXIT_RESPONSE_RECOVERY_SUSTAINED_MAX_RESERVE_FRAMES: usize = 16;
+const EXIT_RESPONSE_RECOVERY_SUSTAINED_MIN_CAP_FRAMES: usize = 48;
+const EXIT_RESPONSE_RECOVERY_SUSTAINED_PACING_EXTRA_MS: u64 = 1;
+const EXIT_RESPONSE_RECOVERY_SUSTAINED_MIN_HOLD_MS: u64 = 120;
+const EXIT_RESPONSE_RECOVERY_SUSTAINED_MAX_HOLD_MS: u64 = 400;
+const EXIT_RESPONSE_RECOVERY_SUSTAINED_CLEAN_STREAK_SAMPLES: u32 = 2;
+const EXIT_RESPONSE_RECOVERY_SUSTAINED_ACTIVE_WINDOWS: u32 = 2;
+const EXIT_RESPONSE_RECOVERY_SUSTAINED_BURST_FRAMES: usize = 6;
+const EXIT_RESPONSE_RECOVERY_SUSTAINED_REPEATED_LOSS_FRAMES: usize = 2;
+const EXIT_RESPONSE_RECOVERY_SUSTAINED_NEW_RETRANSMITS: u64 = 4;
+const EXIT_RESPONSE_RECOVERY_ACK_LAG_PACING_NUM: u64 = 13;
+const EXIT_RESPONSE_RECOVERY_ACK_LAG_PACING_DEN: u64 = 10;
 
 struct ExitStream {
     socket: TcpStream,
@@ -127,12 +125,10 @@ fn response_retransmit_backoff_decision(
 ) -> ResponseRetransmitDecision {
     let rtt_ms = response_retransmit_base_rtt_ms(summary, bootstrap_rtt_ms);
     let factor = response_retransmit_factor(retransmit_count);
-    let timeout_ms = ((rtt_ms as f64) * factor)
-        .round()
-        .clamp(
-            EXIT_RESPONSE_RETRANSMIT_TIMEOUT_MIN_MS as f64,
-            EXIT_RESPONSE_RETRANSMIT_TIMEOUT_MAX_MS as f64,
-        ) as u64;
+    let timeout_ms = ((rtt_ms as f64) * factor).round().clamp(
+        EXIT_RESPONSE_RETRANSMIT_TIMEOUT_MIN_MS as f64,
+        EXIT_RESPONSE_RETRANSMIT_TIMEOUT_MAX_MS as f64,
+    ) as u64;
     let rtt_ratio = timeout_ms as f64 / rtt_ms.max(1) as f64;
 
     let (expected_factor, factor_margin) = match retransmit_count {
@@ -217,16 +213,16 @@ struct ResponseInflightDisciplineState {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ResponseCongestionLevel {
     None,
-    Mild,
-    Severe,
+    RecoveryGuard,
+    SustainedRecoveryPressure,
 }
 
 impl ResponseCongestionLevel {
     fn as_str(self) -> &'static str {
         match self {
             Self::None => "none",
-            Self::Mild => "mild",
-            Self::Severe => "severe",
+            Self::RecoveryGuard => "recovery_guard",
+            Self::SustainedRecoveryPressure => "sustained_recovery_pressure",
         }
     }
 }
@@ -235,11 +231,15 @@ impl ResponseCongestionLevel {
 struct ResponseCongestionSignal {
     level: ResponseCongestionLevel,
     reason: &'static str,
-    baseline_rtt_ms: u64,
+    rtt_reference_ms: u64,
     ack_p95_ms: u64,
+    ack_lag_ms: u64,
     retransmit_rate: f64,
     retransmit_burst: usize,
     repeated_loss_frames: usize,
+    max_retransmit_count: u64,
+    new_retransmits: u64,
+    recovery_active_windows: u32,
     target_cap_frames: usize,
     target_pacing_extra_ms: u64,
 }
@@ -260,9 +260,13 @@ struct ResponseCongestionDecision {
     reason: &'static str,
     baseline_rtt_ms: u64,
     ack_p95_ms: u64,
+    ack_lag_ms: u64,
     retransmit_rate: f64,
     retransmit_burst: usize,
     repeated_loss_frames: usize,
+    max_retransmit_count: u64,
+    new_retransmits: u64,
+    recovery_active_windows: u32,
     cap_limit_frames: usize,
     pacing_extra_ms: u64,
     action: ResponseCongestionAction,
@@ -273,15 +277,15 @@ struct ResponseCongestionState {
     level: ResponseCongestionLevel,
     cap_limit_frames: usize,
     pacing_extra_ms: u64,
-    baseline_rtt_ms: Option<u64>,
-    last_signal_level: ResponseCongestionLevel,
-    signal_streak: u32,
+    rtt_reference_ms: Option<u64>,
     clean_streak: u32,
     congestion_events: u64,
     congestion_duration_ms: u64,
     cap_reduction_due_to_congestion: u64,
     pacing_increase_due_to_congestion: u64,
     state_since: Option<Instant>,
+    active_recovery_windows: u32,
+    last_total_retransmits: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -351,7 +355,7 @@ fn response_pacing_interval_ms(
         .saturating_add(congestion_extra_ms)
 }
 
-fn response_congestion_baseline_sample_ms(summary: AckLatencySummary, bootstrap_rtt_ms: u64) -> u64 {
+fn response_recovery_reference_sample_ms(summary: AckLatencySummary, bootstrap_rtt_ms: u64) -> u64 {
     summary
         .p50_ms
         .or(summary.avg_ms)
@@ -363,84 +367,132 @@ fn response_congestion_baseline_sample_ms(summary: AckLatencySummary, bootstrap_
 fn response_congestion_signal(
     summary: AckLatencySummary,
     config: ResponseCongestionConfig,
-    baseline_rtt_ms: u64,
+    rtt_reference_ms: u64,
     frames_sent_total: u64,
     total_retransmits: u64,
+    last_total_retransmits: u64,
+    active_recovery_windows: u32,
     pressure: RetransmitPressureSnapshot,
     current_inflight: usize,
 ) -> ResponseCongestionSignal {
     let hard_window_frames = config.hard_window_frames.max(1);
     let near_window = current_inflight
-        >= hard_window_frames.saturating_sub(EXIT_RESPONSE_CONGESTION_NEAR_WINDOW_HEADROOM_FRAMES);
+        >= hard_window_frames
+            .saturating_sub(EXIT_RESPONSE_RECOVERY_CONTROL_NEAR_WINDOW_HEADROOM_FRAMES);
+    let enough_samples = frames_sent_total >= EXIT_RESPONSE_RECOVERY_CONTROL_MIN_FRAMES_SENT;
+    let new_retransmits = total_retransmits.saturating_sub(last_total_retransmits);
     let ack_p95_ms = summary
         .p95_ms
         .or(summary.avg_ms)
         .or(summary.p50_ms)
         .filter(|value| *value > 0)
-        .unwrap_or(baseline_rtt_ms.max(config.bootstrap_rtt_ms.max(1)));
+        .unwrap_or(rtt_reference_ms.max(config.bootstrap_rtt_ms.max(1)));
     let retransmit_rate = if frames_sent_total > 0 {
         total_retransmits as f64 / frames_sent_total as f64
     } else {
         0.0
     };
-    let baseline = baseline_rtt_ms.max(1);
-    let severe_ack_growth = ack_p95_ms.saturating_mul(EXIT_RESPONSE_CONGESTION_ACK_GROWTH_SEVERE_DEN)
-        >= baseline.saturating_mul(EXIT_RESPONSE_CONGESTION_ACK_GROWTH_SEVERE_NUM);
-    let mild_ack_growth = ack_p95_ms.saturating_mul(EXIT_RESPONSE_CONGESTION_ACK_GROWTH_MILD_DEN)
-        >= baseline.saturating_mul(EXIT_RESPONSE_CONGESTION_ACK_GROWTH_MILD_NUM);
-    let enough_samples = frames_sent_total >= EXIT_RESPONSE_CONGESTION_MIN_FRAMES_SENT;
-
-    if near_window
+    let reference = rtt_reference_ms.max(1);
+    let ack_lag_ms = ack_p95_ms.saturating_sub(reference);
+    let recovery_active_now = near_window
         && enough_samples
-        && (severe_ack_growth
-            || retransmit_rate >= EXIT_RESPONSE_CONGESTION_RETRANSMIT_RATE_SEVERE
-            || pressure.retransmitting_frames >= EXIT_RESPONSE_CONGESTION_RETRANSMIT_BURST_SEVERE
-            || pressure.repeated_loss_frames >= EXIT_RESPONSE_CONGESTION_REPEATED_LOSS_SEVERE)
-    {
+        && (new_retransmits > 0 || pressure.retransmitting_frames > 0);
+
+    if !recovery_active_now {
         return ResponseCongestionSignal {
-            level: ResponseCongestionLevel::Severe,
-            reason: "severe_rtt_or_loss_pressure",
-            baseline_rtt_ms: baseline,
+            level: ResponseCongestionLevel::None,
+            reason: "no_active_recovery_pressure",
+            rtt_reference_ms: reference,
             ack_p95_ms,
+            ack_lag_ms,
             retransmit_rate,
             retransmit_burst: pressure.retransmitting_frames,
             repeated_loss_frames: pressure.repeated_loss_frames,
-            target_cap_frames: EXIT_RESPONSE_CONGESTION_SEVERE_CAP_FRAMES
-                .clamp(1, hard_window_frames),
-            target_pacing_extra_ms: EXIT_RESPONSE_CONGESTION_SEVERE_PACING_EXTRA_MS,
+            max_retransmit_count: pressure.max_retransmit_count,
+            new_retransmits,
+            recovery_active_windows: 0,
+            target_cap_frames: hard_window_frames,
+            target_pacing_extra_ms: 0,
         };
     }
 
-    if near_window
-        && enough_samples
-        && (mild_ack_growth
-            || retransmit_rate >= EXIT_RESPONSE_CONGESTION_RETRANSMIT_RATE_MILD
-            || pressure.retransmitting_frames >= EXIT_RESPONSE_CONGESTION_RETRANSMIT_BURST_MILD)
-    {
+    let sustained_recovery = active_recovery_windows
+        >= EXIT_RESPONSE_RECOVERY_SUSTAINED_ACTIVE_WINDOWS
+        || pressure.repeated_loss_frames >= EXIT_RESPONSE_RECOVERY_SUSTAINED_REPEATED_LOSS_FRAMES
+        || pressure.max_retransmit_count > 1;
+
+    if sustained_recovery {
+        let reserve_ceiling = EXIT_RESPONSE_RECOVERY_SUSTAINED_MAX_RESERVE_FRAMES
+            .saturating_sub(EXIT_RESPONSE_RECOVERY_SUSTAINED_BASE_RESERVE_FRAMES);
+        let extra_reserve = pressure
+            .retransmitting_frames
+            .saturating_sub(EXIT_RESPONSE_RECOVERY_SUSTAINED_BURST_FRAMES)
+            .min(reserve_ceiling)
+            .max(
+                pressure
+                    .repeated_loss_frames
+                    .saturating_mul(2)
+                    .min(reserve_ceiling),
+            )
+            .max(
+                (new_retransmits as usize)
+                    .saturating_sub(EXIT_RESPONSE_RECOVERY_SUSTAINED_NEW_RETRANSMITS as usize)
+                    .min(reserve_ceiling),
+            );
+        let reserve_frames = EXIT_RESPONSE_RECOVERY_SUSTAINED_BASE_RESERVE_FRAMES
+            .saturating_add(extra_reserve)
+            .clamp(
+                EXIT_RESPONSE_RECOVERY_SUSTAINED_BASE_RESERVE_FRAMES,
+                EXIT_RESPONSE_RECOVERY_SUSTAINED_MAX_RESERVE_FRAMES,
+            );
+        let target_cap_frames = hard_window_frames
+            .saturating_sub(reserve_frames)
+            .max(EXIT_RESPONSE_RECOVERY_SUSTAINED_MIN_CAP_FRAMES)
+            .clamp(1, hard_window_frames);
+        let target_pacing_extra_ms = if ack_p95_ms
+            .saturating_mul(EXIT_RESPONSE_RECOVERY_ACK_LAG_PACING_DEN)
+            >= reference.saturating_mul(EXIT_RESPONSE_RECOVERY_ACK_LAG_PACING_NUM)
+            && pressure.repeated_loss_frames > 0
+        {
+            EXIT_RESPONSE_RECOVERY_SUSTAINED_PACING_EXTRA_MS
+        } else {
+            0
+        };
         return ResponseCongestionSignal {
-            level: ResponseCongestionLevel::Mild,
-            reason: "mild_rtt_or_loss_pressure",
-            baseline_rtt_ms: baseline,
+            level: ResponseCongestionLevel::SustainedRecoveryPressure,
+            reason: "sustained_recovery_pressure",
+            rtt_reference_ms: reference,
             ack_p95_ms,
+            ack_lag_ms,
             retransmit_rate,
             retransmit_burst: pressure.retransmitting_frames,
             repeated_loss_frames: pressure.repeated_loss_frames,
-            target_cap_frames: EXIT_RESPONSE_CONGESTION_MILD_CAP_FRAMES
-                .clamp(1, hard_window_frames),
-            target_pacing_extra_ms: EXIT_RESPONSE_CONGESTION_MILD_PACING_EXTRA_MS,
+            max_retransmit_count: pressure.max_retransmit_count,
+            new_retransmits,
+            recovery_active_windows: active_recovery_windows,
+            target_cap_frames,
+            target_pacing_extra_ms,
         };
     }
 
     ResponseCongestionSignal {
-        level: ResponseCongestionLevel::None,
-        reason: "no_congestion",
-        baseline_rtt_ms: baseline,
+        level: ResponseCongestionLevel::RecoveryGuard,
+        reason: if new_retransmits > 0 {
+            "retransmit_burst_start"
+        } else {
+            "active_recovery_guard"
+        },
+        rtt_reference_ms: reference,
         ack_p95_ms,
+        ack_lag_ms,
         retransmit_rate,
         retransmit_burst: pressure.retransmitting_frames,
         repeated_loss_frames: pressure.repeated_loss_frames,
-        target_cap_frames: hard_window_frames,
-        target_pacing_extra_ms: 0,
+        max_retransmit_count: pressure.max_retransmit_count,
+        new_retransmits,
+        recovery_active_windows: active_recovery_windows.max(1),
+        target_cap_frames: EXIT_RESPONSE_RECOVERY_GUARD_CAP_FRAMES.clamp(1, hard_window_frames),
+        target_pacing_extra_ms: EXIT_RESPONSE_RECOVERY_GUARD_PACING_EXTRA_MS,
     }
 }
 
@@ -639,41 +691,26 @@ impl ResponseCongestionState {
         self.cap_limit_frames
     }
 
-    fn baseline_rtt_ms(
+    fn rtt_reference_ms(
         &mut self,
         summary: AckLatencySummary,
         config: ResponseCongestionConfig,
-        total_retransmits: u64,
-        pressure: RetransmitPressureSnapshot,
+        recovery_active_now: bool,
     ) -> u64 {
-        let observed = response_congestion_baseline_sample_ms(summary, config.bootstrap_rtt_ms);
-        let baseline = self
-            .baseline_rtt_ms
-            .map(|current| {
-                if observed > current {
-                    if total_retransmits == 0
-                        && pressure.retransmitting_frames == 0
-                        && pressure.repeated_loss_frames == 0
-                    {
-                        let rise = (observed - current)
-                            .max(1)
-                            .div_ceil(EXIT_RESPONSE_CONGESTION_BASELINE_RISE_DIVISOR);
-                        current.saturating_add(rise).min(observed)
-                    } else {
-                        current
-                    }
-                } else if observed < current {
-                    let fall = (current - observed)
-                        .max(1)
-                        .div_ceil(EXIT_RESPONSE_CONGESTION_BASELINE_FALL_DIVISOR);
-                    current.saturating_sub(fall).max(observed)
-                } else {
-                    current
-                }
-            })
-            .unwrap_or(observed);
-        self.baseline_rtt_ms = Some(baseline);
-        baseline
+        let observed = response_recovery_reference_sample_ms(summary, config.bootstrap_rtt_ms);
+        let next = match self.rtt_reference_ms {
+            Some(current) if recovery_active_now => current,
+            Some(current) if observed > current => current
+                .saturating_add((observed - current).max(1).div_ceil(2))
+                .min(observed),
+            Some(current) if observed < current => current
+                .saturating_sub((current - observed).max(1).div_ceil(2))
+                .max(observed),
+            Some(current) => current,
+            None => observed,
+        };
+        self.rtt_reference_ms = Some(next);
+        next
     }
 
     fn note_state_duration(&mut self, now: Instant, next_level: ResponseCongestionLevel) {
@@ -687,17 +724,36 @@ impl ResponseCongestionState {
         self.state_since = (next_level != ResponseCongestionLevel::None).then_some(now);
     }
 
-    fn relief_hold_elapsed(&self, now: Instant, baseline_rtt_ms: u64) -> bool {
+    fn relief_hold_elapsed(&self, now: Instant, rtt_reference_ms: u64) -> bool {
         if self.level == ResponseCongestionLevel::None {
             return true;
         }
-        let hold_ms = (baseline_rtt_ms / 2).clamp(
-            EXIT_RESPONSE_CONGESTION_MIN_HOLD_MS,
-            EXIT_RESPONSE_CONGESTION_MAX_HOLD_MS,
-        );
+        let hold_ms = match self.level {
+            ResponseCongestionLevel::None => 0,
+            ResponseCongestionLevel::RecoveryGuard => (rtt_reference_ms / 4).clamp(
+                EXIT_RESPONSE_RECOVERY_GUARD_MIN_HOLD_MS,
+                EXIT_RESPONSE_RECOVERY_GUARD_MAX_HOLD_MS,
+            ),
+            ResponseCongestionLevel::SustainedRecoveryPressure => (rtt_reference_ms / 2).clamp(
+                EXIT_RESPONSE_RECOVERY_SUSTAINED_MIN_HOLD_MS,
+                EXIT_RESPONSE_RECOVERY_SUSTAINED_MAX_HOLD_MS,
+            ),
+        };
         self.state_since
             .map(|state_since| now.duration_since(state_since) >= Duration::from_millis(hold_ms))
             .unwrap_or(true)
+    }
+
+    fn clear_clean_streak_required(&self) -> u32 {
+        match self.level {
+            ResponseCongestionLevel::None => 0,
+            ResponseCongestionLevel::RecoveryGuard => {
+                EXIT_RESPONSE_RECOVERY_GUARD_CLEAN_STREAK_SAMPLES
+            }
+            ResponseCongestionLevel::SustainedRecoveryPressure => {
+                EXIT_RESPONSE_RECOVERY_SUSTAINED_CLEAN_STREAK_SAMPLES
+            }
+        }
     }
 
     fn update(
@@ -712,21 +768,25 @@ impl ResponseCongestionState {
         let hard_window_frames = config.hard_window_frames.max(1);
         if !config.enabled {
             self.level = ResponseCongestionLevel::None;
-            self.last_signal_level = ResponseCongestionLevel::None;
             self.cap_limit_frames = hard_window_frames;
             self.pacing_extra_ms = 0;
-            self.signal_streak = 0;
             self.clean_streak = 0;
             self.state_since = None;
+            self.active_recovery_windows = 0;
+            self.last_total_retransmits = total_retransmits;
             return ResponseCongestionDecision {
                 previous_level: ResponseCongestionLevel::None,
                 level: ResponseCongestionLevel::None,
                 reason: "congestion_disabled",
                 baseline_rtt_ms: config.bootstrap_rtt_ms.max(1),
                 ack_p95_ms: config.bootstrap_rtt_ms.max(1),
+                ack_lag_ms: 0,
                 retransmit_rate: 0.0,
                 retransmit_burst: 0,
                 repeated_loss_frames: 0,
+                max_retransmit_count: 0,
+                new_retransmits: 0,
+                recovery_active_windows: 0,
                 cap_limit_frames: hard_window_frames,
                 pacing_extra_ms: 0,
                 action: ResponseCongestionAction::None,
@@ -734,13 +794,31 @@ impl ResponseCongestionState {
         }
 
         let previous_level = self.level;
-        let baseline_rtt_ms = self.baseline_rtt_ms(summary, config, total_retransmits, pressure);
+        let near_window = current_inflight
+            >= hard_window_frames
+                .saturating_sub(EXIT_RESPONSE_RECOVERY_CONTROL_NEAR_WINDOW_HEADROOM_FRAMES);
+        let enough_samples = frames_sent_total >= EXIT_RESPONSE_RECOVERY_CONTROL_MIN_FRAMES_SENT;
+        let new_retransmits = total_retransmits.saturating_sub(self.last_total_retransmits);
+        let raw_recovery_active = new_retransmits > 0 || pressure.retransmitting_frames > 0;
+        let eligible_recovery = near_window && enough_samples && raw_recovery_active;
+        let rtt_reference_ms = self.rtt_reference_ms(summary, config, eligible_recovery);
+        let next_active_recovery_windows = if eligible_recovery {
+            if new_retransmits > 0 {
+                self.active_recovery_windows.saturating_add(1).max(1)
+            } else {
+                self.active_recovery_windows.max(1)
+            }
+        } else {
+            0
+        };
         let signal = response_congestion_signal(
             summary,
             config,
-            baseline_rtt_ms,
+            rtt_reference_ms,
             frames_sent_total,
             total_retransmits,
+            self.last_total_retransmits,
+            next_active_recovery_windows,
             pressure,
             current_inflight,
         );
@@ -748,58 +826,35 @@ impl ResponseCongestionState {
         let mut action = ResponseCongestionAction::None;
 
         if signal.level == ResponseCongestionLevel::None {
-            self.last_signal_level = ResponseCongestionLevel::None;
-            self.signal_streak = 0;
+            self.active_recovery_windows = 0;
             self.clean_streak = self.clean_streak.saturating_add(1);
-            if self.clean_streak >= EXIT_RESPONSE_CONGESTION_CLEAN_STREAK_SAMPLES
-                && self.relief_hold_elapsed(now, baseline_rtt_ms)
+            if self.level != ResponseCongestionLevel::None
+                && self.clean_streak >= self.clear_clean_streak_required()
+                && self.relief_hold_elapsed(now, rtt_reference_ms)
             {
-                let previous_cap = self.current_cap_limit(config);
-                if previous_cap < hard_window_frames {
-                    let next_cap = previous_cap
-                        .saturating_add(EXIT_RESPONSE_CONGESTION_RESTORE_STEP_FRAMES)
-                        .min(hard_window_frames);
-                    self.cap_limit_frames = next_cap;
-                    action = ResponseCongestionAction::Relieved;
-                }
-                if self.pacing_extra_ms > 0 {
-                    self.pacing_extra_ms = self.pacing_extra_ms.saturating_sub(1);
-                    action = ResponseCongestionAction::Relieved;
-                }
-                if self.cap_limit_frames >= hard_window_frames && self.pacing_extra_ms == 0 {
-                    if self.level != ResponseCongestionLevel::None {
-                        self.note_state_duration(now, ResponseCongestionLevel::None);
-                    }
-                    self.level = ResponseCongestionLevel::None;
-                    action = ResponseCongestionAction::Cleared;
-                } else if self.level != ResponseCongestionLevel::None {
-                    self.note_state_duration(now, self.level);
-                }
+                self.note_state_duration(now, ResponseCongestionLevel::None);
+                self.level = ResponseCongestionLevel::None;
+                self.cap_limit_frames = hard_window_frames;
+                self.pacing_extra_ms = 0;
+                action = ResponseCongestionAction::Cleared;
                 self.clean_streak = 0;
             }
         } else {
             self.clean_streak = 0;
-            if self.last_signal_level == signal.level {
-                self.signal_streak = self.signal_streak.saturating_add(1);
-            } else {
-                self.signal_streak = 1;
-                self.last_signal_level = signal.level;
-            }
+            self.active_recovery_windows = signal.recovery_active_windows;
 
-            if self.signal_streak >= EXIT_RESPONSE_CONGESTION_SIGNAL_STREAK_SAMPLES {
-                let previous_cap = self.current_cap_limit(config);
-                let previous_extra = self.pacing_extra_ms;
-                let next_cap = previous_cap.min(signal.target_cap_frames);
-                let next_extra = previous_extra.max(signal.target_pacing_extra_ms);
-                let next_level = if previous_level == ResponseCongestionLevel::Severe
-                    || signal.level == ResponseCongestionLevel::Severe
+            let previous_cap = self.current_cap_limit(config);
+            let previous_extra = self.pacing_extra_ms;
+            let next_level = signal.level;
+            let next_cap = signal.target_cap_frames.clamp(1, hard_window_frames);
+            let next_extra = signal.target_pacing_extra_ms;
+
+            if next_level != self.level {
+                let can_relieve = next_level as u8 <= self.level as u8
+                    && self.relief_hold_elapsed(now, rtt_reference_ms);
+                if previous_level == ResponseCongestionLevel::None
+                    || next_level as u8 > self.level as u8
                 {
-                    ResponseCongestionLevel::Severe
-                } else {
-                    ResponseCongestionLevel::Mild
-                };
-
-                if next_level != self.level {
                     self.note_state_duration(now, next_level);
                     self.congestion_events = self.congestion_events.saturating_add(1);
                     action = if previous_level == ResponseCongestionLevel::None {
@@ -807,33 +862,63 @@ impl ResponseCongestionState {
                     } else {
                         ResponseCongestionAction::Escalated
                     };
+                    self.level = next_level;
+                } else if can_relieve {
+                    self.note_state_duration(now, next_level);
+                    action = ResponseCongestionAction::Relieved;
+                    self.level = next_level;
                 }
-                if next_cap < previous_cap {
-                    self.cap_reduction_due_to_congestion = self
-                        .cap_reduction_due_to_congestion
-                        .saturating_add(previous_cap.saturating_sub(next_cap) as u64);
-                }
-                if next_extra > previous_extra {
-                    self.pacing_increase_due_to_congestion = self
-                        .pacing_increase_due_to_congestion
-                        .saturating_add(next_extra.saturating_sub(previous_extra));
-                }
+            }
 
-                self.level = next_level;
-                self.cap_limit_frames = next_cap;
-                self.pacing_extra_ms = next_extra;
+            if next_cap < previous_cap {
+                self.cap_reduction_due_to_congestion = self
+                    .cap_reduction_due_to_congestion
+                    .saturating_add(previous_cap.saturating_sub(next_cap) as u64);
+            }
+            if next_extra > previous_extra {
+                self.pacing_increase_due_to_congestion = self
+                    .pacing_increase_due_to_congestion
+                    .saturating_add(next_extra.saturating_sub(previous_extra));
+            }
+
+            if matches!(self.level, ResponseCongestionLevel::RecoveryGuard)
+                || matches!(
+                    self.level,
+                    ResponseCongestionLevel::SustainedRecoveryPressure
+                )
+            {
+                self.cap_limit_frames = if self.level == next_level {
+                    next_cap
+                } else {
+                    self.cap_limit_frames.min(next_cap)
+                };
+                self.pacing_extra_ms = if self.level == next_level {
+                    next_extra
+                } else {
+                    self.pacing_extra_ms.max(next_extra)
+                };
             }
         }
+
+        if self.level == ResponseCongestionLevel::None {
+            self.cap_limit_frames = hard_window_frames;
+            self.pacing_extra_ms = 0;
+        }
+        self.last_total_retransmits = total_retransmits;
 
         ResponseCongestionDecision {
             previous_level,
             level: self.level,
             reason: signal.reason,
-            baseline_rtt_ms: signal.baseline_rtt_ms,
+            baseline_rtt_ms: signal.rtt_reference_ms,
             ack_p95_ms: signal.ack_p95_ms,
+            ack_lag_ms: signal.ack_lag_ms,
             retransmit_rate: signal.retransmit_rate,
             retransmit_burst: signal.retransmit_burst,
             repeated_loss_frames: signal.repeated_loss_frames,
+            max_retransmit_count: signal.max_retransmit_count,
+            new_retransmits: signal.new_retransmits,
+            recovery_active_windows: signal.recovery_active_windows,
             cap_limit_frames: self.current_cap_limit(config),
             pacing_extra_ms: self.pacing_extra_ms,
             action,
@@ -844,12 +929,11 @@ impl ResponseCongestionState {
         if self.level == ResponseCongestionLevel::None {
             return self.congestion_duration_ms;
         }
-        self.congestion_duration_ms
-            .saturating_add(
-                self.state_since
-                    .map(|state_since| state_since.elapsed().as_millis() as u64)
-                    .unwrap_or(0),
-            )
+        self.congestion_duration_ms.saturating_add(
+            self.state_since
+                .map(|state_since| state_since.elapsed().as_millis() as u64)
+                .unwrap_or(0),
+        )
     }
 }
 
@@ -1814,15 +1898,15 @@ pub async fn run_exit(args: ExitArgs) -> Result<()> {
                 level: ResponseCongestionLevel::None,
                 cap_limit_frames: window_frames,
                 pacing_extra_ms: 0,
-                baseline_rtt_ms: None,
-                last_signal_level: ResponseCongestionLevel::None,
-                signal_streak: 0,
+                rtt_reference_ms: None,
                 clean_streak: 0,
                 congestion_events: 0,
                 congestion_duration_ms: 0,
                 cap_reduction_due_to_congestion: 0,
                 pacing_increase_due_to_congestion: 0,
                 state_since: None,
+                active_recovery_windows: 0,
+                last_total_retransmits: 0,
             };
             let mut recent_window_wait_ms: u64 = 0;
 
@@ -2105,9 +2189,13 @@ pub async fn run_exit(args: ExitArgs) -> Result<()> {
                                             "reason": congestion.reason,
                                             "baseline_rtt_ms": congestion.baseline_rtt_ms,
                                             "ack_latency_ms_p95": congestion.ack_p95_ms,
+                                            "ack_lag_ms": congestion.ack_lag_ms,
                                             "retransmit_rate": congestion.retransmit_rate,
                                             "retransmit_burst": congestion.retransmit_burst,
                                             "repeated_loss_frames": congestion.repeated_loss_frames,
+                                            "max_retransmit_count": congestion.max_retransmit_count,
+                                            "new_retransmits": congestion.new_retransmits,
+                                            "recovery_active_windows": congestion.recovery_active_windows,
                                             "cap_limit_frames": congestion.cap_limit_frames,
                                             "pacing_extra_ms": congestion.pacing_extra_ms,
                                             "action": match congestion.action {
@@ -2370,7 +2458,9 @@ pub async fn run_exit(args: ExitArgs) -> Result<()> {
                     retransmit_pressure,
                     current_inflight_for_cap,
                 );
-                let effective_cap = decision.effective_cap_frames.min(congestion.cap_limit_frames);
+                let effective_cap = decision
+                    .effective_cap_frames
+                    .min(congestion.cap_limit_frames);
                 if matches!(decision.action, ResponseInflightCapAction::Reduced) {
                     emit_exit_stage(
                         "effective_inflight_cap_reduced",
@@ -2424,9 +2514,13 @@ pub async fn run_exit(args: ExitArgs) -> Result<()> {
                             "reason": congestion.reason,
                             "baseline_rtt_ms": congestion.baseline_rtt_ms,
                             "ack_latency_ms_p95": congestion.ack_p95_ms,
+                            "ack_lag_ms": congestion.ack_lag_ms,
                             "retransmit_rate": congestion.retransmit_rate,
                             "retransmit_burst": congestion.retransmit_burst,
                             "repeated_loss_frames": congestion.repeated_loss_frames,
+                            "max_retransmit_count": congestion.max_retransmit_count,
+                            "new_retransmits": congestion.new_retransmits,
+                            "recovery_active_windows": congestion.recovery_active_windows,
                             "cap_limit_frames": congestion.cap_limit_frames,
                             "pacing_extra_ms": congestion.pacing_extra_ms,
                             "action": match congestion.action {
@@ -2623,9 +2717,8 @@ pub async fn run_exit(args: ExitArgs) -> Result<()> {
             };
             let congestion_state_name = congestion_state.level.as_str();
             let congestion_duration_ms = congestion_state.final_duration_ms();
-            let congestion_cap_limit = congestion_state.current_cap_limit(
-                response_congestion_config_for_task,
-            ) as u64;
+            let congestion_cap_limit =
+                congestion_state.current_cap_limit(response_congestion_config_for_task) as u64;
             let congestion_pacing_extra_ms = congestion_state.pacing_extra_ms;
 
             let stream_duration_ms = response_start.elapsed().as_millis() as u64;
@@ -2969,10 +3062,8 @@ pub async fn run_exit(args: ExitArgs) -> Result<()> {
                 "send_blocked_by_effective_cap".to_string(),
                 json!(inflight_discipline.send_blocked_by_effective_cap),
             );
-            stream_complete_payload.insert(
-                "congestion_state".to_string(),
-                json!(congestion_state_name),
-            );
+            stream_complete_payload
+                .insert("congestion_state".to_string(), json!(congestion_state_name));
             stream_complete_payload.insert(
                 "congestion_events".to_string(),
                 json!(congestion_state.congestion_events),
@@ -4129,8 +4220,7 @@ mod tests {
 
     #[test]
     fn adaptive_retransmit_interval_uses_bootstrap_without_ack_samples() {
-        let interval =
-            adaptive_response_retransmit_interval(AckLatencySummary::default(), 0, 200);
+        let interval = adaptive_response_retransmit_interval(AckLatencySummary::default(), 0, 200);
         assert_eq!(interval, Duration::from_millis(300));
     }
 
@@ -4237,260 +4327,193 @@ mod tests {
         assert_eq!(pressure.target_cap_frames, 64);
     }
 
-    #[test]
-    fn response_congestion_signal_reduces_pressure() {
-        let config = ResponseCongestionConfig {
-            enabled: true,
-            hard_window_frames: 64,
-            bootstrap_rtt_ms: 200,
-        };
-        let mut state = ResponseCongestionState {
+    fn recovery_coupled_state() -> ResponseCongestionState {
+        ResponseCongestionState {
             level: ResponseCongestionLevel::None,
-            state_since: None,
-            congestion_duration_ms: 0,
-            congestion_events: 0,
-            clean_streak: 0,
-            signal_streak: 0,
             cap_limit_frames: 64,
             pacing_extra_ms: 0,
+            rtt_reference_ms: None,
+            clean_streak: 0,
+            congestion_events: 0,
+            congestion_duration_ms: 0,
             cap_reduction_due_to_congestion: 0,
             pacing_increase_due_to_congestion: 0,
-            baseline_rtt_ms: None,
-            last_signal_level: ResponseCongestionLevel::None,
-        };
-        let summary = AckLatencySummary {
-            avg_ms: Some(330),
-            min_ms: Some(250),
-            p50_ms: Some(320),
-            p95_ms: Some(410),
-            max_ms: Some(430),
-        };
-        let pressure = RetransmitPressureSnapshot {
-            retransmitting_frames: 6,
-            repeated_loss_frames: 2,
-            max_retransmit_count: 3,
-        };
-        let first = state.update(config, summary, 48, 4, pressure, 63);
-        assert_eq!(first.level, ResponseCongestionLevel::None);
-        assert_eq!(first.action, ResponseCongestionAction::None);
-        assert_eq!(first.cap_limit_frames, 64);
-        assert_eq!(first.pacing_extra_ms, 0);
+            state_since: None,
+            active_recovery_windows: 0,
+            last_total_retransmits: 0,
+        }
+    }
 
-        let second = state.update(
+    #[test]
+    fn response_recovery_guard_clears_quickly_after_short_transient_loss() {
+        let config = ResponseCongestionConfig {
+            enabled: true,
+            hard_window_frames: 64,
+            bootstrap_rtt_ms: 200,
+        };
+        let mut state = recovery_coupled_state();
+        let summary = AckLatencySummary {
+            avg_ms: Some(182),
+            min_ms: Some(150),
+            p50_ms: Some(178),
+            p95_ms: Some(195),
+            max_ms: Some(210),
+        };
+        let burst = state.update(
             config,
             summary,
-            64,
-            6,
-            pressure,
+            96,
+            3,
+            RetransmitPressureSnapshot {
+                retransmitting_frames: 3,
+                repeated_loss_frames: 0,
+                max_retransmit_count: 1,
+            },
             63,
         );
-        assert_eq!(second.level, ResponseCongestionLevel::Severe);
-        assert!(
-            matches!(
-                second.action,
-                ResponseCongestionAction::Entered | ResponseCongestionAction::Escalated
-            ),
-            "severe congestion should enter or escalate the control state"
-        );
-        assert_eq!(second.cap_limit_frames, EXIT_RESPONSE_CONGESTION_SEVERE_CAP_FRAMES);
+        assert_eq!(burst.level, ResponseCongestionLevel::RecoveryGuard);
+        assert_eq!(burst.action, ResponseCongestionAction::Entered);
         assert_eq!(
-            second.pacing_extra_ms,
-            EXIT_RESPONSE_CONGESTION_SEVERE_PACING_EXTRA_MS
+            burst.cap_limit_frames,
+            EXIT_RESPONSE_RECOVERY_GUARD_CAP_FRAMES
         );
-        assert!(state.cap_reduction_due_to_congestion > 0);
-        assert!(state.pacing_increase_due_to_congestion > 0);
+        assert_eq!(burst.pacing_extra_ms, 0);
+        assert_eq!(burst.recovery_active_windows, 1);
+
+        state.state_since = Some(Instant::now() - Duration::from_millis(80));
+        let cleared = state.update(
+            config,
+            summary,
+            96,
+            3,
+            RetransmitPressureSnapshot::default(),
+            24,
+        );
+        assert_eq!(cleared.level, ResponseCongestionLevel::None);
+        assert_eq!(cleared.action, ResponseCongestionAction::Cleared);
+        assert_eq!(cleared.cap_limit_frames, 64);
+        assert_eq!(state.congestion_events, 1);
+        assert_eq!(state.pacing_increase_due_to_congestion, 0);
     }
 
     #[test]
-    fn response_congestion_state_restores_after_clean_streak() {
+    fn response_recovery_control_detects_medium_path_burst_immediately() {
         let config = ResponseCongestionConfig {
             enabled: true,
             hard_window_frames: 64,
             bootstrap_rtt_ms: 200,
         };
-        let mut state = ResponseCongestionState {
-            level: ResponseCongestionLevel::Severe,
-            state_since: Some(Instant::now() - Duration::from_millis(250)),
-            congestion_duration_ms: 0,
-            congestion_events: 1,
-            clean_streak: 0,
-            signal_streak: 0,
-            cap_limit_frames: EXIT_RESPONSE_CONGESTION_SEVERE_CAP_FRAMES,
-            pacing_extra_ms: EXIT_RESPONSE_CONGESTION_SEVERE_PACING_EXTRA_MS,
-            cap_reduction_due_to_congestion: 1,
-            pacing_increase_due_to_congestion: 1,
-            baseline_rtt_ms: Some(200),
-            last_signal_level: ResponseCongestionLevel::Severe,
+        let mut state = recovery_coupled_state();
+        let summary = AckLatencySummary {
+            avg_ms: Some(228),
+            min_ms: Some(180),
+            p50_ms: Some(224),
+            p95_ms: Some(258),
+            max_ms: Some(275),
         };
-        let clean = AckLatencySummary {
-            avg_ms: Some(180),
-            min_ms: Some(150),
-            p50_ms: Some(175),
-            p95_ms: Some(190),
-            max_ms: Some(205),
-        };
-        for _ in 0..EXIT_RESPONSE_CONGESTION_CLEAN_STREAK_SAMPLES {
-            state.update(
-                config,
-                clean,
-                64,
-                0,
-                RetransmitPressureSnapshot::default(),
-                24,
-            );
-        }
-
-        assert_eq!(state.level, ResponseCongestionLevel::Severe);
-        assert_eq!(
-            state.cap_limit_frames,
-            EXIT_RESPONSE_CONGESTION_SEVERE_CAP_FRAMES + EXIT_RESPONSE_CONGESTION_RESTORE_STEP_FRAMES
+        let guard = state.update(
+            config,
+            summary,
+            128,
+            8,
+            RetransmitPressureSnapshot {
+                retransmitting_frames: 0,
+                repeated_loss_frames: 0,
+                max_retransmit_count: 1,
+            },
+            62,
         );
-        assert_eq!(state.pacing_extra_ms, 1);
+        assert_eq!(guard.level, ResponseCongestionLevel::RecoveryGuard);
+        assert_eq!(guard.action, ResponseCongestionAction::Entered);
+        assert_eq!(guard.new_retransmits, 8);
 
-        for _ in 0..8 {
-            state.state_since = Some(Instant::now() - Duration::from_millis(250));
-            for _ in 0..EXIT_RESPONSE_CONGESTION_CLEAN_STREAK_SAMPLES {
-                state.update(
-                    config,
-                    clean,
-                    64,
-                    0,
-                    RetransmitPressureSnapshot::default(),
-                    24,
-                );
-            }
-        }
-
-        assert_eq!(state.level, ResponseCongestionLevel::None);
-        assert_eq!(state.cap_limit_frames, 64);
-        assert_eq!(state.pacing_extra_ms, 0);
+        let sustained = state.update(
+            config,
+            summary,
+            128,
+            14,
+            RetransmitPressureSnapshot {
+                retransmitting_frames: 7,
+                repeated_loss_frames: 2,
+                max_retransmit_count: 2,
+            },
+            62,
+        );
+        assert_eq!(
+            sustained.level,
+            ResponseCongestionLevel::SustainedRecoveryPressure
+        );
+        assert_eq!(sustained.action, ResponseCongestionAction::Escalated);
+        assert!(sustained.cap_limit_frames <= 56);
+        assert!(sustained.recovery_active_windows >= 2);
     }
 
     #[test]
-    fn response_congestion_state_holds_reduction_for_minimum_rtt_window() {
+    fn response_recovery_control_holds_sustained_pressure_until_recovery_clears() {
         let config = ResponseCongestionConfig {
             enabled: true,
             hard_window_frames: 64,
             bootstrap_rtt_ms: 200,
         };
-        let mut state = ResponseCongestionState {
-            level: ResponseCongestionLevel::Severe,
-            state_since: Some(Instant::now()),
-            congestion_duration_ms: 0,
-            congestion_events: 1,
-            clean_streak: 0,
-            signal_streak: 0,
-            cap_limit_frames: EXIT_RESPONSE_CONGESTION_SEVERE_CAP_FRAMES,
-            pacing_extra_ms: EXIT_RESPONSE_CONGESTION_SEVERE_PACING_EXTRA_MS,
-            cap_reduction_due_to_congestion: 1,
-            pacing_increase_due_to_congestion: 1,
-            baseline_rtt_ms: Some(320),
-            last_signal_level: ResponseCongestionLevel::Severe,
+        let mut state = recovery_coupled_state();
+        let lossy_summary = AckLatencySummary {
+            avg_ms: Some(282),
+            min_ms: Some(220),
+            p50_ms: Some(278),
+            p95_ms: Some(392),
+            max_ms: Some(430),
         };
-        let clean = AckLatencySummary {
-            avg_ms: Some(318),
-            min_ms: Some(300),
-            p50_ms: Some(315),
-            p95_ms: Some(326),
-            max_ms: Some(340),
-        };
-
-        for _ in 0..(EXIT_RESPONSE_CONGESTION_CLEAN_STREAK_SAMPLES * 3) {
-            state.update(
-                config,
-                clean,
-                64,
-                0,
-                RetransmitPressureSnapshot::default(),
-                24,
-            );
-        }
-
-        assert_eq!(state.level, ResponseCongestionLevel::Severe);
-        assert_eq!(state.cap_limit_frames, EXIT_RESPONSE_CONGESTION_SEVERE_CAP_FRAMES);
+        let sustained = state.update(
+            config,
+            lossy_summary,
+            192,
+            11,
+            RetransmitPressureSnapshot {
+                retransmitting_frames: 10,
+                repeated_loss_frames: 3,
+                max_retransmit_count: 3,
+            },
+            63,
+        );
         assert_eq!(
-            state.pacing_extra_ms,
-            EXIT_RESPONSE_CONGESTION_SEVERE_PACING_EXTRA_MS
+            sustained.level,
+            ResponseCongestionLevel::SustainedRecoveryPressure
+        );
+        assert!(sustained.cap_limit_frames <= 52);
+        assert!(sustained.pacing_extra_ms <= EXIT_RESPONSE_RECOVERY_SUSTAINED_PACING_EXTRA_MS);
+
+        let clean = AckLatencySummary {
+            avg_ms: Some(248),
+            min_ms: Some(210),
+            p50_ms: Some(242),
+            p95_ms: Some(266),
+            max_ms: Some(281),
+        };
+        let held = state.update(
+            config,
+            clean,
+            192,
+            11,
+            RetransmitPressureSnapshot::default(),
+            28,
+        );
+        assert_eq!(
+            held.level,
+            ResponseCongestionLevel::SustainedRecoveryPressure
         );
 
         state.state_since = Some(Instant::now() - Duration::from_millis(250));
-        for _ in 0..EXIT_RESPONSE_CONGESTION_CLEAN_STREAK_SAMPLES {
-            state.update(
-                config,
-                clean,
-                64,
-                0,
-                RetransmitPressureSnapshot::default(),
-                24,
-            );
-        }
-
-        assert_eq!(
-            state.cap_limit_frames,
-            EXIT_RESPONSE_CONGESTION_SEVERE_CAP_FRAMES + EXIT_RESPONSE_CONGESTION_RESTORE_STEP_FRAMES
+        let relieved = state.update(
+            config,
+            clean,
+            192,
+            11,
+            RetransmitPressureSnapshot::default(),
+            28,
         );
-        assert_eq!(state.pacing_extra_ms, 1);
-    }
-
-    #[test]
-    fn response_congestion_state_adapts_clean_long_path_before_triggering() {
-        let config = ResponseCongestionConfig {
-            enabled: true,
-            hard_window_frames: 64,
-            bootstrap_rtt_ms: 200,
-        };
-        let mut state = ResponseCongestionState {
-            level: ResponseCongestionLevel::None,
-            state_since: None,
-            congestion_duration_ms: 0,
-            congestion_events: 0,
-            clean_streak: 0,
-            signal_streak: 0,
-            cap_limit_frames: 64,
-            pacing_extra_ms: 0,
-            cap_reduction_due_to_congestion: 0,
-            pacing_increase_due_to_congestion: 0,
-            baseline_rtt_ms: None,
-            last_signal_level: ResponseCongestionLevel::None,
-        };
-        let clean_long_path = AckLatencySummary {
-            avg_ms: Some(318),
-            min_ms: Some(280),
-            p50_ms: Some(314),
-            p95_ms: Some(329),
-            max_ms: Some(341),
-        };
-
-        for _ in 0..8 {
-            let decision = state.update(
-                config,
-                clean_long_path,
-                64,
-                0,
-                RetransmitPressureSnapshot::default(),
-                63,
-            );
-            assert_eq!(decision.level, ResponseCongestionLevel::None);
-            assert_eq!(decision.cap_limit_frames, 64);
-            assert_eq!(decision.pacing_extra_ms, 0);
-        }
-
-        assert!(state.baseline_rtt_ms.unwrap_or(0) >= 300);
-        assert_eq!(state.congestion_events, 0);
-
-        let pressure = RetransmitPressureSnapshot {
-            retransmitting_frames: 8,
-            repeated_loss_frames: 2,
-            max_retransmit_count: 3,
-        };
-        state.update(config, clean_long_path, 64, 6, pressure, 63);
-        let severe = state.update(config, clean_long_path, 64, 8, pressure, 63);
-        assert_eq!(severe.level, ResponseCongestionLevel::Severe);
-        assert_eq!(severe.cap_limit_frames, EXIT_RESPONSE_CONGESTION_SEVERE_CAP_FRAMES);
-        assert_eq!(
-            severe.pacing_extra_ms,
-            EXIT_RESPONSE_CONGESTION_SEVERE_PACING_EXTRA_MS
-        );
+        assert_eq!(relieved.level, ResponseCongestionLevel::None);
+        assert_eq!(relieved.action, ResponseCongestionAction::Cleared);
+        assert_eq!(relieved.cap_limit_frames, 64);
     }
 
     #[test]

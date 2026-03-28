@@ -987,7 +987,7 @@ async fn response_pacing_reduces_window_stall_under_combined() -> anyhow::Result
 }
 
 #[tokio::test]
-async fn response_inflight_discipline_avoids_transient_overtrigger_on_moderate_route(
+async fn response_recovery_guard_avoids_harmful_throttling_on_moderate_route(
 ) -> anyhow::Result<()> {
     support::prepare_baseline(BaselineMode::Local);
 
@@ -1058,22 +1058,32 @@ async fn response_inflight_discipline_avoids_transient_overtrigger_on_moderate_r
         .iter()
         .map(|stream| stream.send_blocked_by_effective_cap.unwrap_or(0))
         .sum::<u64>();
+    let moderate_avg_congestion_duration = average_optional(
+        moderate_streams
+            .iter()
+            .map(|stream| stream.congestion_duration_ms),
+    )
+    .unwrap_or(0.0);
 
     assert!(
-        moderate_avg_effective_cap >= 64.0,
-        "moderate regression must keep the effective inflight cap at the hard window ({moderate_avg_effective_cap:.2} >= 64)"
+        moderate_avg_effective_cap >= 62.0,
+        "moderate recovery-guard regression must keep the effective cap close to the hard window ({moderate_avg_effective_cap:.2} >= 62)"
     );
     assert!(
-        moderate_reductions == 0,
-        "moderate regression must not reduce the effective inflight cap on transient pressure ({moderate_reductions} == 0)"
+        moderate_reductions <= moderate_config.profile.runs as u64,
+        "moderate recovery-guard regression must not keep reducing the effective cap on a transient burst ({moderate_reductions} <= runs)"
     );
     assert!(
-        moderate_blocked == 0,
-        "moderate regression must not block on the effective inflight cap ({moderate_blocked} == 0)"
+        moderate_blocked <= moderate_config.profile.runs as u64 * 2,
+        "moderate recovery-guard regression must not accumulate more than a short guard-sized burst of blocking on the effective cap ({moderate_blocked} <= runs*2)"
     );
     assert!(
-        moderate_avg_effective_cap_wait == 0.0,
-        "moderate regression must not accumulate effective-cap wait ({moderate_avg_effective_cap_wait:.2} == 0)"
+        moderate_avg_effective_cap_wait <= 50.0,
+        "moderate recovery-guard regression must keep effective-cap wait bounded ({moderate_avg_effective_cap_wait:.2} <= 50ms)"
+    );
+    assert!(
+        moderate_avg_congestion_duration <= 250.0,
+        "moderate recovery-guard regression must clear quickly after a transient burst ({moderate_avg_congestion_duration:.2} <= 250ms)"
     );
 
     Ok(())
@@ -1126,11 +1136,15 @@ async fn combined_chaos_preserves_congestion_summary_fields() -> anyhow::Result<
     );
 
     assert!(
-        streams.iter().all(|stream| stream.congestion_state.is_some()),
+        streams
+            .iter()
+            .all(|stream| stream.congestion_state.is_some()),
         "congestion summary regression must record a congestion state on every exit summary"
     );
     assert!(
-        streams.iter().all(|stream| stream.congestion_events.is_some()),
+        streams
+            .iter()
+            .all(|stream| stream.congestion_events.is_some()),
         "congestion summary regression must record congestion event counters"
     );
     assert!(
@@ -1642,9 +1656,7 @@ fn analyze_stage_trace(path: &Path) -> anyhow::Result<StageAnalysis> {
                         .get("congestion_state")
                         .and_then(Value::as_str)
                         .map(ToString::to_string),
-                    congestion_events: value
-                        .get("congestion_events")
-                        .and_then(Value::as_u64),
+                    congestion_events: value.get("congestion_events").and_then(Value::as_u64),
                     congestion_duration_ms: value
                         .get("congestion_duration_ms")
                         .and_then(Value::as_u64),
@@ -1654,9 +1666,7 @@ fn analyze_stage_trace(path: &Path) -> anyhow::Result<StageAnalysis> {
                     pacing_increase_due_to_congestion: value
                         .get("pacing_increase_due_to_congestion")
                         .and_then(Value::as_u64),
-                    congestion_cap_limit: value
-                        .get("congestion_cap_limit")
-                        .and_then(Value::as_u64),
+                    congestion_cap_limit: value.get("congestion_cap_limit").and_then(Value::as_u64),
                     congestion_pacing_extra_ms: value
                         .get("congestion_pacing_extra_ms")
                         .and_then(Value::as_u64),
@@ -1916,8 +1926,11 @@ fn format_exit_stream_block(label: &str, streams: &[ExitStreamSummary]) -> Strin
     );
     let avg_congestion_cap_limit =
         average_optional(streams.iter().map(|stream| stream.congestion_cap_limit));
-    let avg_congestion_pacing_extra =
-        average_optional(streams.iter().map(|stream| stream.congestion_pacing_extra_ms));
+    let avg_congestion_pacing_extra = average_optional(
+        streams
+            .iter()
+            .map(|stream| stream.congestion_pacing_extra_ms),
+    );
     let congestion_states = streams
         .iter()
         .filter_map(|stream| stream.congestion_state.as_deref())
