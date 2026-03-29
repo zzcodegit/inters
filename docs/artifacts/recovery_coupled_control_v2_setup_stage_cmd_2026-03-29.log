@@ -1,0 +1,2 @@
+active
+exit_stage_log_path=/var/log/vpnnode/overlay-stage-exit.jsonl

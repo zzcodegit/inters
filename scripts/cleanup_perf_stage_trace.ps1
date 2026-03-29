@@ -36,17 +36,17 @@ $exitPassword = Get-RequiredEnv "VPNNODE_REMOTE_EXIT_PASSWORD"
 $publicServiceName = Get-OptionalEnv "VPNNODE_PERF_PUBLIC_SERVICE" "vpnnode-target-http-public.service"
 
 $remote = "$exitUser@$exitHost"
-$command = @'
-rm -f /etc/systemd/system/vpnnode-exit.service.d/20-stage-trace.conf
-systemctl daemon-reload
-systemctl restart vpnnode-exit.service
-systemctl stop __PUBLIC_SERVICE__ || true
-systemctl disable __PUBLIC_SERVICE__ || true
-exit_status=$(systemctl is-active vpnnode-exit.service)
-public_status=$(systemctl is-active __PUBLIC_SERVICE__ 2>/dev/null || true)
-printf 'exit_service=%s\n' "$exit_status"
-printf 'public_service=%s\n' "$public_status"
-'@.Replace("__PUBLIC_SERVICE__", $publicServiceName)
+$command = @(
+    "rm -f /etc/systemd/system/vpnnode-exit.service.d/20-stage-trace.conf",
+    "systemctl daemon-reload",
+    "systemctl restart vpnnode-exit.service",
+    "systemctl stop $publicServiceName || true",
+    "systemctl disable $publicServiceName || true",
+    "exit_status=`$(systemctl is-active vpnnode-exit.service)",
+    "public_status=`$(systemctl is-active $publicServiceName 2>/dev/null || true)",
+    "printf 'exit_service=%s\n' `"`$exit_status`"",
+    "printf 'public_service=%s\n' `"`$public_status`""
+) -join "; "
 
 Invoke-CheckedExternal -FailureMessage "failed to cleanup exit stage trace on $exitHost" -Action {
     & $plink -batch -pw $exitPassword $remote $command

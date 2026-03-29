@@ -122,6 +122,20 @@ struct ExitStreamSummary {
     congestion_state: Option<String>,
     congestion_events: Option<u64>,
     congestion_duration_ms: Option<u64>,
+    control_state_enter_count: Option<u64>,
+    control_state_exit_count: Option<u64>,
+    control_guard_activated_frames: Option<u64>,
+    control_pressure_activated_frames: Option<u64>,
+    frames_sent_while_guard: Option<u64>,
+    frames_sent_while_pressure: Option<u64>,
+    retransmits_while_guard: Option<u64>,
+    retransmits_while_pressure: Option<u64>,
+    ack_progress_while_guard: Option<u64>,
+    ack_progress_while_pressure: Option<u64>,
+    burst_detected_count: Option<u64>,
+    burst_without_state_entry_count: Option<u64>,
+    state_entry_without_burst_count: Option<u64>,
+    recovery_epoch_id: Option<u64>,
     cap_reduction_due_to_congestion: Option<u64>,
     pacing_increase_due_to_congestion: Option<u64>,
     congestion_cap_limit: Option<u64>,
@@ -1064,6 +1078,22 @@ async fn response_recovery_guard_avoids_harmful_throttling_on_moderate_route(
             .map(|stream| stream.congestion_duration_ms),
     )
     .unwrap_or(0.0);
+    let moderate_guard_windows = moderate_streams
+        .iter()
+        .map(|stream| stream.control_guard_activated_frames.unwrap_or(0))
+        .sum::<u64>();
+    let moderate_pressure_windows = moderate_streams
+        .iter()
+        .map(|stream| stream.control_pressure_activated_frames.unwrap_or(0))
+        .sum::<u64>();
+    let moderate_fake_entries = moderate_streams
+        .iter()
+        .map(|stream| stream.state_entry_without_burst_count.unwrap_or(0))
+        .sum::<u64>();
+    let moderate_unarmed_bursts = moderate_streams
+        .iter()
+        .map(|stream| stream.burst_without_state_entry_count.unwrap_or(0))
+        .sum::<u64>();
 
     assert!(
         moderate_avg_effective_cap >= 62.0,
@@ -1084,6 +1114,22 @@ async fn response_recovery_guard_avoids_harmful_throttling_on_moderate_route(
     assert!(
         moderate_avg_congestion_duration <= 250.0,
         "moderate recovery-guard regression must clear quickly after a transient burst ({moderate_avg_congestion_duration:.2} <= 250ms)"
+    );
+    assert_eq!(
+        moderate_fake_entries, 0,
+        "moderate recovery-guard regression must not enter state without a recovery burst"
+    );
+    assert_eq!(
+        moderate_pressure_windows, 0,
+        "moderate recovery-guard regression must not escalate into sustained pressure on transient moderate loss"
+    );
+    assert!(
+        moderate_guard_windows <= moderate_config.profile.runs as u64 * 3,
+        "moderate recovery-guard regression must keep guard activation short-lived on transient loss ({moderate_guard_windows} <= runs*3)"
+    );
+    assert!(
+        moderate_unarmed_bursts <= moderate_config.profile.runs as u64 * 2,
+        "moderate recovery-guard regression may ignore isolated bursts, but only within a short transient budget ({moderate_unarmed_bursts} <= runs*2)"
     );
 
     Ok(())
@@ -1164,6 +1210,24 @@ async fn combined_chaos_preserves_congestion_summary_fields() -> anyhow::Result<
             .iter()
             .all(|stream| stream.pacing_increase_due_to_congestion.is_some()),
         "congestion summary regression must record pacing-increase counters"
+    );
+    assert!(
+        streams
+            .iter()
+            .all(|stream| stream.control_state_enter_count.is_some()),
+        "congestion summary regression must record control-state enter counters"
+    );
+    assert!(
+        streams
+            .iter()
+            .all(|stream| stream.control_guard_activated_frames.is_some()),
+        "congestion summary regression must record guard activation counters"
+    );
+    assert!(
+        streams
+            .iter()
+            .all(|stream| stream.burst_detected_count.is_some()),
+        "congestion summary regression must record burst detection counters"
     );
 
     Ok(())
@@ -1659,6 +1723,48 @@ fn analyze_stage_trace(path: &Path) -> anyhow::Result<StageAnalysis> {
                     congestion_events: value.get("congestion_events").and_then(Value::as_u64),
                     congestion_duration_ms: value
                         .get("congestion_duration_ms")
+                        .and_then(Value::as_u64),
+                    control_state_enter_count: value
+                        .get("control_state_enter_count")
+                        .and_then(Value::as_u64),
+                    control_state_exit_count: value
+                        .get("control_state_exit_count")
+                        .and_then(Value::as_u64),
+                    control_guard_activated_frames: value
+                        .get("control_guard_activated_frames")
+                        .and_then(Value::as_u64),
+                    control_pressure_activated_frames: value
+                        .get("control_pressure_activated_frames")
+                        .and_then(Value::as_u64),
+                    frames_sent_while_guard: value
+                        .get("frames_sent_while_guard")
+                        .and_then(Value::as_u64),
+                    frames_sent_while_pressure: value
+                        .get("frames_sent_while_pressure")
+                        .and_then(Value::as_u64),
+                    retransmits_while_guard: value
+                        .get("retransmits_while_guard")
+                        .and_then(Value::as_u64),
+                    retransmits_while_pressure: value
+                        .get("retransmits_while_pressure")
+                        .and_then(Value::as_u64),
+                    ack_progress_while_guard: value
+                        .get("ack_progress_while_guard")
+                        .and_then(Value::as_u64),
+                    ack_progress_while_pressure: value
+                        .get("ack_progress_while_pressure")
+                        .and_then(Value::as_u64),
+                    burst_detected_count: value
+                        .get("burst_detected_count")
+                        .and_then(Value::as_u64),
+                    burst_without_state_entry_count: value
+                        .get("burst_without_state_entry_count")
+                        .and_then(Value::as_u64),
+                    state_entry_without_burst_count: value
+                        .get("state_entry_without_burst_count")
+                        .and_then(Value::as_u64),
+                    recovery_epoch_id: value
+                        .get("recovery_epoch_id")
                         .and_then(Value::as_u64),
                     cap_reduction_due_to_congestion: value
                         .get("cap_reduction_due_to_congestion")

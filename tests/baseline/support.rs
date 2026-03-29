@@ -368,6 +368,9 @@ impl RemoteBaselineConfig {
         }
         routes.sort_unstable();
         routes.dedup();
+        if let Some(filter) = scenario_route_filter_from_env() {
+            routes.retain(|route| filter.contains(route));
+        }
         routes
     }
 
@@ -539,4 +542,22 @@ fn parse_target_scheme() -> Result<String> {
             "VPNNODE_BASELINE_REMOTE_TARGET_SCHEME={scheme:?} is not supported in remote baseline mode; use a plain HTTP target for the current smoke harness"
         );
     }
+}
+
+fn scenario_route_filter_from_env() -> Option<Vec<u8>> {
+    let raw = match std::env::var("VPNNODE_BASELINE_REMOTE_ROUTE_FILTER") {
+        Ok(value) if !value.trim().is_empty() => value,
+        _ => return None,
+    };
+
+    let mut routes = Vec::new();
+    for token in raw.split(',').map(str::trim).filter(|value| !value.is_empty()) {
+        let route = token.parse::<u8>().unwrap_or_else(|err| {
+            panic!("failed to parse VPNNODE_BASELINE_REMOTE_ROUTE_FILTER entry {token:?}: {err}")
+        });
+        routes.push(route);
+    }
+    routes.sort_unstable();
+    routes.dedup();
+    Some(routes)
 }

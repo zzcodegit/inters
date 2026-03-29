@@ -48,18 +48,20 @@ $exitStageLogPath = Get-OptionalEnv "VPNNODE_PERF_EXIT_STAGE_LOG_PATH" "/var/log
 $exitStageLogDir = Get-RemoteDir $exitStageLogPath
 
 $remote = "$exitUser@$exitHost"
-$command = @"
-mkdir -p /etc/systemd/system/vpnnode-exit.service.d
-mkdir -p "$exitStageLogDir"
-: > "$exitStageLogPath"
-cat > /etc/systemd/system/vpnnode-exit.service.d/20-stage-trace.conf <<'UNIT'
+$dropInContent = @"
 [Service]
 Environment=VPNNODE_STAGE_TRACE_PATH=$exitStageLogPath
-UNIT
-systemctl daemon-reload
-systemctl restart vpnnode-exit.service
-systemctl is-active vpnnode-exit.service
 "@
+$dropInContentB64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($dropInContent))
+$command = @(
+    "mkdir -p /etc/systemd/system/vpnnode-exit.service.d",
+    "mkdir -p '$exitStageLogDir'",
+    ": > '$exitStageLogPath'",
+    "printf '%s' '$dropInContentB64' | base64 -d > /etc/systemd/system/vpnnode-exit.service.d/20-stage-trace.conf",
+    "systemctl daemon-reload",
+    "systemctl restart vpnnode-exit.service",
+    "systemctl is-active vpnnode-exit.service"
+) -join "; "
 
 Invoke-CheckedExternal -FailureMessage "failed to enable exit stage trace on $exitHost" -Action {
     & $plink -batch -pw $exitPassword $remote $command

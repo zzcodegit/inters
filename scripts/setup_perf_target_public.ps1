@@ -27,6 +27,13 @@ function Get-OptionalEnv([string]$Name, [string]$Default) {
     return $value
 }
 
+function Invoke-CheckedExternal([scriptblock]$Action, [string]$FailureMessage) {
+    & $Action
+    if ($LASTEXITCODE -ne 0) {
+        throw "$FailureMessage (exit=$LASTEXITCODE)"
+    }
+}
+
 $exitHost = Get-RequiredEnv "VPNNODE_REMOTE_EXIT_HOST"
 $exitUser = Get-OptionalEnv "VPNNODE_REMOTE_EXIT_USER" "root"
 $exitPassword = Get-RequiredEnv "VPNNODE_REMOTE_EXIT_PASSWORD"
@@ -45,34 +52,32 @@ if (-not (Test-Path $localForwardScript)) {
     throw "Missing local forward script at $localForwardScript"
 }
 
-$payloadCommand = @"
-mkdir -p /opt/vpnnode/bin '$targetDir' && python3 - <<'PY'
+$payloadScript = @"
 from pathlib import Path
-target_dir = Path('$targetDir')
+target_dir = Path(r"$targetDir")
 target_dir.mkdir(parents=True, exist_ok=True)
-payload = (b'vpnnode-perf-' * 30000)[:int('$targetBytes')]
-path = target_dir / '$targetFileName'
+payload = (b"vpnnode-perf-" * 30000)[:int("$targetBytes")]
+path = target_dir / "$targetFileName"
 path.write_bytes(payload)
-print(f'payload_path={path}')
-print(f'payload_bytes={path.stat().st_size}')
-PY
+print(f"payload_path={path}")
+print(f"payload_bytes={path.stat().st_size}")
 "@
+$payloadScriptB64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($payloadScript))
+$payloadCommand = "mkdir -p /opt/vpnnode/bin '$targetDir'; printf '%s' '$payloadScriptB64' | base64 -d | python3 -"
 
-& $plink -batch -pw $exitPassword $remote $payloadCommand
-& $pscp -batch -pw $exitPassword $localForwardScript "${remote}:${publicScriptPath}"
-
-$forwardExec = "/usr/bin/python3 $publicScriptPath --listen-host 0.0.0.0 --listen-port $publicPort --target-host 127.0.0.1 --target-port 8080"
-$forwardLogSetup = ""
-if (-not [string]::IsNullOrWhiteSpace($forwardLogPath)) {
-    $forwardExec += " --stage-log-path $forwardLogPath"
-    $forwardLogSetup = @"
-mkdir -p "$(dirname "$forwardLogPath")"
-: > "$forwardLogPath"
-"@
+Invoke-CheckedExternal -FailureMessage "failed to prepare perf payload on $exitHost" -Action {
+    & $plink -batch -pw $exitPassword $remote $payloadCommand
+}
+Invoke-CheckedExternal -FailureMessage "failed to upload tcp forward helper to $exitHost" -Action {
+    & $pscp -batch -pw $exitPassword $localForwardScript "${remote}:${publicScriptPath}"
 }
 
-$unitCommand = @"
-cat > /etc/systemd/system/$publicServiceName <<'UNIT'
+$forwardExec = "/usr/bin/python3 $publicScriptPath --listen-host 0.0.0.0 --listen-port $publicPort --target-host 127.0.0.1 --target-port 8080"
+if (-not [string]::IsNullOrWhiteSpace($forwardLogPath)) {
+    $forwardExec += " --stage-log-path $forwardLogPath"
+}
+
+$unitContent = @"
 [Unit]
 Description=Public TCP forward to vpnnode target-http
 After=network.target vpnnode-target-http.service
@@ -84,15 +89,30 @@ RestartSec=2
 
 [Install]
 WantedBy=multi-user.target
-UNIT
-chmod 755 $publicScriptPath
-$forwardLogSetup
-systemctl daemon-reload
-systemctl enable --now $publicServiceName
-systemctl is-active $publicServiceName
 "@
+$unitContentB64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($unitContent))
+$unitCommandParts = @(
+    "printf '%s' '$unitContentB64' | base64 -d > /etc/systemd/system/$publicServiceName",
+    "chmod 755 $publicScriptPath"
+)
+if (-not [string]::IsNullOrWhiteSpace($forwardLogPath)) {
+    $forwardLogDir = Split-Path -Parent $forwardLogPath
+    if ([string]::IsNullOrWhiteSpace($forwardLogDir)) {
+        $forwardLogDir = "/var/log/vpnnode"
+    }
+    $unitCommandParts += "mkdir -p '$forwardLogDir'"
+    $unitCommandParts += ": > '$forwardLogPath'"
+}
+$unitCommandParts += @(
+    "systemctl daemon-reload",
+    "systemctl enable --now $publicServiceName",
+    "systemctl is-active $publicServiceName"
+)
+$unitCommand = $unitCommandParts -join "; "
 
-& $plink -batch -pw $exitPassword $remote $unitCommand
+Invoke-CheckedExternal -FailureMessage "failed to configure public perf forwarder on $exitHost" -Action {
+    & $plink -batch -pw $exitPassword $remote $unitCommand
+}
 
 Write-Host "direct_addr=${exitHost}:$publicPort"
 Write-Host "target_path=/$targetFileName"

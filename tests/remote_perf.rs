@@ -88,13 +88,16 @@ async fn remote_perf_matrix_collects_measurements() -> anyhow::Result<()> {
     prepare_output_path(&config.report_output_path)?;
     fs::write(&config.raw_output_path, b"").context("truncate raw output file")?;
 
-    let mut scenarios = vec![ScenarioSpec {
-        name: "direct".to_string(),
-        host_header: "perf-direct".to_string(),
-        route_length: None,
-        local_listen: None,
-        route_cache_path: None,
-    }];
+    let mut scenarios = Vec::new();
+    if !env_flag("VPNNODE_PERF_SKIP_DIRECT") {
+        scenarios.push(ScenarioSpec {
+            name: "direct".to_string(),
+            host_header: "perf-direct".to_string(),
+            route_length: None,
+            local_listen: None,
+            route_cache_path: None,
+        });
+    }
     for route_length in config.remote.scenario_route_lengths() {
         scenarios.push(ScenarioSpec {
             name: format!("remote-{}hop", route_length),
@@ -577,6 +580,16 @@ fn required_env(name: &str) -> anyhow::Result<String> {
 
 fn env_or_default(name: &str, default: &str) -> String {
     std::env::var(name).unwrap_or_else(|_| default.to_string())
+}
+
+fn env_flag(name: &str) -> bool {
+    matches!(
+        std::env::var(name)
+            .ok()
+            .map(|value| value.trim().to_ascii_lowercase())
+            .as_deref(),
+        Some("1" | "true" | "yes" | "on")
+    )
 }
 
 fn parse_env_or_default<T>(name: &str, default: T) -> anyhow::Result<T>
